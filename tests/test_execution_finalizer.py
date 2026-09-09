@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -104,6 +105,17 @@ def seed_claimed_execution(session: Session, task: BootstrapTask) -> tuple[Task,
     return persisted_task, execution, lease
 
 
+def seed_claimed_execution_attempt(
+    session: Session,
+    task: BootstrapTask,
+    *,
+    attempt: int,
+) -> tuple[Task, Execution, TaskLease]:
+    persisted_task, execution, lease = seed_claimed_execution(session, task)
+    execution.attempt = attempt
+    return persisted_task, execution, lease
+
+
 def package_for(task: BootstrapTask, repo: Path) -> ExecutionPackage:
     return build_execution_package(
         task,
@@ -148,6 +160,62 @@ def test_successful_finalization_commits_and_updates_database(tmp_path: Path) ->
         assert execution.commit_hash == result.commit_id
         assert session.get(TaskLease, "lease-1").status == "completed"  # type: ignore[union-attr]
         assert session.scalars(select(Checkpoint).where(Checkpoint.execution_id == "execution-1")).one()
+
+
+def test_noop_finalization_passes_without_attributing_baseline_commit(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    task = task_manifest(command="test -f README.md")
+    before_head = git(repo, "rev-parse", "--short", "HEAD")
+    before_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    factory = session_factory()
+    with factory() as session:
+        seed_claimed_execution(session, task)
+
+        result = ExecutionFinalizer(manifest_tasks={task.id: task}).finalize(
+            session,
+            package=package_for(task, repo),
+            owner_id="worker-1",
+        )
+
+        assert result.status == "COMPLETED"
+        assert result.success_kind == "ALREADY_SATISFIED_NOOP"
+        assert result.commit_id is None
+        assert result.committed_tree_hash == before_tree
+        assert git(repo, "rev-parse", "--short", "HEAD") == before_head
+        execution = session.get(Execution, "execution-1")
+        assert execution is not None
+        assert execution.commit_hash is None
+        assert execution.candidate_tree_hash == before_tree
+        checkpoint = session.scalars(select(Checkpoint).where(Checkpoint.execution_id == "execution-1")).one()
+        assert checkpoint.commit_hash is None
+        assert json.loads(checkpoint.state)["success_kind"] == "ALREADY_SATISFIED_NOOP"
+
+
+def test_repair_converged_to_existing_tree_is_not_counted_as_new_commit(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    task = task_manifest(command="test -f README.md")
+    before_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    factory = session_factory()
+    with factory() as session:
+        seed_claimed_execution_attempt(session, task, attempt=2)
+
+        result = ExecutionFinalizer(manifest_tasks={task.id: task}).finalize(
+            session,
+            package=package_for(task, repo),
+            owner_id="worker-1",
+        )
+
+        assert result.status == "COMPLETED"
+        assert result.success_kind == "REPAIR_CONVERGED_EXISTING_TREE"
+        assert result.commit_id is None
+        assert result.committed_tree_hash == before_tree
+        execution = session.get(Execution, "execution-1")
+        assert execution is not None
+        assert execution.commit_hash is None
+        checkpoint = session.scalars(select(Checkpoint).where(Checkpoint.execution_id == "execution-1")).one()
+        state = json.loads(checkpoint.state)
+        assert state["commit_created"] is False
+        assert state["success_kind"] == "REPAIR_CONVERGED_EXISTING_TREE"
 
 
 def test_scope_failure_blocks_without_commit_and_preserves_worktree(tmp_path: Path) -> None:
@@ -245,6 +313,8 @@ def test_db_failure_after_commit_is_reconcilable_and_retry_does_not_duplicate_co
         )
 
         assert retry.status == "COMPLETED"
+        assert retry.success_kind == "NEW_VERIFIED_CHANGE"
+        assert retry.commit_id == git(repo, "rev-parse", "--short", "HEAD")
         assert git(repo, "rev-parse", "HEAD") == committed_head
         assert session.get(Task, task.id).status == "passed"  # type: ignore[union-attr]
 
@@ -282,6 +352,7 @@ def test_already_finalized_execution_is_idempotent(tmp_path: Path) -> None:
         assert first.status == "COMPLETED"
         assert second.status == "IDEMPOTENT_COMPLETED"
         assert second.commit_id == first.commit_id
+        assert second.success_kind == first.success_kind
 
 
 def test_finalizer_does_not_invoke_codex_or_schedule_next_task(tmp_path: Path) -> None:

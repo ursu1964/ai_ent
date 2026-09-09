@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
+from typing import Any
 
 from ai_ent import project_manifest
 from ai_ent.manifest_compiler import (
@@ -35,7 +34,7 @@ def test_fr_002_compiler_service_emits_canonical_semantic_project_model() -> Non
 
 def test_acc_002_validation_blocks_before_task_dag_generation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: Any,
 ) -> None:
     target = tmp_path / "manifest"
     _copy_manifest(MANIFEST_ROOT, target)
@@ -57,8 +56,12 @@ def test_acc_002_validation_blocks_before_task_dag_generation(
         fail_if_dag_generation_starts,
     )
 
-    with pytest.raises(ValueError, match="project manifest validation failed"):
+    try:
         project_manifest.generate_implementation_plan(target)
+    except ValueError as exc:
+        assert "project manifest validation failed" in str(exc)
+    else:
+        raise AssertionError("invalid manifest unexpectedly generated an implementation plan")
 
 
 def test_nfr_001_compiler_output_is_repeatable_for_canonical_inputs(

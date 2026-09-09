@@ -100,6 +100,17 @@ def completed(task_id: str, execution_id: str, commit: str) -> ExecutionFinaliza
         execution=Execution(id=execution_id, task_id=task_id, executor_type="codex", commit_hash=commit),
         task=Task(id=task_id, project_id="project-1", title=f"Task {task_id}", status="passed"),
         commit_id=commit,
+        success_kind="NEW_VERIFIED_CHANGE",
+    )
+
+
+def noop_completed(task_id: str, execution_id: str) -> ExecutionFinalizationResult:
+    return ExecutionFinalizationResult(
+        status="COMPLETED",
+        execution=Execution(id=execution_id, task_id=task_id, executor_type="codex"),
+        task=Task(id=task_id, project_id="project-1", title=f"Task {task_id}", status="passed"),
+        commit_id=None,
+        success_kind="ALREADY_SATISFIED_NOOP",
     )
 
 
@@ -186,6 +197,21 @@ def test_max_tasks_one_stops_after_first_task() -> None:
     assert result.stop_reason == "MAX_TASKS_PER_RUN"
     assert result.tasks_attempted == 1
     assert scheduler.calls == 1
+
+
+def test_noop_success_counts_completed_without_counting_commit() -> None:
+    runner = BoundedSchedulerRunner(
+        scheduler=FakeScheduler([scheduled("TASK-A")]),  # type: ignore[arg-type]
+        execution_runner=FakeExecutionRunner(),  # type: ignore[arg-type]
+        finalizer=FakeFinalizer([noop_completed("TASK-A", "execution-TASK-A")]),  # type: ignore[arg-type]
+        limits=BoundedRunLimits(max_tasks_per_run=1),
+    )
+
+    result = runner.run(None, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.tasks_completed == 1
+    assert result.commits_created == ()
+    assert result.outcomes[0].success_kind == "ALREADY_SATISFIED_NOOP"
 
 
 def test_wall_clock_budget_prevents_starting_additional_work() -> None:

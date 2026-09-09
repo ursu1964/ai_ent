@@ -10,7 +10,7 @@ from typing import Literal
 from sqlalchemy.orm import Session
 
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
-from ai_ent.scheduler.finalization import ExecutionFinalizer
+from ai_ent.scheduler.finalization import ExecutionFinalizer, SuccessfulFinalizationKind
 from ai_ent.scheduler.iteration import SchedulerIterationResult, SchedulerIterationService
 from ai_ent.scheduler.recovery import RecoveryResult, SchedulerRecoveryService
 from ai_ent.scheduler.repair import (
@@ -57,6 +57,7 @@ class TaskRunOutcome:
     execution_id: str | None
     status: TaskOutcomeStatus
     commit_id: str | None = None
+    success_kind: SuccessfulFinalizationKind | None = None
     repair_execution_id: str | None = None
     classification: FailureClassification | None = None
     reason: str | None = None
@@ -220,6 +221,7 @@ class BoundedSchedulerRunner:
                     execution_id=executed.package.execution_id,
                     status="COMPLETED",
                     commit_id=finalization.commit_id,
+                    success_kind=finalization.success_kind,
                 ),
                 commits=(finalization.commit_id,) if finalization.commit_id else (),
             )
@@ -242,6 +244,7 @@ class BoundedSchedulerRunner:
                         execution_id=executed.package.execution_id,
                         status="REPAIRED",
                         commit_id=commit,
+                        success_kind=repair_result.finalization.success_kind,
                         repair_execution_id=repair_execution_id,
                         classification=repair_result.decision.classification,
                     ),

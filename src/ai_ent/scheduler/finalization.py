@@ -35,6 +35,11 @@ FinalizationStatus = Literal[
     "COMMIT_DENIED",
     "COMMIT_CREATED_DB_PENDING",
 ]
+SuccessfulFinalizationKind = Literal[
+    "NEW_VERIFIED_CHANGE",
+    "ALREADY_SATISFIED_NOOP",
+    "REPAIR_CONVERGED_EXISTING_TREE",
+]
 
 Verifier = Callable[[BootstrapTask, Path], VerificationResult]
 Committer = Callable[[BootstrapTask, Candidate, VerificationResult, str, Path], str | None]
@@ -50,6 +55,7 @@ class ExecutionFinalizationResult:
     verification: VerificationResult | None = None
     commit_id: str | None = None
     committed_tree_hash: str | None = None
+    success_kind: SuccessfulFinalizationKind | None = None
     checkpoint: Checkpoint | None = None
     worktree_path: Path | None = None
     reason: str | None = None
@@ -100,7 +106,7 @@ class ExecutionFinalizer:
                 worktree_path=package.worktree_path,
                 reason="execution_task_mismatch",
             )
-        if execution.commit_hash and execution.candidate_tree_hash and task.status == "passed":
+        if execution.status == "succeeded" and execution.candidate_tree_hash and task.status == "passed":
             return ExecutionFinalizationResult(
                 status="IDEMPOTENT_COMPLETED",
                 execution=execution,
@@ -108,6 +114,7 @@ class ExecutionFinalizer:
                 worktree_path=package.worktree_path,
                 commit_id=execution.commit_hash,
                 committed_tree_hash=execution.candidate_tree_hash,
+                success_kind=self._recorded_success_kind(session, execution),
             )
         if execution.status != "succeeded" or execution.commit_hash is not None:
             return ExecutionFinalizationResult(
@@ -220,6 +227,7 @@ class ExecutionFinalizer:
 
         try:
             if candidate.changed_files:
+                success_kind = "NEW_VERIFIED_CHANGE"
                 commit_id = self.committer(
                     manifest_task,
                     candidate,
@@ -228,7 +236,17 @@ class ExecutionFinalizer:
                     package.worktree_path,
                 )
             else:
-                commit_id = require_git(["rev-parse", "--short", "HEAD"], cwd=package.worktree_path)
+                prior_commit = _matching_existing_task_commit(
+                    package.worktree_path,
+                    task_id=manifest_task.id,
+                    execution_id=execution.id,
+                )
+                if prior_commit is not None:
+                    success_kind = "NEW_VERIFIED_CHANGE"
+                    commit_id = prior_commit
+                else:
+                    success_kind = _clean_candidate_success_kind(execution)
+                    commit_id = None
             committed_tree_hash = require_git(["rev-parse", "HEAD^{tree}"], cwd=package.worktree_path)
         except RuntimeError as exc:
             self.executions.update_lifecycle(
@@ -274,6 +292,7 @@ class ExecutionFinalizer:
                 candidate=candidate,
                 commit_id=commit_id,
                 committed_tree_hash=committed_tree_hash,
+                success_kind=success_kind,
                 baseline_commit=baseline_commit,
                 verification=verification,
             )
@@ -287,6 +306,7 @@ class ExecutionFinalizer:
                 verification=verification,
                 commit_id=commit_id,
                 committed_tree_hash=committed_tree_hash,
+                success_kind=success_kind,
                 worktree_path=package.worktree_path,
                 reason=str(exc),
             )
@@ -300,6 +320,7 @@ class ExecutionFinalizer:
             verification=verification,
             commit_id=commit_id,
             committed_tree_hash=committed_tree_hash,
+            success_kind=success_kind,
             checkpoint=checkpoint,
             worktree_path=package.worktree_path,
         )
@@ -328,6 +349,7 @@ class ExecutionFinalizer:
         candidate: Candidate,
         commit_id: str | None,
         committed_tree_hash: str,
+        success_kind: SuccessfulFinalizationKind,
         baseline_commit: str,
         verification: VerificationResult,
     ) -> Checkpoint:
@@ -352,11 +374,26 @@ class ExecutionFinalizer:
                 "candidate_tree_hash": candidate.tree_hash,
                 "committed_tree_hash": committed_tree_hash,
                 "commit_id": commit_id,
+                "commit_created": success_kind == "NEW_VERIFIED_CHANGE",
+                "success_kind": success_kind,
                 "verification": _verification_state(verification),
             },
             commit_hash=commit_id,
             tree_hash=candidate.tree_hash,
         )
+
+    def _recorded_success_kind(self, session: Session, execution: Execution) -> SuccessfulFinalizationKind | None:
+        checkpoint = self.checkpoints.latest_for_execution(session, execution.id)
+        if checkpoint is None:
+            return None
+        try:
+            state = json.loads(checkpoint.state)
+        except json.JSONDecodeError:
+            return None
+        value = state.get("success_kind")
+        if value in {"NEW_VERIFIED_CHANGE", "ALREADY_SATISFIED_NOOP", "REPAIR_CONVERGED_EXISTING_TREE"}:
+            return value
+        return None
 
     def _record_failure(
         self,
@@ -426,3 +463,20 @@ def _verification_state(verification: VerificationResult) -> list[dict[str, obje
         }
         for result in verification.commands
     ]
+
+
+def _clean_candidate_success_kind(execution: Execution) -> SuccessfulFinalizationKind:
+    if execution.attempt > 1:
+        return "REPAIR_CONVERGED_EXISTING_TREE"
+    return "ALREADY_SATISFIED_NOOP"
+
+
+def _matching_existing_task_commit(worktree_path: Path, *, task_id: str, execution_id: str) -> str | None:
+    try:
+        subject = require_git(["log", "-1", "--format=%s"], cwd=worktree_path)
+        body = require_git(["log", "-1", "--format=%b"], cwd=worktree_path)
+    except RuntimeError:
+        return None
+    if subject == f"Complete {task_id}" and f"Execution: {execution_id}" in body:
+        return require_git(["rev-parse", "--short", "HEAD"], cwd=worktree_path)
+    return None
