@@ -1,0 +1,10 @@
+stages:
+  - id: B00
+    name: Repository Bootstrap
+    description: Establish the reproducible local foundation.
+  - id: B01
+    name: Bootstrap Automation
+    description: Prove task execution, verification, commit, and resume behavior.
+  - id: B02
+    name: Runtime Foundation
+    description: Add durable state, database migrations, and service boundaries.

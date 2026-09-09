@@ -1,0 +1,11 @@
+id: TASK-0005
+stage: B01
+title: Prepare Codex executor boundary
+executor: fake
+depends_on:
+  - TASK-0004
+outputs:
+  - scripts/bootstrap.py
+verification:
+  commands:
+    - python scripts/bootstrap.py preflight

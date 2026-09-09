@@ -1,0 +1,11 @@
+id: TASK-0004
+stage: B01
+title: Prove fake executor failure handling
+executor: fake
+depends_on:
+  - TASK-0003
+simulation:
+  result: failure
+verification:
+  commands:
+    - python scripts/bootstrap.py status

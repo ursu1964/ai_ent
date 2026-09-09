@@ -1,0 +1,12 @@
+id: TASK-0002
+stage: B00
+title: Validate bootstrap manifest loading
+executor: fake
+depends_on:
+  - TASK-0001
+outputs:
+  - manifest/bootstrap/bootstrap.yaml
+  - manifest/bootstrap/stages.yaml
+verification:
+  commands:
+    - python scripts/bootstrap.py status

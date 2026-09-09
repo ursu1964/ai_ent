@@ -1,0 +1,11 @@
+id: TASK-0003
+stage: B01
+title: Prove fake executor success path
+executor: fake
+depends_on:
+  - TASK-0002
+simulation:
+  result: success
+verification:
+  commands:
+    - python scripts/bootstrap.py run --task TASK-0003 --executor fake

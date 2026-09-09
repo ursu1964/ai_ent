@@ -1,0 +1,13 @@
+id: TASK-0001
+stage: B00
+title: Validate repository baseline
+executor: fake
+depends_on: []
+outputs:
+  - .gitignore
+  - .env.example
+  - pyproject.toml
+  - requirements.txt
+verification:
+  commands:
+    - python scripts/bootstrap.py preflight

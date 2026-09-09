@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+aient/
+.venv/
+venv/
+
+# Secrets / environment
+.env
+.env.*
+!.env.example
+
+# Bootstrap runtime state
+.bootstrap/
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime
+logs/
+tmp/
+run/
+
+# Generated compiler/runtime data
+.build/
+artifacts/
+
+# OS
+.DS_Store
+Thumbs.db

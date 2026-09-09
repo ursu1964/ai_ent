@@ -1,0 +1,12 @@
+version: 1
+project: ai-ent
+state_file: .bootstrap/state.json
+task_directory: manifest/bootstrap/tasks
+initial_stage: B00
+execution:
+  default_executor: fake
+  stop_on_failure: true
+verification:
+  required_commands:
+    - python scripts/bootstrap.py preflight
+    - python scripts/bootstrap.py status
