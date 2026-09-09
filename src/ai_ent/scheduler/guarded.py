@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -96,6 +97,7 @@ class GuardedAutonomousRunner:
         preflight: Preflight | None = None,
         authority_check: AuthorityCheck | None = None,
         run_id_factory: RunIdFactory | None = None,
+        persist_summary: bool = True,
     ) -> None:
         self.bounded_runner = bounded_runner or BoundedSchedulerRunner()
         self.recovery = recovery or SchedulerRecoveryService()
@@ -104,6 +106,7 @@ class GuardedAutonomousRunner:
         self.preflight = preflight or repository_preflight
         self.authority_check = authority_check or require_postgresql_authority
         self.run_id_factory = run_id_factory or (lambda: f"guarded-{uuid.uuid4().hex}")
+        self.persist_summary = persist_summary
 
     def dry_run(self, session: Session, config: GuardedRunConfig) -> GuardedRunResult:
         return self.run(session, GuardedRunConfig(**{**config.__dict__, "dry_run": True}))
@@ -135,62 +138,115 @@ class GuardedAutonomousRunner:
         recovery = self.recovery.recover_project(session, project_id=config.project_id)
         if not recovery.safe_to_continue:
             stop_reason = _stop_reason_for_recovery(recovery)
-            return self._result(
-                run_id,
-                config,
-                started_at,
-                stop_reason,
-                recovered_state=recovery,
-                human_action_required=stop_reason == "HUMAN_REQUIRED",
-                reconciliation_required=stop_reason == "RECONCILIATION_REQUIRED",
-                blockers=tuple(blocker for blocker in (recovery.remaining_blocker,) if blocker),
+            return self._record_summary(
+                session,
+                self._result(
+                    run_id,
+                    config,
+                    started_at,
+                    stop_reason,
+                    recovered_state=recovery,
+                    human_action_required=stop_reason == "HUMAN_REQUIRED",
+                    reconciliation_required=stop_reason == "RECONCILIATION_REQUIRED",
+                    blockers=tuple(blocker for blocker in (recovery.remaining_blocker,) if blocker),
+                ),
             )
 
         ready_tasks = tuple(task.id for task in self.readiness.list_ready_tasks(session, project_id=config.project_id))
         if config.dry_run:
-            return self._result(
-                run_id,
-                config,
-                started_at,
-                "NO_READY_TASK" if not ready_tasks else "COMPLETED_BOUND",
-                recovered_state=recovery,
-                dry_run=True,
-                remaining_ready_tasks=ready_tasks,
-                likely_next_task_id=ready_tasks[0] if ready_tasks else None,
+            return self._record_summary(
+                session,
+                self._result(
+                    run_id,
+                    config,
+                    started_at,
+                    "NO_READY_TASK" if not ready_tasks else "COMPLETED_BOUND",
+                    recovered_state=recovery,
+                    dry_run=True,
+                    remaining_ready_tasks=ready_tasks,
+                    likely_next_task_id=ready_tasks[0] if ready_tasks else None,
+                ),
             )
 
         if not self.codex_config.command:
-            return self._result(
-                run_id,
-                config,
-                started_at,
-                "BLOCKED",
-                recovered_state=recovery,
-                remaining_ready_tasks=ready_tasks,
-                likely_next_task_id=ready_tasks[0] if ready_tasks else None,
-                human_action_required=True,
-                blockers=("codex_not_configured:set AIENT_CODEX_COMMAND",),
+            return self._record_summary(
+                session,
+                self._result(
+                    run_id,
+                    config,
+                    started_at,
+                    "BLOCKED",
+                    recovered_state=recovery,
+                    remaining_ready_tasks=ready_tasks,
+                    likely_next_task_id=ready_tasks[0] if ready_tasks else None,
+                    human_action_required=True,
+                    blockers=("codex_not_configured:set AIENT_CODEX_COMMAND",),
+                ),
             )
 
         bounded = self.bounded_runner.run(session, project_id=config.project_id)
         remaining = tuple(task.id for task in self.readiness.list_ready_tasks(session, project_id=config.project_id))
-        return self._result(
-            run_id,
-            config,
-            started_at,
-            _map_bounded_stop_reason(bounded.stop_reason),
-            recovered_state=recovery,
-            bounded_result=bounded,
-            tasks_attempted=bounded.tasks_attempted,
-            tasks_completed=bounded.tasks_completed,
-            tasks_failed=bounded.tasks_failed,
-            repairs_attempted=bounded.repairs_attempted,
-            commits_created=bounded.commits_created,
-            human_action_required=bounded.stop_reason == "HUMAN_REQUIRED",
-            reconciliation_required=bounded.stop_reason == "RECONCILIATION_REQUIRED",
-            remaining_ready_tasks=remaining,
-            likely_next_task_id=remaining[0] if remaining else None,
+        return self._record_summary(
+            session,
+            self._result(
+                run_id,
+                config,
+                started_at,
+                _map_bounded_stop_reason(bounded.stop_reason),
+                recovered_state=recovery,
+                bounded_result=bounded,
+                tasks_attempted=bounded.tasks_attempted,
+                tasks_completed=bounded.tasks_completed,
+                tasks_failed=bounded.tasks_failed,
+                repairs_attempted=bounded.repairs_attempted,
+                commits_created=bounded.commits_created,
+                human_action_required=bounded.stop_reason == "HUMAN_REQUIRED",
+                reconciliation_required=bounded.stop_reason == "RECONCILIATION_REQUIRED",
+                remaining_ready_tasks=remaining,
+                likely_next_task_id=remaining[0] if remaining else None,
+            ),
         )
+
+    def _record_summary(self, session: Session, result: GuardedRunResult) -> GuardedRunResult:
+        if not self.persist_summary:
+            return result
+        authority = BootstrapRunRepository().get_active_authority(session, result.project_id)
+        if authority is None:
+            return result
+        state = json.dumps(
+            {
+                "kind": "guarded_run_summary",
+                "run_id": result.run_id,
+                "project_id": result.project_id,
+                "dry_run": result.dry_run,
+                "stop_reason": result.stop_reason,
+                "tasks_attempted": result.tasks_attempted,
+                "tasks_completed": result.tasks_completed,
+                "tasks_failed": result.tasks_failed,
+                "repairs_attempted": result.repairs_attempted,
+                "commits_created": list(result.commits_created),
+                "human_action_required": result.human_action_required,
+                "reconciliation_required": result.reconciliation_required,
+                "remaining_ready_tasks": list(result.remaining_ready_tasks),
+                "likely_next_task_id": result.likely_next_task_id,
+                "blockers": list(result.blockers),
+                "recovery_action": result.recovered_state.action if result.recovered_state else None,
+                "recovery_stage": result.recovered_state.detected_stage if result.recovered_state else None,
+            },
+            sort_keys=True,
+        )
+        BootstrapRunRepository().append_checkpoint(
+            session,
+            checkpoint_id=f"{result.run_id}-summary",
+            run_id=authority.run_id,
+            checkpoint_kind="state_snapshot",
+            state=state,
+            task_id=result.bounded_result.last_task_id if result.bounded_result else None,
+            execution_id=result.bounded_result.last_execution_id if result.bounded_result else None,
+            verified_commit=result.commits_created[-1] if result.commits_created else None,
+            sequence=BootstrapRunRepository().next_checkpoint_sequence(session, authority.run_id),
+        )
+        return result
 
     def _result(
         self,

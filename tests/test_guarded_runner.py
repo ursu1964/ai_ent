@@ -117,6 +117,7 @@ def make_runner(
         preflight=preflight,
         authority_check=authority,
         run_id_factory=lambda: "guarded-1",
+        persist_summary=False,
     )
 
 
