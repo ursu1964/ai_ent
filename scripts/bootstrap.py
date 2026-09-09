@@ -135,7 +135,10 @@ def codex_proof(_: argparse.Namespace) -> int:
         print(f"commit: {result.commit_id}")
     if result.committed_tree_hash:
         print(f"committed_tree: {result.committed_tree_hash}")
-    return 0 if result.execution.ok and result.verification and result.verification.ok else 1
+    if result.execution.ok and result.verification and result.verification.ok:
+        mark_completed("TASK-0013", result.execution.message)
+        return 0
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
