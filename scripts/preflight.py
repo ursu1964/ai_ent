@@ -6,6 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
+from ai_ent.persistence.database import Database
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -47,6 +50,8 @@ def check() -> int:
     checks.append(("docker-compose", *_run(["docker", "compose", "version"])))
     checks.append(("docker-daemon", *_run(["docker", "info"])))
     checks.append(("psql", *_run(["psql", "--version"])))
+    checks.append(("postgresql-config", *_check_postgresql_config()))
+    checks.append(("postgresql-connection", *_check_postgresql_connection()))
 
     ollama_path = shutil.which("ollama")
     if ollama_path:
@@ -56,7 +61,14 @@ def check() -> int:
 
     failed_required = False
     for name, ok, detail in checks:
-        optional = {"docker", "docker-compose", "docker-daemon", "psql"}
+        optional = {
+            "docker",
+            "docker-compose",
+            "docker-daemon",
+            "psql",
+            "postgresql-config",
+            "postgresql-connection",
+        }
         status = "PASS" if ok else "WARN" if name in optional else "FAIL"
         print(f"{status} {name}: {detail}")
         if not ok and status == "FAIL":
@@ -68,6 +80,27 @@ def check() -> int:
         print("WARN active-venv: not activated")
 
     return 1 if failed_required else 0
+
+
+def _check_postgresql_config() -> tuple[bool, str]:
+    try:
+        settings = load_database_settings(ROOT / ".env")
+    except DatabaseConfigError as exc:
+        return False, str(exc)
+    return True, settings.safe_url
+
+
+def _check_postgresql_connection() -> tuple[bool, str]:
+    try:
+        settings = load_database_settings(ROOT / ".env")
+    except DatabaseConfigError as exc:
+        return False, str(exc)
+    database = Database(settings)
+    try:
+        health = database.health()
+    finally:
+        database.dispose()
+    return health.ok, health.detail
 
 
 if __name__ == "__main__":

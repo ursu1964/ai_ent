@@ -11,3 +11,6 @@ stages:
   - id: B03
     name: Execution Isolation
     description: Add Git worktree boundaries and verified commit promotion.
+  - id: B04
+    name: Persistence Foundation
+    description: Establish PostgreSQL persistence primitives and migration groundwork.

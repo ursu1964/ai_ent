@@ -1,0 +1,25 @@
+id: TASK-0014
+stage: B04
+title: PostgreSQL persistence foundation
+objective: >
+  Establish the production-quality PostgreSQL persistence abstraction required
+  by subsequent AI-Enterprise runtime-state tasks without migrating bootstrap
+  state into PostgreSQL yet.
+executor: fake
+depends_on:
+  - TASK-0013
+allowed_paths:
+  - src/ai_ent/persistence/**
+  - manifest/bootstrap/tasks/TASK-0014.yaml
+  - manifest/bootstrap/stages.yaml
+  - scripts/preflight.py
+  - tests/**
+outputs:
+  - src/ai_ent/persistence/config.py
+  - src/ai_ent/persistence/database.py
+  - src/ai_ent/persistence/models.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
