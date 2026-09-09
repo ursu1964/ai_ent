@@ -73,7 +73,7 @@ class TaskClaimingService:
 
         active_lease = self.leases.active_for_task(session, task_id)
         if active_lease is not None:
-            if active_lease.expires_at > now:
+            if _as_utc(active_lease.expires_at) > now:
                 return ClaimResult("ALREADY_LEASED", task_id=task_id, owner_id=owner_id)
             active_lease.status = "expired"
 
@@ -117,7 +117,7 @@ class TaskClaimingService:
             return LeaseActionResult("WRONG_OWNER", lease)
         if lease.status != "active":
             return LeaseActionResult("NOT_ACTIVE", lease)
-        if lease.expires_at <= now:
+        if _as_utc(lease.expires_at) <= now:
             lease.status = "expired"
             session.flush()
             return LeaseActionResult("EXPIRED", lease)
@@ -135,7 +135,7 @@ class TaskClaimingService:
     def has_valid_lease(self, session: Session, *, task_id: str, owner_id: str) -> bool:
         now = database_now(session)
         lease = self.leases.active_for_task(session, task_id)
-        return lease is not None and lease.owner_id == owner_id and lease.expires_at > now
+        return lease is not None and lease.owner_id == owner_id and _as_utc(lease.expires_at) > now
 
     def _finish(
         self,
@@ -153,7 +153,7 @@ class TaskClaimingService:
             return LeaseActionResult("WRONG_OWNER", lease)
         if lease.status != "active":
             return LeaseActionResult("NOT_ACTIVE", lease)
-        if lease.expires_at <= now:
+        if _as_utc(lease.expires_at) <= now:
             lease.status = "expired"
             session.flush()
             return LeaseActionResult("EXPIRED", lease)
@@ -171,3 +171,7 @@ def database_now(session: Session) -> datetime:
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=UTC)
     return datetime.now(UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=UTC)

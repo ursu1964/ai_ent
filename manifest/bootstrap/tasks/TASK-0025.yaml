@@ -1,0 +1,22 @@
+id: TASK-0025
+stage: B05
+title: Finalize executed candidate with verification and commit
+objective: >
+  Freeze an executed task worktree candidate, enforce scope checks, run
+  independent verification, commit only the verified candidate, persist task
+  and execution completion, finalize the lease, and stop.
+executor: fake
+depends_on:
+  - TASK-0024
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0025.yaml
+  - src/ai_ent/bootstrap/codex.py
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/finalization.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

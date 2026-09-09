@@ -2,6 +2,7 @@
 
 from ai_ent.scheduler.claiming import ClaimResult, LeaseActionResult, TaskClaimingService
 from ai_ent.scheduler.execution import ClaimedExecutionResult, ClaimedExecutionRunner
+from ai_ent.scheduler.finalization import ExecutionFinalizationResult, ExecutionFinalizer
 from ai_ent.scheduler.iteration import (
     ExecutionPackageFactory,
     SchedulerIterationResult,
@@ -13,6 +14,8 @@ __all__ = [
     "ClaimResult",
     "ClaimedExecutionResult",
     "ClaimedExecutionRunner",
+    "ExecutionFinalizationResult",
+    "ExecutionFinalizer",
     "ExecutionPackageFactory",
     "LeaseActionResult",
     "ReadinessDecision",

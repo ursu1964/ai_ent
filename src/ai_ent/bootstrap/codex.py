@@ -47,8 +47,9 @@ def build_execution_package(
             *(f"- {path}" for path in task.allowed_paths),
             "Required output:",
             *(f"- {path}" for path in task.outputs),
-            "For TASK-0013, create tests/fixtures/codex_proof.txt with exactly:",
-            "AIENT_CODEX_PROOF=TASK-0013",
+            "Verification commands:",
+            *(f"- {command}" for command in task.verification.commands),
+            "Complete only this task's objective and required outputs.",
             "Do not verify, commit, push, or schedule another task.",
             "Do not modify source code, manifests, scripts, .env, virtualenvs, or Git metadata.",
         )

@@ -43,6 +43,10 @@ def make_task() -> BootstrapTask:
             "executor": "codex",
             "depends_on": [],
             "allowed_paths": ["src/**", "tests/**"],
+            "outputs": ["tests/fixtures/adapter_contract.txt"],
+            "verification": {
+                "commands": ["test -f tests/fixtures/adapter_contract.txt"],
+            },
         }
     )
 
@@ -70,7 +74,8 @@ def test_execution_package_maps_task_to_invocation_contract(tmp_path: Path) -> N
     assert ".env" in package.prohibited_paths
     assert package.timeout_seconds == 30
     assert "Do not verify, commit, push, or schedule another task." in package.instructions
-    assert "AIENT_CODEX_PROOF=TASK-0013" in package.instructions
+    assert "tests/fixtures/adapter_contract.txt" in package.instructions
+    assert "test -f tests/fixtures/adapter_contract.txt" in package.instructions
 
 
 def test_missing_codex_configuration_is_deterministic() -> None:
