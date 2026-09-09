@@ -10,6 +10,7 @@ from ai_ent.persistence.database import (
 from ai_ent.persistence.repositories import (
     CheckpointRepository,
     ExecutionRepository,
+    LeaseRepository,
     ProjectRepository,
     TaskRepository,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "Database",
     "DatabaseSettings",
     "ExecutionRepository",
+    "LeaseRepository",
     "PersistenceError",
     "PersistenceHealth",
     "PersistenceUnavailable",

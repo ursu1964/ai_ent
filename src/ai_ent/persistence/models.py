@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Literal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 ProjectStatus = Literal["active", "archived"]
@@ -11,6 +21,7 @@ TaskStatus = Literal["pending", "running", "passed", "failed", "blocked"]
 ExecutionClass = Literal["implementation", "simulation"]
 ExecutionStatus = Literal["pending", "running", "succeeded", "failed", "timeout", "cancelled"]
 CheckpointType = Literal["task", "execution", "bootstrap", "runtime"]
+LeaseStatus = Literal["active", "released", "completed", "expired"]
 
 
 def utc_now() -> datetime:
@@ -73,6 +84,7 @@ class Task(TimestampMixin, Base):
     )
     executions: Mapped[list[Execution]] = relationship(back_populates="task")
     checkpoints: Mapped[list[Checkpoint]] = relationship(back_populates="task")
+    leases: Mapped[list[TaskLease]] = relationship(back_populates="task")
 
     __table_args__ = (
         CheckConstraint(
@@ -129,6 +141,7 @@ class Execution(TimestampMixin, Base):
 
     task: Mapped[Task] = relationship(back_populates="executions")
     checkpoints: Mapped[list[Checkpoint]] = relationship(back_populates="execution")
+    lease: Mapped[TaskLease | None] = relationship(back_populates="execution")
 
     __table_args__ = (
         CheckConstraint(
@@ -136,6 +149,7 @@ class Execution(TimestampMixin, Base):
             name="ck_executions_status",
         ),
         CheckConstraint("attempt >= 1", name="ck_executions_attempt_positive"),
+        UniqueConstraint("task_id", "attempt", name="uq_executions_task_attempt"),
         Index("ix_executions_task_status", "task_id", "status"),
     )
 
@@ -161,4 +175,44 @@ class Checkpoint(TimestampMixin, Base):
         ),
         Index("ix_checkpoints_task_created", "task_id", "created_at"),
         Index("ix_checkpoints_execution", "execution_id"),
+    )
+
+
+class TaskLease(TimestampMixin, Base):
+    __tablename__ = "task_leases"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False)
+    execution_id: Mapped[str] = mapped_column(
+        ForeignKey("executions.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    owner_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[LeaseStatus] = mapped_column(String(40), default="active", nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    renewed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    task: Mapped[Task] = relationship(back_populates="leases")
+    execution: Mapped[Execution] = relationship(back_populates="lease")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('active', 'released', 'completed', 'expired')",
+            name="ck_task_leases_status",
+        ),
+        CheckConstraint("expires_at > acquired_at", name="ck_task_leases_expires_after_acquire"),
+        Index(
+            "uq_task_leases_one_active_per_task",
+            "task_id",
+            unique=True,
+            postgresql_where=(status == "active"),
+            sqlite_where=(status == "active"),
+        ),
+        Index("ix_task_leases_task_status", "task_id", "status"),
+        Index("ix_task_leases_owner_status", "owner_id", "status"),
+        Index("ix_task_leases_expires_at", "expires_at"),
     )

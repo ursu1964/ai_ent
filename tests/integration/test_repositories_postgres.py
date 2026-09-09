@@ -10,7 +10,14 @@ from sqlalchemy import delete
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
-from ai_ent.persistence.models import Checkpoint, Execution, Project, Task, TaskDependency
+from ai_ent.persistence.models import (
+    Checkpoint,
+    Execution,
+    Project,
+    Task,
+    TaskDependency,
+    TaskLease,
+)
 from ai_ent.persistence.repositories import (
     DuplicateDependencyError,
     DuplicateProjectError,
@@ -32,6 +39,7 @@ def integration_database() -> Database:
 
 def clean_tables(database: Database) -> None:
     with database.session() as session:
+        session.execute(delete(TaskLease))
         session.execute(delete(Checkpoint))
         session.execute(delete(Execution))
         session.execute(delete(TaskDependency))

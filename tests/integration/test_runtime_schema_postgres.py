@@ -32,5 +32,6 @@ def test_runtime_schema_migrates_from_0015_to_head() -> None:
         "task_dependencies",
         "executions",
         "checkpoints",
+        "task_leases",
         "alembic_version",
     }.issubset(tables)

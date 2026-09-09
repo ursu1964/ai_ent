@@ -39,3 +39,11 @@ class DuplicateCheckpointError(RepositoryError):
 
 class MissingCheckpointError(RepositoryError):
     """Raised when a checkpoint is required but missing."""
+
+
+class DuplicateLeaseError(RepositoryError):
+    """Raised when a lease identity already exists or violates ownership rules."""
+
+
+class MissingLeaseError(RepositoryError):
+    """Raised when a lease is required but missing."""

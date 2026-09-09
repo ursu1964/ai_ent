@@ -1,0 +1,26 @@
+id: TASK-0019
+stage: B04
+title: Transactional task claiming and leases
+objective: >
+  Introduce a transactional task-claiming mechanism that guarantees at most
+  one valid claimant owns a task lease at a time under concurrent PostgreSQL
+  workers.
+executor: fake
+depends_on:
+  - TASK-0018
+allowed_paths:
+  - src/ai_ent/persistence/__init__.py
+  - src/ai_ent/persistence/models.py
+  - src/ai_ent/persistence/repositories/**
+  - src/ai_ent/scheduler/**
+  - migrations/versions/0017_task_leases.py
+  - manifest/bootstrap/tasks/TASK-0019.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/claiming.py
+  - migrations/versions/0017_task_leases.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

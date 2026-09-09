@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import create_engine, event, select
@@ -13,6 +14,7 @@ from ai_ent.persistence.models import (
     Project,
     Task,
     TaskDependency,
+    TaskLease,
 )
 
 EXPECTED_TABLES = {
@@ -21,6 +23,7 @@ EXPECTED_TABLES = {
     "task_dependencies",
     "executions",
     "checkpoints",
+    "task_leases",
 }
 
 
@@ -158,6 +161,31 @@ def test_execution_relationship() -> None:
         assert persisted is not None
         assert persisted.task.id == "TASK-1"
         assert persisted.attempt == 1
+
+
+def test_task_lease_relationship() -> None:
+    factory = session_factory()
+    with factory() as session:
+        task = seed_task(session)
+        now = datetime.now(UTC)
+        execution = Execution(id="execution-1", task_id=task.id, executor_type="fake")
+        lease = TaskLease(
+            id="lease-1",
+            task_id=task.id,
+            execution_id=execution.id,
+            owner_id="worker-1",
+            acquired_at=now,
+            renewed_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+        session.add_all([execution, lease])
+        session.commit()
+
+        persisted = session.get(TaskLease, lease.id)
+        assert persisted is not None
+        assert persisted.task.id == "TASK-1"
+        assert persisted.execution.id == "execution-1"
+        assert persisted.status == "active"
 
 
 def test_checkpoint_relationship() -> None:
