@@ -1,0 +1,22 @@
+id: TASK-0006
+stage: B01
+title: Define bootstrap task contracts and domain model
+objective: >
+  Move task parsing, validation, and DAG readiness logic behind typed Python
+  models so prose specifications can become bounded task manifests.
+executor: fake
+depends_on:
+  - TASK-0005
+allowed_paths:
+  - src/ai_ent/bootstrap/models.py
+  - src/ai_ent/bootstrap/manifest.py
+  - schemas/bootstrap-task.schema.json
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/models.py
+  - src/ai_ent/bootstrap/manifest.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

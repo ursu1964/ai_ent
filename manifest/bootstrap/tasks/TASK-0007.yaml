@@ -1,0 +1,20 @@
+id: TASK-0007
+stage: B01
+title: Strengthen executor abstraction
+objective: >
+  Keep executor behavior behind a replaceable interface and keep CodexExecutor
+  disabled until FakeExecutor and independent verification are proven.
+executor: fake
+depends_on:
+  - TASK-0006
+allowed_paths:
+  - src/ai_ent/bootstrap/executors.py
+  - scripts/bootstrap.py
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/executors.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

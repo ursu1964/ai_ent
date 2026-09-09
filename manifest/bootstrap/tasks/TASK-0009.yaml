@@ -1,0 +1,20 @@
+id: TASK-0009
+stage: B01
+title: Harden checkpoint and resume state
+objective: >
+  Record completed and blocked task outcomes in ignored bootstrap state so
+  resume can continue from the next ready task.
+executor: fake
+depends_on:
+  - TASK-0008
+allowed_paths:
+  - src/ai_ent/bootstrap/state.py
+  - scripts/bootstrap.py
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/state.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

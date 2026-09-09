@@ -1,0 +1,17 @@
+id: TASK-0012
+stage: B03
+title: Prepare Codex executor adapter contract
+objective: >
+  Define the execution package emitted for a future CodexExecutor without
+  enabling recursive autonomous Codex execution.
+executor: fake
+depends_on:
+  - TASK-0011
+allowed_paths:
+  - src/ai_ent/bootstrap/codex.py
+  - tests/**
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

@@ -1,0 +1,20 @@
+id: TASK-0010
+stage: B03
+title: Prepare Git worktree isolation boundary
+objective: >
+  Define the task worktree path contract before enabling implementation tasks
+  outside the main working tree.
+executor: fake
+depends_on:
+  - TASK-0009
+allowed_paths:
+  - src/ai_ent/bootstrap/worktree.py
+  - scripts/bootstrap.py
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/worktree.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

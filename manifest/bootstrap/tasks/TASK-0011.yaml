@@ -1,0 +1,18 @@
+id: TASK-0011
+stage: B03
+title: Add verified commit boundary
+objective: >
+  Promote task candidates to Git commits only after independent verification
+  passes and scope checks succeed.
+executor: fake
+depends_on:
+  - TASK-0010
+allowed_paths:
+  - src/ai_ent/bootstrap/git.py
+  - scripts/bootstrap.py
+  - tests/**
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

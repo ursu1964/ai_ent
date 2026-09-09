@@ -1,67 +1,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
 
-import yaml
-
-ROOT = Path(__file__).resolve().parents[1]
-BOOTSTRAP = ROOT / "manifest" / "bootstrap" / "bootstrap.yaml"
-TASK_DIR = ROOT / "manifest" / "bootstrap" / "tasks"
-STATE_FILE = ROOT / ".bootstrap" / "state.json"
-
-
-@dataclass(frozen=True)
-class ExecutionResult:
-    ok: bool
-    message: str
-
-
-class FakeExecutor:
-    def execute(self, task: dict[str, Any]) -> ExecutionResult:
-        simulation = task.get("simulation") or {}
-        result = simulation.get("result", "success")
-        if result == "success":
-            return ExecutionResult(True, f"{task['id']} simulated successfully")
-        return ExecutionResult(False, f"{task['id']} simulated {result}")
-
-
-def load_yaml(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as handle:
-        loaded = yaml.safe_load(handle) or {}
-    if not isinstance(loaded, dict):
-        raise TypeError(f"{path} must contain a YAML mapping")
-    return loaded
-
-
-def load_tasks() -> dict[str, dict[str, Any]]:
-    tasks: dict[str, dict[str, Any]] = {}
-    for path in sorted(TASK_DIR.glob("TASK-*.yaml")):
-        task = load_yaml(path)
-        task_id = task.get("id")
-        if not isinstance(task_id, str):
-            raise TypeError(f"{path} is missing a string id")
-        tasks[task_id] = task
-    return tasks
-
-
-def load_state() -> dict[str, Any]:
-    if not STATE_FILE.exists():
-        return {"completed_tasks": []}
-    with STATE_FILE.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with STATE_FILE.open("w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, sort_keys=True)
-        handle.write("\n")
+from ai_ent.bootstrap.executors import get_executor
+from ai_ent.bootstrap.manifest import (
+    load_bootstrap,
+    load_tasks,
+    ready_tasks,
+    task_status,
+)
+from ai_ent.bootstrap.paths import ROOT
+from ai_ent.bootstrap.state import load_state, mark_blocked, mark_completed
+from ai_ent.bootstrap.verifier import verify_task
 
 
 def preflight(_: argparse.Namespace) -> int:
@@ -69,16 +21,19 @@ def preflight(_: argparse.Namespace) -> int:
 
 
 def status(_: argparse.Namespace) -> int:
-    bootstrap = load_yaml(BOOTSTRAP)
+    bootstrap = load_bootstrap()
     tasks = load_tasks()
     state = load_state()
     completed = set(state.get("completed_tasks", []))
+    blocked = set(state.get("blocked_tasks", {}))
     print(f"project: {bootstrap.get('project')}")
     print(f"tasks: {len(tasks)}")
     print(f"completed: {len(completed)}")
+    print(f"ready: {', '.join(ready_tasks(tasks, completed, blocked)) or 'none'}")
     for task_id in sorted(tasks):
-        marker = "done" if task_id in completed else "ready"
-        print(f"{task_id}: {marker} - {tasks[task_id].get('title')}")
+        task = tasks[task_id]
+        marker = task_status(task, completed=completed, blocked=blocked)
+        print(f"{task_id}: {marker} - {task.title}")
     return 0
 
 
@@ -89,21 +44,41 @@ def run(args: argparse.Namespace) -> int:
         print(f"Unknown task: {args.task}", file=sys.stderr)
         return 2
 
-    executor_name = args.executor or task.get("executor", "fake")
-    if executor_name != "fake":
-        print(f"Executor not available yet: {executor_name}", file=sys.stderr)
+    state = load_state()
+    completed = set(state.get("completed_tasks", []))
+    if not args.force:
+        missing = [dependency for dependency in task.depends_on if dependency not in completed]
+        if missing:
+            reason = f"{task.id} is waiting for dependencies: {', '.join(missing)}"
+            print(reason, file=sys.stderr)
+            mark_blocked(task.id, reason)
+            return 1
+
+    executor_name = args.executor or task.executor
+    try:
+        executor = get_executor(executor_name)
+    except (NotImplementedError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
-    result = FakeExecutor().execute(task)
+    result = executor.execute(task)
     print(result.message)
     if not result.ok:
+        mark_blocked(task.id, result.message)
         return 1
 
-    state = load_state()
-    completed = list(dict.fromkeys([*state.get("completed_tasks", []), task["id"]]))
-    state["completed_tasks"] = completed
-    state["last_completed_task"] = task["id"]
-    save_state(state)
+    verification = verify_task(task)
+    for command in verification.commands:
+        status_code = "PASS" if command.ok else "FAIL"
+        print(f"{status_code} verify: {command.command}")
+        if not command.ok and command.output:
+            print(command.output)
+    if not verification.ok:
+        reason = f"{task.id} verification failed"
+        mark_blocked(task.id, reason)
+        return 1
+
+    mark_completed(task.id, result.message)
     return 0
 
 
@@ -150,6 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--task", required=True)
     run_parser.add_argument("--executor", choices=["fake"])
+    run_parser.add_argument("--force", action="store_true")
     run_parser.set_defaults(func=run)
 
     resume_parser = subparsers.add_parser("resume")

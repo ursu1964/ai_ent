@@ -8,4 +8,4 @@ simulation:
   result: success
 verification:
   commands:
-    - python scripts/bootstrap.py run --task TASK-0003 --executor fake
+    - python scripts/bootstrap.py status

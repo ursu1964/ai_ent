@@ -3,7 +3,7 @@ stage: B01
 title: Prepare Codex executor boundary
 executor: fake
 depends_on:
-  - TASK-0004
+  - TASK-0003
 outputs:
   - scripts/bootstrap.py
 verification:

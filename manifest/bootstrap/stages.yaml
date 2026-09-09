@@ -8,3 +8,6 @@ stages:
   - id: B02
     name: Runtime Foundation
     description: Add durable state, database migrations, and service boundaries.
+  - id: B03
+    name: Execution Isolation
+    description: Add Git worktree boundaries and verified commit promotion.

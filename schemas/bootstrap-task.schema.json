@@ -17,9 +17,18 @@
       "type": "string",
       "minLength": 1
     },
+    "objective": {
+      "type": "string"
+    },
     "executor": {
       "type": "string",
       "enum": ["fake", "codex"]
+    },
+    "allowed_paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "depends_on": {
       "type": "array",

@@ -1,0 +1,20 @@
+id: TASK-0008
+stage: B01
+title: Add independent verification boundary
+objective: >
+  Verify task candidates by running declared commands in a separate process
+  instead of trusting executor self-report.
+executor: fake
+depends_on:
+  - TASK-0007
+allowed_paths:
+  - src/ai_ent/bootstrap/verifier.py
+  - scripts/bootstrap.py
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/verifier.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
