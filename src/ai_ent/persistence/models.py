@@ -22,6 +22,8 @@ ExecutionClass = Literal["implementation", "simulation"]
 ExecutionStatus = Literal["pending", "running", "succeeded", "failed", "timeout", "cancelled"]
 CheckpointType = Literal["task", "execution", "bootstrap", "runtime"]
 LeaseStatus = Literal["active", "released", "completed", "expired"]
+BootstrapRunStatus = Literal["pending", "running", "blocked", "failed", "completed"]
+BootstrapCheckpointKind = Literal["task_completed", "run_blocked", "run_failed", "run_completed", "state_snapshot"]
 
 
 def utc_now() -> datetime:
@@ -54,6 +56,7 @@ class Project(TimestampMixin, Base):
     status: Mapped[ProjectStatus] = mapped_column(String(40), default="active", nullable=False)
 
     tasks: Mapped[list[Task]] = relationship(back_populates="project")
+    bootstrap_runs: Mapped[list[BootstrapRun]] = relationship(back_populates="project")
 
     __table_args__ = (
         CheckConstraint("status in ('active', 'archived')", name="ck_projects_status"),
@@ -215,4 +218,66 @@ class TaskLease(TimestampMixin, Base):
         Index("ix_task_leases_task_status", "task_id", "status"),
         Index("ix_task_leases_owner_status", "owner_id", "status"),
         Index("ix_task_leases_expires_at", "expires_at"),
+    )
+
+
+class BootstrapRun(TimestampMixin, Base):
+    __tablename__ = "bootstrap_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    status: Mapped[BootstrapRunStatus] = mapped_column(String(40), default="pending", nullable=False)
+    manifest_ref: Mapped[str] = mapped_column(String(240), nullable=False)
+    baseline_commit: Mapped[str | None] = mapped_column(String(128))
+    current_stage: Mapped[str | None] = mapped_column(String(80))
+    current_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"))
+    last_completed_task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"))
+    last_verified_commit: Mapped[str | None] = mapped_column(String(128))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_classification: Mapped[str | None] = mapped_column(String(120))
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+
+    project: Mapped[Project] = relationship(back_populates="bootstrap_runs")
+    current_task: Mapped[Task | None] = relationship(foreign_keys=[current_task_id])
+    last_completed_task: Mapped[Task | None] = relationship(foreign_keys=[last_completed_task_id])
+    bootstrap_checkpoints: Mapped[list[BootstrapCheckpoint]] = relationship(back_populates="run")
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'running', 'blocked', 'failed', 'completed')",
+            name="ck_bootstrap_runs_status",
+        ),
+        Index("ix_bootstrap_runs_project_status", "project_id", "status"),
+        Index("ix_bootstrap_runs_current_task", "current_task_id"),
+        Index("ix_bootstrap_runs_last_completed_task", "last_completed_task_id"),
+    )
+
+
+class BootstrapCheckpoint(TimestampMixin, Base):
+    __tablename__ = "bootstrap_checkpoints"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("bootstrap_runs.id", ondelete="RESTRICT"), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    checkpoint_kind: Mapped[BootstrapCheckpointKind] = mapped_column(String(40), nullable=False)
+    task_id: Mapped[str | None] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"))
+    execution_id: Mapped[str | None] = mapped_column(ForeignKey("executions.id", ondelete="RESTRICT"))
+    verified_commit: Mapped[str | None] = mapped_column(String(128))
+    tree_hash: Mapped[str | None] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+
+    run: Mapped[BootstrapRun] = relationship(back_populates="bootstrap_checkpoints")
+    task: Mapped[Task | None] = relationship(foreign_keys=[task_id])
+    execution: Mapped[Execution | None] = relationship(foreign_keys=[execution_id])
+
+    __table_args__ = (
+        CheckConstraint("sequence >= 1", name="ck_bootstrap_checkpoints_sequence_positive"),
+        CheckConstraint(
+            "checkpoint_kind in ('task_completed', 'run_blocked', 'run_failed', 'run_completed', 'state_snapshot')",
+            name="ck_bootstrap_checkpoints_kind",
+        ),
+        UniqueConstraint("run_id", "sequence", name="uq_bootstrap_checkpoints_run_sequence"),
+        Index("ix_bootstrap_checkpoints_run_created", "run_id", "created_at"),
+        Index("ix_bootstrap_checkpoints_task", "task_id"),
     )

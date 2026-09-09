@@ -8,6 +8,7 @@ from ai_ent.persistence.database import (
     PersistenceUnavailable,
 )
 from ai_ent.persistence.repositories import (
+    BootstrapRunRepository,
     CheckpointRepository,
     ExecutionRepository,
     LeaseRepository,
@@ -16,6 +17,7 @@ from ai_ent.persistence.repositories import (
 )
 
 __all__ = [
+    "BootstrapRunRepository",
     "CheckpointRepository",
     "Database",
     "DatabaseSettings",

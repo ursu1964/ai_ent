@@ -47,3 +47,19 @@ class DuplicateLeaseError(RepositoryError):
 
 class MissingLeaseError(RepositoryError):
     """Raised when a lease is required but missing."""
+
+
+class DuplicateBootstrapRunError(RepositoryError):
+    """Raised when a bootstrap run identity already exists with different data."""
+
+
+class MissingBootstrapRunError(RepositoryError):
+    """Raised when a bootstrap run is required but missing."""
+
+
+class DuplicateBootstrapCheckpointError(RepositoryError):
+    """Raised when a bootstrap checkpoint identity or sequence already exists."""
+
+
+class MissingBootstrapCheckpointError(RepositoryError):
+    """Raised when a bootstrap checkpoint is required but missing."""

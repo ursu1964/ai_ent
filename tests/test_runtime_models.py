@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_ent.persistence.models import (
     Base,
+    BootstrapCheckpoint,
+    BootstrapRun,
     Checkpoint,
     Execution,
     Project,
@@ -24,6 +26,8 @@ EXPECTED_TABLES = {
     "executions",
     "checkpoints",
     "task_leases",
+    "bootstrap_runs",
+    "bootstrap_checkpoints",
 }
 
 
@@ -186,6 +190,39 @@ def test_task_lease_relationship() -> None:
         assert persisted.task.id == "TASK-1"
         assert persisted.execution.id == "execution-1"
         assert persisted.status == "active"
+
+
+def test_bootstrap_run_and_checkpoint_relationship() -> None:
+    factory = session_factory()
+    with factory() as session:
+        task = seed_task(session)
+        run = BootstrapRun(
+            id="run-1",
+            project_id=task.project_id,
+            status="running",
+            manifest_ref="manifest/bootstrap",
+            baseline_commit="abc123",
+            current_stage="B04",
+            current_task_id=task.id,
+        )
+        checkpoint = BootstrapCheckpoint(
+            id="bootstrap-checkpoint-1",
+            run_id=run.id,
+            sequence=1,
+            checkpoint_kind="task_completed",
+            task_id=task.id,
+            verified_commit="def456",
+            state='{"completed":["TASK-1"]}',
+        )
+        session.add_all([run, checkpoint])
+        session.commit()
+
+        persisted = session.get(BootstrapRun, run.id)
+        assert persisted is not None
+        assert persisted.project.id == task.project_id
+        assert persisted.current_task is not None
+        assert persisted.current_task.id == task.id
+        assert persisted.bootstrap_checkpoints[0].verified_commit == "def456"
 
 
 def test_checkpoint_relationship() -> None:

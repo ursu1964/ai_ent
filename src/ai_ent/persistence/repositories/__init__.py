@@ -1,13 +1,18 @@
 """Repository boundary for persistence access."""
 
+from ai_ent.persistence.repositories.bootstrap import BootstrapRunRepository
 from ai_ent.persistence.repositories.checkpoints import CheckpointRepository
 from ai_ent.persistence.repositories.errors import (
+    DuplicateBootstrapCheckpointError,
+    DuplicateBootstrapRunError,
     DuplicateCheckpointError,
     DuplicateDependencyError,
     DuplicateExecutionError,
     DuplicateLeaseError,
     DuplicateProjectError,
     DuplicateTaskError,
+    MissingBootstrapCheckpointError,
+    MissingBootstrapRunError,
     MissingCheckpointError,
     MissingExecutionError,
     MissingLeaseError,
@@ -21,7 +26,10 @@ from ai_ent.persistence.repositories.projects import ProjectRepository
 from ai_ent.persistence.repositories.tasks import TaskRepository
 
 __all__ = [
+    "BootstrapRunRepository",
     "CheckpointRepository",
+    "DuplicateBootstrapCheckpointError",
+    "DuplicateBootstrapRunError",
     "DuplicateCheckpointError",
     "DuplicateDependencyError",
     "DuplicateExecutionError",
@@ -30,6 +38,8 @@ __all__ = [
     "DuplicateTaskError",
     "ExecutionRepository",
     "LeaseRepository",
+    "MissingBootstrapCheckpointError",
+    "MissingBootstrapRunError",
     "MissingCheckpointError",
     "MissingExecutionError",
     "MissingLeaseError",

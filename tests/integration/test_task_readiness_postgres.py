@@ -15,6 +15,8 @@ from ai_ent.persistence.config import DatabaseConfigError, load_database_setting
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
 from ai_ent.persistence.models import (
+    BootstrapCheckpoint,
+    BootstrapRun,
     Checkpoint,
     Execution,
     Project,
@@ -39,6 +41,8 @@ def integration_database() -> Database:
 
 def clean_tables(database: Database) -> None:
     with database.session() as session:
+        session.execute(delete(BootstrapCheckpoint))
+        session.execute(delete(BootstrapRun))
         session.execute(delete(TaskLease))
         session.execute(delete(Checkpoint))
         session.execute(delete(Execution))

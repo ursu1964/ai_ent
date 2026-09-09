@@ -1,0 +1,25 @@
+id: TASK-0021
+stage: B04
+title: DB-backed bootstrap checkpoint state
+objective: >
+  Introduce durable PostgreSQL persistence for bootstrap-run progress and
+  append-only bootstrap checkpoints while leaving .bootstrap/state.json as
+  the active compatibility source for the next migration task.
+executor: fake
+depends_on:
+  - TASK-0020
+allowed_paths:
+  - src/ai_ent/persistence/__init__.py
+  - src/ai_ent/persistence/models.py
+  - src/ai_ent/persistence/repositories/**
+  - migrations/versions/0018_bootstrap_state.py
+  - manifest/bootstrap/tasks/TASK-0021.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/persistence/repositories/bootstrap.py
+  - migrations/versions/0018_bootstrap_state.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
