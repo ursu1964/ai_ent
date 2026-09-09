@@ -7,8 +7,10 @@ from ai_ent.project_manifest import (
     load_manifest_documents,
     resolve_capabilities,
     validate_project_manifest,
+    validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_trace_validation,
 )
 
 
@@ -317,6 +319,188 @@ def test_material_capability_change_changes_resolution_hash(tmp_path: Path) -> N
     assert resolve_capabilities(Path("manifest/project/ai-ent")).capability_resolution_hash != resolve_capabilities(
         target
     ).capability_resolution_hash
+
+
+def test_trace_validator_accepts_actual_manifest() -> None:
+    result = validate_traces(Path("manifest/project/ai-ent"))
+    summary = result.as_dict()["summary"]
+
+    assert result.ok
+    assert result.trace_validator_version == "mmc-004.1"
+    assert len(result.source_compiled_hash) == 64
+    assert len(result.capability_resolution_hash) == 64
+    assert len(result.trace_validation_hash) == 64
+    assert summary["normative_requirements"] >= 20
+    assert summary["error_count"] == 0
+    assert summary["justified_components"] >= 8
+    assert summary["justified_interfaces"] >= 5
+
+
+def test_trace_validator_retains_evidence_and_partial_coverage() -> None:
+    result = validate_traces(Path("manifest/project/ai-ent"))
+    by_requirement = {path.requirement_id: path for path in result.trace_paths}
+
+    assert any(ref.startswith("BEAG-001:") for ref in by_requirement["ACC-001"].evidence_refs)
+    assert by_requirement["NFR-003"].coverage == "PARTIALLY_COVERED"
+    assert any(finding.finding_id == "TRACE-NFR-003-C20-GAP" for finding in result.findings)
+
+
+def test_trace_validator_propagates_unsatisfied_capability_to_blocked_requirement() -> None:
+    result = validate_traces(Path("manifest/project/ai-ent"))
+    by_requirement = {path.requirement_id: path for path in result.trace_paths}
+
+    assert by_requirement["FR-002"].coverage == "BLOCKED"
+    assert any(finding.finding_id == "TRACE-FR-002-C02-GAP" for finding in result.findings)
+
+
+def test_trace_validator_deferred_requirement_is_not_mandatory() -> None:
+    result = validate_traces(Path("manifest/project/ai-ent"))
+    by_requirement = {path.requirement_id: path for path in result.trace_paths}
+
+    assert by_requirement["INT-001"].coverage == "DEFERRED"
+    assert any(finding.finding_id == "TRACE-INT-001-DEFERRED" for finding in result.findings)
+
+
+def test_trace_validator_detects_missing_architecture_path(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    system = target / "architecture" / "system.yaml"
+    system.write_text(
+        system.read_text(encoding="utf-8").replace("capabilities: [C01, C14]", "capabilities: [C14]"),
+        encoding="utf-8",
+    )
+    extra = target / "requirements" / "trace-no-architecture.yaml"
+    extra.write_text(
+        "requirements:\n"
+        "  - id: TRACE-NO-ARCH\n"
+        "    title: Requirements engineering trace with no component\n"
+        "    classification: NORMATIVE\n"
+        "    source_refs: [R1]\n"
+        "    capabilities: [C01]\n",
+        encoding="utf-8",
+    )
+
+    result = validate_traces(target)
+
+    assert not result.ok
+    assert any(finding.finding_id == "TRACE-TRACE-NO-ARCH-NO-ARCH" for finding in result.findings)
+
+
+def test_trace_validator_detects_missing_verification_path(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    verification = target / "verification.yaml"
+    verification.write_text("verification:\n  gates: []\n  commands: []\n", encoding="utf-8")
+
+    result = validate_traces(target)
+
+    assert not result.ok
+    assert any(finding.finding_id == "TRACE-FR-001-NO-VERIFY" for finding in result.findings)
+
+
+def test_trace_validator_detects_orphan_component(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    components = target / "architecture" / "components.yaml"
+    components.write_text(
+        components.read_text(encoding="utf-8")
+        + "\n  - id: CMP-999\n"
+        "    name: Orphan implementation component\n"
+        "    classification: NORMATIVE\n"
+        "    source_refs: [R11]\n"
+        "    capabilities: [C11]\n",
+        encoding="utf-8",
+    )
+
+    result = validate_traces(target)
+
+    assert not result.ok
+    assert any(finding.finding_id == "TRACE-CMP-999-ORPHAN" for finding in result.findings)
+
+
+def test_trace_validator_detects_orphan_interface(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    interfaces = target / "architecture" / "interfaces.yaml"
+    interfaces.write_text(
+        interfaces.read_text(encoding="utf-8").replace("to_component: CMP-002", "to_component: CMP-999", 1),
+        encoding="utf-8",
+    )
+
+    try:
+        validate_traces(target)
+    except ValueError as exc:
+        assert "validation failed" in str(exc)
+    else:
+        raise AssertionError("invalid interface endpoint did not block trace validation")
+
+
+def test_trace_validator_detects_missing_authentication_architecture(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    extra = target / "requirements" / "trace-auth.yaml"
+    extra.write_text(
+        "requirements:\n"
+        "  - id: TRACE-AUTH\n"
+        "    title: Authenticated request must be accepted\n"
+        "    classification: NORMATIVE\n"
+        "    source_refs: [R1]\n"
+        "    capabilities: [C01]\n",
+        encoding="utf-8",
+    )
+
+    result = validate_traces(target)
+
+    assert not result.ok
+    assert any(finding.finding_id == "TRACE-TRACE-AUTH-AUTH-ARCH" for finding in result.findings)
+
+
+def test_trace_validator_detects_requirement_deployment_contradiction(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    extra = target / "requirements" / "trace-deployment.yaml"
+    extra.write_text(
+        "requirements:\n"
+        "  - id: TRACE-DEPLOY\n"
+        "    title: Production deployment must be active in current release\n"
+        "    classification: NORMATIVE\n"
+        "    source_refs: [R12]\n"
+        "    capabilities: [C12]\n",
+        encoding="utf-8",
+    )
+
+    result = validate_traces(target)
+
+    assert not result.ok
+    assert any(finding.finding_id == "TRACE-TRACE-DEPLOY-DEPLOYMENT-CONFLICT" for finding in result.findings)
+
+
+def test_trace_validation_output_is_repeatable_and_writes_artifacts(tmp_path: Path) -> None:
+    first = write_trace_validation(Path("manifest/project/ai-ent"), tmp_path / "compiled-a")
+    second = write_trace_validation(Path("manifest/project/ai-ent"), tmp_path / "compiled-b")
+
+    assert first.trace_validation_hash == second.trace_validation_hash
+    assert (tmp_path / "compiled-a" / "trace-validation.json").read_bytes() == (
+        tmp_path / "compiled-b" / "trace-validation.json"
+    ).read_bytes()
+    assert (tmp_path / "compiled-a" / "trace-graph.json").exists()
+    assert (tmp_path / "compiled-a" / "requirement-coverage.json").exists()
+    assert (tmp_path / "compiled-a" / "architecture-coverage.json").exists()
+    assert (tmp_path / "compiled-a" / "implementation-gaps.json").exists()
+
+
+def test_material_trace_change_changes_trace_hash(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    verification = target / "verification.yaml"
+    verification.write_text(
+        verification.read_text(encoding="utf-8").replace("        - R22\n", "", 1),
+        encoding="utf-8",
+    )
+
+    assert validate_traces(Path("manifest/project/ai-ent")).trace_validation_hash != validate_traces(
+        target
+    ).trace_validation_hash
 
 
 def _copy_manifest(source: Path, target: Path) -> None:

@@ -12,8 +12,36 @@ verification:
       name: Bootstrap engine regression suite
       classification: NORMATIVE
       source_refs: [BEAG-001]
+    - id: VG-004
+      name: Architecture requirement trace validation
+      classification: NORMATIVE
+      source_refs:
+        - R1
+        - R2
+        - R3
+        - R4
+        - R5
+        - R6
+        - R7
+        - R8
+        - R9
+        - R10
+        - R11
+        - R12
+        - R13
+        - R14
+        - R15
+        - R16
+        - R17
+        - R18
+        - R19
+        - R20
+        - R21
+        - R22
+        - BEAG-001
   commands:
     - ./aient/bin/python scripts/project_manifest.py validate --manifest-root manifest/project/ai-ent
+    - ./aient/bin/python scripts/project_manifest.py validate-traces --manifest-root manifest/project/ai-ent
     - ./aient/bin/python -m pytest -q
     - ./aient/bin/python -m ruff check .
     - ./aient/bin/python -m pyright

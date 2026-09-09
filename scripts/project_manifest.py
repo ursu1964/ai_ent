@@ -8,8 +8,10 @@ from ai_ent.project_manifest import (
     compile_project_manifest,
     resolve_capabilities,
     validate_project_manifest,
+    validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_trace_validation,
 )
 
 
@@ -88,6 +90,49 @@ def capability_gaps(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_traces_command(args: argparse.Namespace) -> int:
+    result = write_trace_validation(Path(args.manifest_root), Path(args.output_dir))
+    print(
+        json.dumps(
+            {
+                "trace_validation_hash": result.trace_validation_hash,
+                "trace_validator_version": result.trace_validator_version,
+                "source_compiled_hash": result.source_compiled_hash,
+                "capability_resolution_hash": result.capability_resolution_hash,
+                "error_count": result.error_count,
+                "warning_count": result.warning_count,
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
+def trace_gaps(args: argparse.Namespace) -> int:
+    result = validate_traces(Path(args.manifest_root))
+    summary = result.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "trace_validation_hash": result.trace_validation_hash,
+                "summary": summary,
+                "implementation_gaps": list(result.implementation_gaps),
+                "error_findings": [
+                    finding.as_dict() for finding in result.findings if finding.severity == "ERROR"
+                ],
+                "warning_findings": [
+                    finding.as_dict() for finding in result.findings if finding.severity == "WARNING"
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -113,6 +158,15 @@ def build_parser() -> argparse.ArgumentParser:
     gaps_parser = subparsers.add_parser("capability-gaps")
     gaps_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     gaps_parser.set_defaults(func=capability_gaps)
+
+    trace_parser = subparsers.add_parser("validate-traces")
+    trace_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    trace_parser.add_argument("--output-dir", default=".build/compiled")
+    trace_parser.set_defaults(func=validate_traces_command)
+
+    trace_gaps_parser = subparsers.add_parser("trace-gaps")
+    trace_gaps_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    trace_gaps_parser.set_defaults(func=trace_gaps)
     return parser
 
 
