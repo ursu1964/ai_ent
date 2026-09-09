@@ -7,6 +7,7 @@ from ai_ent.persistence.database import (
     PersistenceHealth,
     PersistenceUnavailable,
 )
+from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 
 __all__ = [
     "Database",
@@ -14,5 +15,7 @@ __all__ = [
     "PersistenceError",
     "PersistenceHealth",
     "PersistenceUnavailable",
+    "ProjectRepository",
+    "TaskRepository",
     "load_database_settings",
 ]

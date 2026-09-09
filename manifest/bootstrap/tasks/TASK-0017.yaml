@@ -1,0 +1,23 @@
+id: TASK-0017
+stage: B04
+title: Project and task repositories
+objective: >
+  Create repository boundaries for durable access to projects, tasks, and
+  task dependency rows using the existing SQLAlchemy session/transaction
+  boundary without adding scheduler claiming or execution repositories.
+executor: fake
+depends_on:
+  - TASK-0016
+allowed_paths:
+  - src/ai_ent/persistence/repositories/**
+  - src/ai_ent/persistence/__init__.py
+  - manifest/bootstrap/tasks/TASK-0017.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/persistence/repositories/projects.py
+  - src/ai_ent/persistence/repositories/tasks.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
