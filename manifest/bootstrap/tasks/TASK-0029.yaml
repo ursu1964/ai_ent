@@ -1,0 +1,21 @@
+id: TASK-0029
+stage: B06
+title: Crash restart recovery across full loop
+objective: >
+  Add explicit recovery and reconciliation for interrupted scheduler lifecycle
+  stages without blindly rerunning Codex, duplicating executions, or duplicating
+  verified commits.
+executor: fake
+depends_on:
+  - TASK-0028
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0029.yaml
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/recovery.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

@@ -15,6 +15,7 @@ from ai_ent.scheduler.iteration import (
     SchedulerIterationService,
 )
 from ai_ent.scheduler.readiness import ReadinessDecision, TaskReadinessService
+from ai_ent.scheduler.recovery import RecoveryResult, SchedulerRecoveryService
 from ai_ent.scheduler.repair import (
     FailureClassification,
     FailureClassifier,
@@ -39,6 +40,7 @@ __all__ = [
     "FailureClassifier",
     "LeaseActionResult",
     "ReadinessDecision",
+    "RecoveryResult",
     "RepairDecision",
     "RepairExecutionResult",
     "RepairExecutionService",
@@ -46,6 +48,7 @@ __all__ = [
     "RepairPolicy",
     "SchedulerIterationResult",
     "SchedulerIterationService",
+    "SchedulerRecoveryService",
     "TaskClaimingService",
     "TaskReadinessService",
     "TaskRunOutcome",

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
 from ai_ent.scheduler.iteration import SchedulerIterationResult, SchedulerIterationService
+from ai_ent.scheduler.recovery import RecoveryResult, SchedulerRecoveryService
 from ai_ent.scheduler.repair import (
     FailureClassification,
     RepairExecutionResult,
@@ -89,6 +90,7 @@ class BoundedSchedulerRunner:
         execution_runner: ClaimedExecutionRunner | None = None,
         finalizer: ExecutionFinalizer | None = None,
         repair_runner: RepairExecutionService | None = None,
+        recovery: SchedulerRecoveryService | None = None,
         limits: BoundedRunLimits | None = None,
         run_id_factory: Callable[[], str] | None = None,
         clock: Clock = time.monotonic,
@@ -105,8 +107,15 @@ class BoundedSchedulerRunner:
         self.repair_runner = repair_runner or RepairExecutionService(
             planner=RepairPlanner(policy=repair_policy)
         )
+        self.recovery = recovery or SchedulerRecoveryService()
         self.run_id_factory = run_id_factory or (lambda: f"run-{uuid.uuid4().hex}")
         self.clock = clock
+
+    def recover_then_run(self, session: Session, *, project_id: str) -> tuple[RecoveryResult, BoundedRunResult | None]:
+        recovery = self.recovery.recover_project(session, project_id=project_id)
+        if not recovery.safe_to_continue:
+            return recovery, None
+        return recovery, self.run(session, project_id=project_id)
 
     def run(self, session: Session, *, project_id: str) -> BoundedRunResult:
         run_id = self.run_id_factory()
