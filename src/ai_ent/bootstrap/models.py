@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 ExecutorName = Literal["fake", "codex"]
 SimulationResult = Literal["success", "failure", "timeout", "invalid_output", "scope_violation"]
+TerminalState = Literal["success", "failure", "timeout", "cancelled", "not_configured"]
 
 
 @dataclass(frozen=True)
@@ -94,6 +96,24 @@ class ExecutionResult:
     ok: bool
     message: str
     changed_files: tuple[str, ...] = ()
+    execution_id: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+    exit_code: int | None = None
+    terminal_state: TerminalState = "success"
+
+
+@dataclass(frozen=True)
+class ExecutionPackage:
+    repository_path: Path
+    worktree_path: Path
+    task_id: str
+    execution_id: str
+    instructions: str
+    allowed_paths: tuple[str, ...]
+    prohibited_paths: tuple[str, ...]
+    python_path: Path
+    timeout_seconds: int
 
 
 @dataclass(frozen=True)

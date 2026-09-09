@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from typing import Protocol, runtime_checkable
+
+from ai_ent.bootstrap.codex import CodexExecutor
 from ai_ent.bootstrap.models import BootstrapTask, ExecutionResult
 
 
-class Executor:
+@runtime_checkable
+class Executor(Protocol):
     def execute(self, task: BootstrapTask) -> ExecutionResult:
         raise NotImplementedError
 
@@ -19,6 +23,5 @@ def get_executor(name: str) -> Executor:
     if name == "fake":
         return FakeExecutor()
     if name == "codex":
-        raise NotImplementedError("CodexExecutor is intentionally not enabled yet")
+        return CodexExecutor()
     raise ValueError(f"Unknown executor: {name}")
-

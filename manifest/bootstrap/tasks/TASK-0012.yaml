@@ -9,7 +9,11 @@ depends_on:
   - TASK-0011
 allowed_paths:
   - src/ai_ent/bootstrap/codex.py
+  - src/ai_ent/bootstrap/executors.py
+  - src/ai_ent/bootstrap/models.py
   - tests/**
+outputs:
+  - src/ai_ent/bootstrap/codex.py
 verification:
   commands:
     - python -m pytest
