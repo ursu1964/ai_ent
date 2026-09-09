@@ -1,0 +1,23 @@
+id: TASK-0018
+stage: B04
+title: Execution and checkpoint repositories
+objective: >
+  Create repository boundaries for durable access to executions and checkpoints
+  using the existing SQLAlchemy session/transaction boundary without adding
+  scheduler claiming or lease behavior.
+executor: fake
+depends_on:
+  - TASK-0017
+allowed_paths:
+  - src/ai_ent/persistence/repositories/**
+  - src/ai_ent/persistence/__init__.py
+  - manifest/bootstrap/tasks/TASK-0018.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/persistence/repositories/executions.py
+  - src/ai_ent/persistence/repositories/checkpoints.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

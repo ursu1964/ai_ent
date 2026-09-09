@@ -7,11 +7,18 @@ from ai_ent.persistence.database import (
     PersistenceHealth,
     PersistenceUnavailable,
 )
-from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
+from ai_ent.persistence.repositories import (
+    CheckpointRepository,
+    ExecutionRepository,
+    ProjectRepository,
+    TaskRepository,
+)
 
 __all__ = [
+    "CheckpointRepository",
     "Database",
     "DatabaseSettings",
+    "ExecutionRepository",
     "PersistenceError",
     "PersistenceHealth",
     "PersistenceUnavailable",

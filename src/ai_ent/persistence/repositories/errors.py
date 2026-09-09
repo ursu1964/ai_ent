@@ -24,3 +24,18 @@ class MissingTaskError(RepositoryError):
 class DuplicateDependencyError(RepositoryError):
     """Raised when a task dependency edge already exists."""
 
+
+class DuplicateExecutionError(RepositoryError):
+    """Raised when an execution identity already exists."""
+
+
+class MissingExecutionError(RepositoryError):
+    """Raised when an execution is required but missing."""
+
+
+class DuplicateCheckpointError(RepositoryError):
+    """Raised when a checkpoint identity already exists."""
+
+
+class MissingCheckpointError(RepositoryError):
+    """Raised when a checkpoint is required but missing."""
