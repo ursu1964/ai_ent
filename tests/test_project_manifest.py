@@ -8,8 +8,11 @@ from ai_ent.project_manifest import (
     GeneratedImplementationTask,
     compile_project_manifest,
     default_feasibility_policy,
+    dry_run_evaluated_plan,
+    dry_run_implementation_plan,
     evaluate_feasibility,
     evaluate_implementation_plan_feasibility,
+    freeze_implementation_plan,
     generate_implementation_plan,
     load_manifest_documents,
     resolve_capabilities,
@@ -17,6 +20,7 @@ from ai_ent.project_manifest import (
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_dry_run_plan,
     write_feasibility_evaluation,
     write_implementation_plan,
     write_trace_validation,
@@ -788,6 +792,135 @@ def test_feasibility_evaluation_hash_is_repeatable_and_changes_with_policy(tmp_p
     assert (tmp_path / "compiled-a" / "human-gate-plan.json").exists()
     assert (tmp_path / "compiled-a" / "resource-plan.json").exists()
     assert (tmp_path / "compiled-a" / "concurrency-plan.json").exists()
+
+
+def test_dry_run_simulates_complete_current_plan() -> None:
+    dry_run = dry_run_implementation_plan(
+        Path("manifest/project/ai-ent"),
+        environment=_environment(codex_configured=False, codex_available=True),
+    )
+
+    assert dry_run.ok
+    assert dry_run.dry_runner_version == "mmc-007.1"
+    assert dry_run.plan_acceptance_state == "READY_WITH_EXECUTION_PREREQUISITES"
+    assert dry_run.frozen_plan_state == "FROZEN"
+    assert len(dry_run.import_preview) == 13
+    assert dry_run.dependency_edge_count == 23
+    assert dry_run.wave_count == 10
+    assert dry_run.theoretical_parallel_width == 2
+    assert dry_run.effective_parallel_width == 1
+    assert len(dry_run.lock.human_gate_definitions) == 6
+    assert len(dry_run.execution_batches) == 10
+    assert "set AIENT_CODEX_COMMAND before real execution" in dry_run.execution_prerequisites
+
+
+def test_dry_run_freezes_task_fingerprints_and_import_preview() -> None:
+    dry_run = dry_run_implementation_plan(Path("manifest/project/ai-ent"), environment=_environment())
+    preview_by_id = {preview.task_id: preview for preview in dry_run.import_preview}
+
+    assert set(dry_run.lock.task_fingerprints) == set(preview_by_id)
+    assert preview_by_id["IMPL-C01-CMP-001"].execution_class == "implementation"
+    assert preview_by_id["IMPL-C01-CMP-001"].schedulable
+    assert preview_by_id["IMPL-C01-CMP-001"].verification_profile == "STANDARD_REGRESSION"
+    assert preview_by_id["IMPL-C20-CMP-007"].risk_level == "HIGH"
+
+
+def test_dry_run_batches_preserve_human_gate_boundaries() -> None:
+    dry_run = dry_run_implementation_plan(Path("manifest/project/ai-ent"), environment=_environment())
+    gated_batches = [batch for batch in dry_run.execution_batches if batch.required_human_gates]
+
+    assert dry_run.execution_batches[0].task_ids == ("IMPL-C01-CMP-001", "IMPL-C02-CONTRACT")
+    assert len(gated_batches) == 6
+    assert gated_batches[0].required_human_gates == ("GATE-IMPL-C14-CMP-001",)
+    assert gated_batches[0].task_ids == ("IMPL-C14-CMP-001",)
+
+
+def test_dry_run_defines_repair_and_recovery_paths_for_each_task() -> None:
+    dry_run = dry_run_implementation_plan(Path("manifest/project/ai-ent"), environment=_environment())
+    task_ids = {preview.task_id for preview in dry_run.import_preview}
+
+    assert set(dry_run.repair_path_coverage) == task_ids
+    assert {
+        "before_task",
+        "after_claim",
+        "after_executor",
+        "after_verification",
+        "after_verified_commit",
+        "after_db_completion",
+        "between_batches",
+        "at_human_gates",
+    } <= set(dry_run.recovery_points)
+
+
+def test_dry_run_blocks_on_missing_technical_dependency() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(
+        plan,
+        replace(_environment(), docker_available=False),
+        default_feasibility_policy(plan),
+    )
+    dry_run = dry_run_evaluated_plan(plan, evaluation)
+
+    assert dry_run.plan_acceptance_state == "BLOCKED"
+    assert dry_run.frozen_plan_state == "INVALIDATED"
+    assert any(finding.severity == "ERROR" for finding in dry_run.findings)
+
+
+def test_dry_run_output_and_freeze_are_repeatable(tmp_path: Path) -> None:
+    first = freeze_implementation_plan(Path("manifest/project/ai-ent"), tmp_path / "compiled-a")
+    second = freeze_implementation_plan(Path("manifest/project/ai-ent"), tmp_path / "compiled-b")
+
+    assert first.dry_run_hash == second.dry_run_hash
+    assert first.lock.as_dict() == second.lock.as_dict()
+    assert (tmp_path / "compiled-a" / "implementation-dry-run.json").read_bytes() == (
+        tmp_path / "compiled-b" / "implementation-dry-run.json"
+    ).read_bytes()
+    assert (tmp_path / "compiled-a" / "execution-batches.json").exists()
+    assert (tmp_path / "compiled-a" / "task-import-preview.json").exists()
+    assert (tmp_path / "compiled-a" / "recovery-plan.json").exists()
+    assert (tmp_path / "compiled-a" / "dry-run-findings.json").exists()
+    assert (tmp_path / "compiled-a" / "implementation-plan.lock").exists()
+    assert (tmp_path / "compiled-a" / "plan-freeze.json").exists()
+
+
+def test_material_upstream_change_changes_dry_run_hash(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    functional = target / "requirements" / "functional.yaml"
+    functional.write_text(
+        functional.read_text(encoding="utf-8").replace(
+            "Parse approved project manifests",
+            "Parse accepted project manifests",
+        ),
+        encoding="utf-8",
+    )
+
+    assert dry_run_implementation_plan(Path("manifest/project/ai-ent")).dry_run_hash != dry_run_implementation_plan(
+        target
+    ).dry_run_hash
+
+
+def test_task_fingerprint_change_changes_dry_run_hash() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), default_feasibility_policy(plan))
+    original = dry_run_evaluated_plan(plan, evaluation)
+    changed_task = replace(plan.tasks[0], fingerprint="changed")
+    changed_plan = replace(plan, tasks=(changed_task, *plan.tasks[1:]))
+    changed_evaluation = evaluate_implementation_plan_feasibility(
+        changed_plan,
+        _environment(),
+        default_feasibility_policy(changed_plan),
+    )
+    changed = dry_run_evaluated_plan(changed_plan, changed_evaluation)
+
+    assert original.dry_run_hash != changed.dry_run_hash
+
+
+def test_write_dry_run_plan_does_not_freeze_lock(tmp_path: Path) -> None:
+    write_dry_run_plan(Path("manifest/project/ai-ent"), tmp_path / "compiled")
+
+    assert (tmp_path / "compiled" / "implementation-dry-run.json").exists()
+    assert not (tmp_path / "compiled" / "implementation-plan.lock").exists()
 
 
 def _generated_test_task(

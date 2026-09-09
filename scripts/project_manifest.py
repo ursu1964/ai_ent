@@ -6,13 +6,16 @@ from pathlib import Path
 
 from ai_ent.project_manifest import (
     compile_project_manifest,
+    dry_run_implementation_plan,
     evaluate_feasibility,
+    freeze_implementation_plan,
     generate_implementation_plan,
     resolve_capabilities,
     validate_project_manifest,
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_dry_run_plan,
     write_feasibility_evaluation,
     write_implementation_plan,
     write_trace_validation,
@@ -255,6 +258,62 @@ def feasibility_summary(args: argparse.Namespace) -> int:
     return 0 if evaluation.ok else 1
 
 
+def dry_run_plan(args: argparse.Namespace) -> int:
+    dry_run = write_dry_run_plan(Path(args.manifest_root), Path(args.output_dir))
+    print(
+        json.dumps(
+            {
+                "dry_run_hash": dry_run.dry_run_hash,
+                "dry_runner_version": dry_run.dry_runner_version,
+                "implementation_plan_hash": dry_run.implementation_plan_hash,
+                "feasibility_hash": dry_run.feasibility_hash,
+                "plan_acceptance_state": dry_run.plan_acceptance_state,
+                "frozen_plan_state": dry_run.frozen_plan_state,
+                "tasks_simulated": len(dry_run.import_preview),
+                "dependency_edges": dry_run.dependency_edge_count,
+                "waves": dry_run.wave_count,
+                "theoretical_parallel_width": dry_run.theoretical_parallel_width,
+                "effective_parallel_width": dry_run.effective_parallel_width,
+                "human_gates": len(dry_run.lock.human_gate_definitions),
+                "execution_batches": len(dry_run.execution_batches),
+                "execution_prerequisites": list(dry_run.execution_prerequisites),
+                "dry_run_errors": len([finding for finding in dry_run.findings if finding.severity == "ERROR"]),
+                "dry_run_warnings": len([finding for finding in dry_run.findings if finding.severity == "WARNING"]),
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if dry_run.ok else 1
+
+
+def freeze_plan(args: argparse.Namespace) -> int:
+    dry_run = freeze_implementation_plan(Path(args.manifest_root), Path(args.output_dir))
+    print(
+        json.dumps(
+            {
+                "plan_id": dry_run.lock.plan_id,
+                "plan_version": dry_run.lock.plan_version,
+                "state": dry_run.frozen_plan_state,
+                "dry_run_hash": dry_run.dry_run_hash,
+                "implementation_plan_hash": dry_run.implementation_plan_hash,
+                "feasibility_hash": dry_run.feasibility_hash,
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def plan_lock(args: argparse.Namespace) -> int:
+    dry_run = dry_run_implementation_plan(Path(args.manifest_root))
+    print(json.dumps(dry_run.lock.as_dict(), indent=2, sort_keys=True))
+    return 0 if dry_run.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -311,6 +370,20 @@ def build_parser() -> argparse.ArgumentParser:
     feasibility_summary_parser = subparsers.add_parser("feasibility-summary")
     feasibility_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     feasibility_summary_parser.set_defaults(func=feasibility_summary)
+
+    dry_run_parser = subparsers.add_parser("dry-run-plan")
+    dry_run_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    dry_run_parser.add_argument("--output-dir", default=".build/compiled")
+    dry_run_parser.set_defaults(func=dry_run_plan)
+
+    freeze_parser = subparsers.add_parser("freeze-plan")
+    freeze_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    freeze_parser.add_argument("--output-dir", default=".build/compiled")
+    freeze_parser.set_defaults(func=freeze_plan)
+
+    lock_parser = subparsers.add_parser("plan-lock")
+    lock_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    lock_parser.set_defaults(func=plan_lock)
     return parser
 
 
