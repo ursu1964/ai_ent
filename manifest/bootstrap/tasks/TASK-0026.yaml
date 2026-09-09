@@ -1,0 +1,20 @@
+id: TASK-0026
+stage: B05
+title: Failure classification and repair lifecycle
+objective: >
+  Add bounded failure classification and repair-decision planning for failed
+  executions and finalizations without enabling automatic retry loops.
+executor: fake
+depends_on:
+  - TASK-0025
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0026.yaml
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/repair.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

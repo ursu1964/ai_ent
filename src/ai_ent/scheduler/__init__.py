@@ -9,6 +9,13 @@ from ai_ent.scheduler.iteration import (
     SchedulerIterationService,
 )
 from ai_ent.scheduler.readiness import ReadinessDecision, TaskReadinessService
+from ai_ent.scheduler.repair import (
+    FailureClassification,
+    FailureClassifier,
+    RepairDecision,
+    RepairPlanner,
+    RepairPolicy,
+)
 
 __all__ = [
     "ClaimResult",
@@ -17,8 +24,13 @@ __all__ = [
     "ExecutionFinalizationResult",
     "ExecutionFinalizer",
     "ExecutionPackageFactory",
+    "FailureClassification",
+    "FailureClassifier",
     "LeaseActionResult",
     "ReadinessDecision",
+    "RepairDecision",
+    "RepairPlanner",
+    "RepairPolicy",
     "SchedulerIterationResult",
     "SchedulerIterationService",
     "TaskClaimingService",

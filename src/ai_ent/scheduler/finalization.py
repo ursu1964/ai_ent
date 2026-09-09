@@ -388,6 +388,7 @@ class ExecutionFinalizer:
             state={
                 "status": reason,
                 "candidate_tree_hash": candidate.tree_hash,
+                "changed_files": list(candidate.changed_files),
                 "findings": list(findings),
             },
             tree_hash=candidate.tree_hash,
