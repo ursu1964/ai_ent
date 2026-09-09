@@ -21,6 +21,7 @@ from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
 from ai_ent.bootstrap.verifier import verify_task
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
+from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, build_runtime_manifest_tasks
 from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
@@ -202,16 +203,19 @@ def guarded_run(args: argparse.Namespace) -> int:
                 max_repairs_per_task=args.max_repairs,
                 dry_run=args.dry_run,
             )
-            result = _build_guarded_runner(config).run(session, config)
+            result = _build_guarded_runner(config, session=session).run(session, config)
             _print_guarded_result(result)
             return 0 if result.stop_reason in {"NO_READY_TASK", "COMPLETED_BOUND", "TASK_LIMIT"} else 1
     finally:
         database.dispose()
 
 
-def _build_guarded_runner(config: GuardedRunConfig) -> GuardedAutonomousRunner:
+def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedAutonomousRunner:
     codex_config = CodexConfig.from_env()
-    manifest_tasks = load_tasks()
+    if session is not None and config.project_id == DEFAULT_RUNTIME_PROJECT_ID:
+        manifest_tasks = build_runtime_manifest_tasks(session, config.project_id)
+    else:
+        manifest_tasks = load_tasks()
     repair_policy = RepairPolicy(max_autonomous_repair_attempts=config.max_repairs_per_task)
     execution_runner = ClaimedExecutionRunner(config=codex_config)
     finalizer = ExecutionFinalizer(manifest_tasks=manifest_tasks)

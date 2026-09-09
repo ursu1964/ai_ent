@@ -73,7 +73,12 @@ def test_postgres_runtime_handoff_import_is_isolated_and_dry_run_safe() -> None:
             assert status.active_leases == 0
             assert session.query(Execution).count() == 0
             assert session.query(TaskLease).count() == 0
-            assert session.query(RuntimeHumanGate).filter_by(status="pending").count() == 1
+            assert (
+                session.query(RuntimeHumanGate)
+                .filter_by(import_id=f"rhi-plan-test-{suffix}-v1", status="pending")
+                .count()
+                == 1
+            )
     finally:
         clean_test_tables(database)
         database.dispose()

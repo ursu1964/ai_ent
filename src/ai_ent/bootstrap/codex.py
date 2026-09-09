@@ -51,7 +51,7 @@ def build_execution_package(
             *(f"- {command}" for command in task.verification.commands),
             "Complete only this task's objective and required outputs.",
             "Do not verify, commit, push, or schedule another task.",
-            "Do not modify source code, manifests, scripts, .env, virtualenvs, or Git metadata.",
+            "Do not modify files outside allowed paths, .env, virtualenvs, or Git metadata.",
         )
         if part
     )

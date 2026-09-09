@@ -21,6 +21,7 @@ from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
     RuntimeHandoffArtifacts,
     RuntimePlanImporter,
+    build_runtime_manifest_tasks,
     load_runtime_handoff_artifacts,
 )
 from ai_ent.scheduler.readiness import TaskReadinessService
@@ -169,6 +170,23 @@ def test_gate_bindings_are_pending_and_block_readiness(tmp_path: Path) -> None:
 
         assert decision.status == "NOT_SCHEDULABLE"
         assert decision.reasons == ("pending_human_gate",)
+
+
+def test_runtime_manifest_tasks_preserve_scope_fingerprint_and_verification(tmp_path: Path) -> None:
+    factory = session_factory()
+    plan_artifacts = artifacts(tmp_path)
+
+    with factory() as session:
+        import_plan(session, plan_artifacts)
+        manifest_tasks = build_runtime_manifest_tasks(session, DEFAULT_RUNTIME_PROJECT_ID)
+
+    task = manifest_tasks["IMPL-C01-CMP-001"]
+    assert task.id == "IMPL-C01-CMP-001"
+    assert task.executor == "codex"
+    assert task.execution_class == "implementation"
+    assert "src/ai_ent/**" in task.allowed_paths
+    assert any("pytest" in command for command in task.verification.commands)
+    assert "Acceptance criteria:" in (task.objective or "")
 
 
 def test_runtime_status_has_no_side_effects(tmp_path: Path) -> None:

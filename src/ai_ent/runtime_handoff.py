@@ -14,6 +14,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
+from ai_ent.bootstrap.paths import VENV_PYTHON
 from ai_ent.persistence.models import (
     BootstrapRun,
     Execution,
@@ -42,6 +44,11 @@ from ai_ent.scheduler.readiness import TaskReadinessService
 RUNTIME_HANDOFF_IMPORTER_VERSION = "rhi-001.1"
 RUNTIME_IMPORT_PREFIX = "IMPL-"
 DEFAULT_RUNTIME_PROJECT_ID = "PRJ-AI-ENT"
+STANDARD_RUNTIME_VERIFICATION_COMMANDS = (
+    f"{VENV_PYTHON} -m pytest -q",
+    f"{VENV_PYTHON} -m ruff check .",
+    f"{VENV_PYTHON} -m pyright",
+)
 
 ImportStatus = Literal["IMPORTED", "ALREADY_IMPORTED", "CONFLICT", "BLOCKED"]
 
@@ -136,6 +143,61 @@ class RuntimePlanStatus:
 
 class RuntimePlanImportError(RuntimeError):
     """Raised when a frozen plan cannot be imported safely."""
+
+
+def build_runtime_manifest_tasks(session: Session, project_id: str) -> dict[str, BootstrapTask]:
+    tasks = {
+        task.id: task
+        for task in session.scalars(
+            select(Task).where(Task.project_id == project_id, Task.id.like(f"{RUNTIME_IMPORT_PREFIX}%")).order_by(Task.id)
+        ).all()
+    }
+    if not tasks:
+        return {}
+    bindings = {
+        binding.task_id: binding
+        for binding in session.scalars(
+            select(RuntimeTaskPlanBinding)
+            .where(RuntimeTaskPlanBinding.task_id.in_(tuple(tasks)))
+            .order_by(RuntimeTaskPlanBinding.task_id)
+        ).all()
+    }
+    dependencies: dict[str, tuple[str, ...]] = {
+        task_id: tuple(
+            session.scalars(
+                select(TaskDependency.depends_on_task_id)
+                .where(TaskDependency.task_id == task_id)
+                .order_by(TaskDependency.depends_on_task_id)
+            ).all()
+        )
+        for task_id in tasks
+    }
+    manifest_tasks: dict[str, BootstrapTask] = {}
+    for task_id in sorted(tasks):
+        task = tasks[task_id]
+        binding = bindings.get(task_id)
+        if binding is None or task.fingerprint != binding.fingerprint:
+            continue
+        write_scope = json.loads(binding.write_scope_json)
+        acceptance = json.loads(binding.acceptance_json)
+        objective_parts = [task.objective or task.title]
+        if acceptance:
+            objective_parts.append("Acceptance criteria:")
+            objective_parts.extend(f"- {item}" for item in acceptance)
+        manifest_tasks[task_id] = BootstrapTask(
+            id=task.id,
+            stage="runtime-plan",
+            title=task.title,
+            executor="codex",
+            depends_on=dependencies[task_id],
+            objective="\n".join(objective_parts),
+            allowed_paths=tuple(str(item) for item in write_scope.get("allowed", [])),
+            outputs=(),
+            execution_class=task.execution_class,
+            schedulable=task.schedulable,
+            verification=VerificationSpec(commands=_runtime_verification_commands(binding.verification_profile)),
+        )
+    return manifest_tasks
 
 
 class RuntimePlanImporter:
@@ -574,6 +636,12 @@ def load_runtime_handoff_artifacts(
 
 def _import_id(plan_id: str, plan_version: str) -> str:
     return f"rhi-{plan_id.lower()}-v{plan_version}"
+
+
+def _runtime_verification_commands(profile: str) -> tuple[str, ...]:
+    if profile == "STANDARD_REGRESSION":
+        return STANDARD_RUNTIME_VERIFICATION_COMMANDS
+    return STANDARD_RUNTIME_VERIFICATION_COMMANDS
 
 
 def _canonical_text(value: Any) -> str:
