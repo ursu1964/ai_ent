@@ -606,12 +606,13 @@ def load_runtime_handoff_artifacts(
     *,
     manifest_root: Path = Path("manifest/project/ai-ent"),
     output_dir: Path = Path(".build/compiled"),
+    accepted_artifact_path: Path | None = Path("artifacts/pag-001/PAG-001.json"),
 ) -> RuntimeHandoffArtifacts:
     del output_dir
     plan = generate_implementation_plan(manifest_root)
     current_feasibility = evaluate_feasibility(manifest_root)
     current_dry_run = dry_run_implementation_plan(manifest_root)
-    accepted_hashes = _pag_accepted_hashes(Path("artifacts/pag-001/PAG-001.json"))
+    accepted_hashes = _pag_accepted_hashes(accepted_artifact_path) if accepted_artifact_path is not None else None
     if accepted_hashes and current_dry_run.dry_run_hash != accepted_hashes.get("dry_run_hash"):
         planning_environment = replace(
             current_feasibility.environment_profile,

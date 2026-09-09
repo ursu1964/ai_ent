@@ -41,7 +41,7 @@ def session_factory() -> sessionmaker[Session]:
 
 
 def artifacts(tmp_path: Path) -> RuntimeHandoffArtifacts:
-    return load_runtime_handoff_artifacts(output_dir=tmp_path / "compiled")
+    return load_runtime_handoff_artifacts(output_dir=tmp_path / "compiled", accepted_artifact_path=None)
 
 
 def import_plan(session: Session, plan_artifacts: RuntimeHandoffArtifacts) -> None:
