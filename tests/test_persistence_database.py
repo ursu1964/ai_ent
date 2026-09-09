@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from sqlalchemy import Integer, String, create_engine, select
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ai_ent.persistence.config import DatabaseSettings
 from ai_ent.persistence.database import Database, PersistenceHealth, PersistenceUnavailable
-from ai_ent.persistence.models import Base
 
 
-class ExampleModel(Base):
+class LocalBase(DeclarativeBase):
+    pass
+
+
+class ExampleModel(LocalBase):
     __tablename__ = "example_model"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -29,7 +32,7 @@ def settings() -> DatabaseSettings:
 
 def sqlite_database() -> Database:
     engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
-    Base.metadata.create_all(engine)
+    LocalBase.metadata.create_all(engine)
     return Database(settings(), engine=engine)
 
 

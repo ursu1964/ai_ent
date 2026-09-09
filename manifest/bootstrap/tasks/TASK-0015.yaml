@@ -1,0 +1,27 @@
+id: TASK-0015
+stage: B04
+title: Alembic migration foundation
+objective: >
+  Establish a production-quality Alembic migration boundary integrated with
+  the existing SQLAlchemy 2.x persistence layer without creating the runtime
+  task/execution/checkpoint schema yet.
+executor: fake
+depends_on:
+  - TASK-0014
+allowed_paths:
+  - alembic.ini
+  - migrations/**
+  - src/ai_ent/persistence/migrations.py
+  - manifest/bootstrap/tasks/TASK-0015.yaml
+  - tests/**
+outputs:
+  - alembic.ini
+  - migrations/env.py
+  - migrations/script.py.mako
+  - migrations/versions/0015_persistence_baseline.py
+  - src/ai_ent/persistence/migrations.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
