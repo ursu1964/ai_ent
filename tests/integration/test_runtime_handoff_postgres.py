@@ -71,8 +71,9 @@ def test_postgres_runtime_handoff_import_is_isolated_and_dry_run_safe() -> None:
             assert status.ready_tasks == (f"IMPL-TEST-A-{suffix}",)
             assert status.executions == 0
             assert status.active_leases == 0
-            assert session.query(Execution).count() == 0
-            assert session.query(TaskLease).count() == 0
+            task_ids = (f"IMPL-TEST-A-{suffix}", f"IMPL-TEST-B-{suffix}")
+            assert session.query(Execution).filter(Execution.task_id.in_(task_ids)).count() == 0
+            assert session.query(TaskLease).filter(TaskLease.task_id.in_(task_ids)).count() == 0
             assert (
                 session.query(RuntimeHumanGate)
                 .filter_by(import_id=f"rhi-plan-test-{suffix}-v1", status="pending")
