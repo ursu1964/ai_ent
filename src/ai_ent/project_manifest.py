@@ -1873,12 +1873,18 @@ def canonical_bytes(value: Any) -> bytes:
 
 
 def compilation_hash(documents: dict[Path, dict[str, Any]]) -> str:
+    common_root = _common_document_root(documents)
     normalized = {
-        str(path): documents[path]
+        str(path.relative_to(common_root)): _normalize(documents[path])
         for path in sorted(documents, key=lambda item: str(item))
     }
-    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_bytes(normalized)).hexdigest()
+
+
+def _common_document_root(documents: dict[Path, dict[str, Any]]) -> Path:
+    if not documents:
+        return Path(".")
+    return Path(os.path.commonpath([str(path.parent) for path in documents]))
 
 
 def _compile_documents(root: Path, documents: dict[Path, dict[str, Any]]) -> CompiledProject:
