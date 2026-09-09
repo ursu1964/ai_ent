@@ -1,0 +1,21 @@
+id: TASK-0028
+stage: B06
+title: Bounded automatic continuation
+objective: >
+  Add an explicitly bounded scheduler runner that can process multiple ready
+  tasks sequentially using the proven claim, execute, finalize, and repair
+  services while stopping on configured limits and safety boundaries.
+executor: fake
+depends_on:
+  - TASK-0027
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0028.yaml
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/bounded.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

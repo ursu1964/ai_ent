@@ -1,5 +1,11 @@
 """Scheduler services."""
 
+from ai_ent.scheduler.bounded import (
+    BoundedRunLimits,
+    BoundedRunResult,
+    BoundedSchedulerRunner,
+    TaskRunOutcome,
+)
 from ai_ent.scheduler.claiming import ClaimResult, LeaseActionResult, TaskClaimingService
 from ai_ent.scheduler.execution import ClaimedExecutionResult, ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizationResult, ExecutionFinalizer
@@ -20,6 +26,9 @@ from ai_ent.scheduler.repair import (
 )
 
 __all__ = [
+    "BoundedRunLimits",
+    "BoundedRunResult",
+    "BoundedSchedulerRunner",
     "ClaimResult",
     "ClaimedExecutionResult",
     "ClaimedExecutionRunner",
@@ -39,4 +48,5 @@ __all__ = [
     "SchedulerIterationService",
     "TaskClaimingService",
     "TaskReadinessService",
+    "TaskRunOutcome",
 ]
