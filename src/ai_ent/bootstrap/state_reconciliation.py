@@ -70,13 +70,14 @@ class BootstrapStateReconciler:
         root: Path = ROOT,
         database: Database | None = None,
         run_id: str = "bootstrap-main",
+        project_id: str | None = None,
     ) -> None:
         self.state_file = state_file
         self.root = root
         self.database = database
         self.run_id = run_id
         bootstrap = load_bootstrap()
-        self.project_id = str(bootstrap.get("project", "ai-ent"))
+        self.project_id = project_id or str(bootstrap.get("project", "ai-ent"))
         self.manifest_ref = "manifest/bootstrap"
         self.initial_stage = str(bootstrap.get("initial_stage", "B00"))
         self.repository = BootstrapRunRepository()
@@ -161,6 +162,7 @@ class BootstrapStateReconciler:
             authority = self.repository.get_active_authority(session, self.project_id)
             if authority is None:
                 return False
+            self._ensure_project_and_tasks(session)
             run = self.repository.require_run(session, authority.run_id)
             self.repository.update_run_state(
                 session,
@@ -190,6 +192,7 @@ class BootstrapStateReconciler:
             authority = self.repository.get_active_authority(session, self.project_id)
             if authority is None:
                 return False
+            self._ensure_project_and_tasks(session)
             run = self.repository.require_run(session, authority.run_id)
             self.repository.mark_blocked(session, run.id, current_task_id=task_id, reason=reason)
             sequence = self.repository.next_checkpoint_sequence(session, run.id)
@@ -299,6 +302,8 @@ class BootstrapStateReconciler:
                 differences.append(field_name)
         if not differences:
             return ReconciliationResult("IN_SYNC", local=local, database=database)
+        if local.authority_backend == "postgresql" and database.authority_backend == "postgresql":
+            return ReconciliationResult("DATABASE_AHEAD", local=local, database=database, differences=tuple(differences))
         local_completed = len(local.completed_tasks)
         database_completed = len(database.completed_tasks)
         if set(differences).issubset({"completed_tasks", "last_completed_task_id", "last_checkpoint_task_id"}):

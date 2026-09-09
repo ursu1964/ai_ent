@@ -5,27 +5,16 @@ import uuid
 from pathlib import Path
 
 from alembic import command
-from sqlalchemy import delete
 
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
-from ai_ent.persistence.models import (
-    BootstrapCheckpoint,
-    BootstrapRun,
-    BootstrapStateAuthority,
-    Checkpoint,
-    Execution,
-    Project,
-    Task,
-    TaskDependency,
-    TaskLease,
-)
 from ai_ent.persistence.repositories import (
     BootstrapRunRepository,
     ProjectRepository,
     TaskRepository,
 )
+from tests.integration.helpers import clean_test_tables, make_test_suffix
 
 
 def integration_database() -> Database:
@@ -39,16 +28,7 @@ def integration_database() -> Database:
 
 
 def clean_tables(database: Database) -> None:
-    with database.session() as session:
-        session.execute(delete(BootstrapStateAuthority))
-        session.execute(delete(BootstrapCheckpoint))
-        session.execute(delete(BootstrapRun))
-        session.execute(delete(TaskLease))
-        session.execute(delete(Checkpoint))
-        session.execute(delete(Execution))
-        session.execute(delete(TaskDependency))
-        session.execute(delete(Task))
-        session.execute(delete(Project))
+    clean_test_tables(database)
 
 
 def seed_project_and_tasks(database: Database, suffix: str) -> tuple[str, str, str]:
@@ -68,7 +48,7 @@ def test_postgres_bootstrap_run_lifecycle_and_checkpoints() -> None:
     database = integration_database()
     clean_tables(database)
     repository = BootstrapRunRepository()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
     project_id, task_a, task_b = seed_project_and_tasks(database, suffix)
     run_id = f"run-{suffix}"
 
@@ -124,7 +104,7 @@ def test_postgres_bootstrap_run_rollback_and_idempotency() -> None:
     database = integration_database()
     clean_tables(database)
     repository = BootstrapRunRepository()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
     project_id, task_a, _ = seed_project_and_tasks(database, suffix)
     run_id = f"run-{suffix}"
 

@@ -6,23 +6,12 @@ import uuid
 from pathlib import Path
 
 from alembic import command
-from sqlalchemy import delete
 
 from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
-from ai_ent.persistence.models import (
-    BootstrapCheckpoint,
-    BootstrapRun,
-    BootstrapStateAuthority,
-    Checkpoint,
-    Execution,
-    Project,
-    Task,
-    TaskDependency,
-    TaskLease,
-)
+from tests.integration.helpers import clean_test_tables, make_test_run_id, make_test_suffix
 
 
 def integration_database() -> Database:
@@ -36,16 +25,7 @@ def integration_database() -> Database:
 
 
 def clean_tables(database: Database) -> None:
-    with database.session() as session:
-        session.execute(delete(BootstrapStateAuthority))
-        session.execute(delete(BootstrapCheckpoint))
-        session.execute(delete(BootstrapRun))
-        session.execute(delete(TaskLease))
-        session.execute(delete(Checkpoint))
-        session.execute(delete(Execution))
-        session.execute(delete(TaskDependency))
-        session.execute(delete(Task))
-        session.execute(delete(Project))
+    clean_test_tables(database)
 
 
 def write_state(path: Path, payload: dict[str, object]) -> None:
@@ -57,7 +37,8 @@ def test_postgres_current_history_migrates_reloads_and_ignores_local_as_authorit
     database = integration_database()
     clean_tables(database)
     state_file = tmp_path / ".bootstrap" / "state.json"
-    run_id = f"run-{uuid.uuid4().hex[:8]}"
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
+    run_id = make_test_run_id(suffix)
     write_state(
         state_file,
         {
@@ -67,7 +48,12 @@ def test_postgres_current_history_migrates_reloads_and_ignores_local_as_authorit
             "last_completed_task": "TASK-0003",
         },
     )
-    reconciler = BootstrapStateReconciler(state_file=state_file, database=database, run_id=run_id)
+    reconciler = BootstrapStateReconciler(
+        state_file=state_file,
+        database=database,
+        run_id=run_id,
+        project_id=f"test-project-{suffix}",
+    )
 
     try:
         migrated = reconciler.migrate()
@@ -75,7 +61,12 @@ def test_postgres_current_history_migrates_reloads_and_ignores_local_as_authorit
         assert migrated.backup_path is not None
         assert migrated.backup_path.exists()
 
-        reloaded = BootstrapStateReconciler(state_file=state_file, database=database, run_id=run_id)
+        reloaded = BootstrapStateReconciler(
+            state_file=state_file,
+            database=database,
+            run_id=run_id,
+            project_id=f"test-project-{suffix}",
+        )
         authoritative = reloaded.load_authoritative_state()
         assert authoritative is not None
         assert authoritative["state_backend"] == "postgresql"

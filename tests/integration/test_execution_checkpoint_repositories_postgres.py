@@ -5,22 +5,10 @@ import uuid
 from pathlib import Path
 
 from alembic import command
-from sqlalchemy import delete
 
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
-from ai_ent.persistence.models import (
-    BootstrapCheckpoint,
-    BootstrapRun,
-    BootstrapStateAuthority,
-    Checkpoint,
-    Execution,
-    Project,
-    Task,
-    TaskDependency,
-    TaskLease,
-)
 from ai_ent.persistence.repositories import (
     CheckpointRepository,
     DuplicateCheckpointError,
@@ -29,6 +17,7 @@ from ai_ent.persistence.repositories import (
     ProjectRepository,
     TaskRepository,
 )
+from tests.integration.helpers import clean_test_tables, make_test_suffix
 
 
 def integration_database() -> Database:
@@ -42,16 +31,7 @@ def integration_database() -> Database:
 
 
 def clean_tables(database: Database) -> None:
-    with database.session() as session:
-        session.execute(delete(BootstrapStateAuthority))
-        session.execute(delete(BootstrapCheckpoint))
-        session.execute(delete(BootstrapRun))
-        session.execute(delete(TaskLease))
-        session.execute(delete(Checkpoint))
-        session.execute(delete(Execution))
-        session.execute(delete(TaskDependency))
-        session.execute(delete(Task))
-        session.execute(delete(Project))
+    clean_test_tables(database)
 
 
 def test_postgres_execution_checkpoint_repositories() -> None:
@@ -61,7 +41,7 @@ def test_postgres_execution_checkpoint_repositories() -> None:
     tasks = TaskRepository()
     executions = ExecutionRepository()
     checkpoints = CheckpointRepository()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
 
     try:
         with database.session() as session:
@@ -107,7 +87,7 @@ def test_postgres_execution_checkpoint_constraint_translation() -> None:
     clean_tables(database)
     executions = ExecutionRepository()
     checkpoints = CheckpointRepository()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
 
     try:
         with database.session() as session:

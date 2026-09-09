@@ -8,25 +8,19 @@ from datetime import timedelta
 from pathlib import Path
 
 from alembic import command
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
 from ai_ent.persistence.models import (
-    BootstrapCheckpoint,
-    BootstrapRun,
-    BootstrapStateAuthority,
-    Checkpoint,
     Execution,
-    Project,
-    Task,
-    TaskDependency,
     TaskLease,
 )
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 from ai_ent.scheduler.claiming import TaskClaimingService
+from tests.integration.helpers import clean_test_tables, make_test_suffix
 
 
 def integration_database() -> Database:
@@ -40,16 +34,7 @@ def integration_database() -> Database:
 
 
 def clean_tables(database: Database) -> None:
-    with database.session() as session:
-        session.execute(delete(BootstrapStateAuthority))
-        session.execute(delete(BootstrapCheckpoint))
-        session.execute(delete(BootstrapRun))
-        session.execute(delete(TaskLease))
-        session.execute(delete(Checkpoint))
-        session.execute(delete(Execution))
-        session.execute(delete(TaskDependency))
-        session.execute(delete(Task))
-        session.execute(delete(Project))
+    clean_test_tables(database)
 
 
 def create_task(database: Database, suffix: str, *, task_id: str | None = None) -> str:
@@ -67,7 +52,7 @@ def test_postgres_claim_creates_execution_and_lease_atomically() -> None:
     database = integration_database()
     clean_tables(database)
     service = TaskClaimingService()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
     task_id = create_task(database, suffix)
 
     try:
@@ -99,7 +84,7 @@ def test_postgres_expired_lease_blocks_renewal_but_not_ownership_validation() ->
     database = integration_database()
     clean_tables(database)
     service = TaskClaimingService()
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
     task_id = create_task(database, suffix)
 
     try:
@@ -132,7 +117,7 @@ def test_postgres_expired_lease_blocks_renewal_but_not_ownership_validation() ->
 def test_postgres_concurrent_claim_has_exactly_one_winner() -> None:
     database = integration_database()
     clean_tables(database)
-    suffix = uuid.uuid4().hex[:8]
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
     task_id = create_task(database, suffix)
     settings = database.settings
     barrier = threading.Barrier(2)

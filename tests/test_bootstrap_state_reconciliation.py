@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from ai_ent.bootstrap.models import BootstrapTask
 from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.models import Base
@@ -75,6 +76,27 @@ def test_database_only_state_is_preserved(tmp_path: Path) -> None:
     assert result.outcome == "DATABASE_ONLY"
     assert result.database is not None
     assert result.database.completed_tasks == ("TASK-0001",)
+
+
+def test_post_cutover_legacy_json_drift_is_database_ahead(tmp_path: Path) -> None:
+    database, _ = session_factory()
+    initial = tmp_path / "initial.json"
+    write_state(initial, {"completed_tasks": ["TASK-0001"], "blocked_tasks": {}, "last_completed_task": "TASK-0001"})
+    BootstrapStateReconciler(state_file=initial, database=database).migrate()
+
+    drifted = tmp_path / "drifted.json"
+    write_state(
+        drifted,
+        {
+            "completed_tasks": ["TASK-0001"],
+            "blocked_tasks": {},
+            "last_completed_task": "TASK-0001",
+            "state_backend": "postgresql",
+            "last_verified_commit": "different",
+        },
+    )
+
+    assert BootstrapStateReconciler(state_file=drifted, database=database).inspect().outcome == "DATABASE_AHEAD"
 
 
 def test_local_ahead_database_ahead_and_conflict_are_reported(tmp_path: Path) -> None:
@@ -197,3 +219,29 @@ def test_bootstrap_state_loader_preserves_pre_db_local_fallback(monkeypatch, tmp
 
     loaded = json.loads(state_file.read_text(encoding="utf-8"))
     assert loaded["completed_tasks"] == ["TASK-0001", "TASK-0002"]
+
+
+def test_mark_completed_syncs_new_manifest_task_after_cutover(monkeypatch, tmp_path: Path) -> None:
+    from ai_ent.bootstrap import state_reconciliation
+
+    database, _ = session_factory()
+    state_file = tmp_path / ".bootstrap" / "state.json"
+    write_state(state_file, {"completed_tasks": ["TASK-0001"], "blocked_tasks": {}, "last_completed_task": "TASK-0001"})
+    reconciler = BootstrapStateReconciler(state_file=state_file, database=database)
+    assert reconciler.migrate().outcome == "IN_SYNC"
+
+    original_tasks = state_reconciliation.load_tasks()
+    monkeypatch.setattr(
+        state_reconciliation,
+        "load_tasks",
+        lambda: {
+            **original_tasks,
+            "TASK-NEW": BootstrapTask(id="TASK-NEW", stage="T", title="New Task", executor="fake"),
+        },
+    )
+
+    assert reconciler.mark_completed("TASK-NEW", "done")
+    authoritative = reconciler.load_authoritative_state()
+    assert authoritative is not None
+    assert authoritative["last_completed_task"] == "TASK-NEW"
+    assert "TASK-NEW" in authoritative["completed_tasks"]

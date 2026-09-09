@@ -1,0 +1,22 @@
+id: TASK-0023
+stage: B04
+title: Single scheduler iteration
+objective: >
+  Prove one scheduler orchestration step: list DB-derived READY tasks,
+  deterministically select one, atomically claim it, create an execution and
+  lease, construct an ExecutionPackage, return the result, and stop.
+executor: fake
+depends_on:
+  - TASK-0022
+allowed_paths:
+  - src/ai_ent/bootstrap/state_reconciliation.py
+  - src/ai_ent/scheduler/**
+  - tests/**
+  - manifest/bootstrap/tasks/TASK-0023.yaml
+outputs:
+  - src/ai_ent/scheduler/iteration.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
