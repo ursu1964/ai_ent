@@ -10,6 +10,9 @@ from ai_ent.persistence.models import (
     Checkpoint,
     Execution,
     Project,
+    RuntimeHumanGate,
+    RuntimePlanImport,
+    RuntimeTaskPlanBinding,
     Task,
     TaskDependency,
     TaskLease,
@@ -57,6 +60,10 @@ def clean_test_tables(database: Database) -> None:
                 )
             )
         )
+        import_ids = select(RuntimePlanImport.id).where(RuntimePlanImport.project_id.like(f"{TEST_PROJECT_PREFIX}%"))
+        session.execute(delete(RuntimeHumanGate).where(RuntimeHumanGate.import_id.in_(import_ids)))
+        session.execute(delete(RuntimeTaskPlanBinding).where(RuntimeTaskPlanBinding.import_id.in_(import_ids)))
+        session.execute(delete(RuntimePlanImport).where(RuntimePlanImport.id.in_(import_ids)))
         session.execute(delete(BootstrapCheckpoint).where(BootstrapCheckpoint.run_id.in_(run_ids)))
         session.execute(delete(BootstrapRun).where(test_run_filter))
         session.execute(delete(TaskLease).where(TaskLease.task_id.in_(task_ids)))

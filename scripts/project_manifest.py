@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+from ai_ent.persistence.config import load_database_settings
+from ai_ent.persistence.database import Database
 from ai_ent.project_manifest import (
     compile_project_manifest,
     dry_run_implementation_plan,
@@ -19,6 +21,11 @@ from ai_ent.project_manifest import (
     write_feasibility_evaluation,
     write_implementation_plan,
     write_trace_validation,
+)
+from ai_ent.runtime_handoff import (
+    DEFAULT_RUNTIME_PROJECT_ID,
+    RuntimePlanImporter,
+    load_runtime_handoff_artifacts,
 )
 
 
@@ -314,6 +321,43 @@ def plan_lock(args: argparse.Namespace) -> int:
     return 0 if dry_run.ok else 1
 
 
+def import_frozen_plan(args: argparse.Namespace) -> int:
+    artifacts = load_runtime_handoff_artifacts(
+        manifest_root=Path(args.manifest_root),
+        output_dir=Path(args.output_dir),
+    )
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = RuntimePlanImporter().import_frozen_plan(
+                session,
+                artifacts,
+                runtime_project_id=args.project,
+                repository_root=Path.cwd(),
+            )
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+            return 0 if result.ok else 1
+    finally:
+        database.dispose()
+
+
+def runtime_plan_status(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            status = RuntimePlanImporter().status(
+                session,
+                project_id=args.project,
+                include_guarded_dry_run=args.guarded_dry_run,
+            )
+            print(json.dumps(status.as_dict(), indent=2, sort_keys=True))
+            return 0
+    finally:
+        database.dispose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -384,6 +428,19 @@ def build_parser() -> argparse.ArgumentParser:
     lock_parser = subparsers.add_parser("plan-lock")
     lock_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     lock_parser.set_defaults(func=plan_lock)
+
+    import_parser = subparsers.add_parser("import-frozen-plan")
+    import_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    import_parser.add_argument("--output-dir", default=".build/compiled")
+    import_parser.add_argument("--env-file", default=".env")
+    import_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    import_parser.set_defaults(func=import_frozen_plan)
+
+    status_parser = subparsers.add_parser("runtime-plan-status")
+    status_parser.add_argument("--env-file", default=".env")
+    status_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    status_parser.add_argument("--guarded-dry-run", action="store_true")
+    status_parser.set_defaults(func=runtime_plan_status)
     return parser
 
 

@@ -15,6 +15,9 @@ from ai_ent.persistence.models import (
     Checkpoint,
     Execution,
     Project,
+    RuntimeHumanGate,
+    RuntimePlanImport,
+    RuntimeTaskPlanBinding,
     Task,
     TaskDependency,
     TaskLease,
@@ -30,6 +33,9 @@ EXPECTED_TABLES = {
     "bootstrap_runs",
     "bootstrap_checkpoints",
     "bootstrap_state_authority",
+    "runtime_plan_imports",
+    "runtime_task_plan_bindings",
+    "runtime_human_gates",
 }
 
 
@@ -95,6 +101,81 @@ def test_task_persistence_and_project_relationship() -> None:
         assert persisted.status == "pending"
         assert persisted.execution_class == "implementation"
         assert persisted.schedulable is True
+
+
+def test_runtime_plan_import_models_preserve_plan_metadata() -> None:
+    factory = session_factory()
+    with factory() as session:
+        project = seed_project(session)
+        task = Task(id="IMPL-A", project_id=project.id, title="A", fingerprint="fp-a")
+        session.add(task)
+        session.flush()
+        receipt = RuntimePlanImport(
+            id="rhi-plan-a-v1",
+            project_id=project.id,
+            plan_project_id="PRJ-A",
+            plan_id="PLAN-A",
+            plan_version="1",
+            status="imported",
+            imported_at=datetime.now(UTC),
+            compiled_project_hash="a" * 64,
+            capability_resolution_hash="b" * 64,
+            trace_validation_hash="c" * 64,
+            implementation_plan_hash="d" * 64,
+            feasibility_hash="e" * 64,
+            dry_run_hash="f" * 64,
+            task_fingerprint_hash="1" * 64,
+            dependency_graph_hash="2" * 64,
+            importer_version="rhi-001.test",
+            task_count=1,
+            dependency_count=0,
+            human_gate_count=1,
+            effective_concurrency=1,
+        )
+        session.add(receipt)
+        session.add(
+            RuntimeTaskPlanBinding(
+                task_id=task.id,
+                import_id=receipt.id,
+                plan_id=receipt.plan_id,
+                plan_version=receipt.plan_version,
+                fingerprint="fp-a",
+                risk_level="HIGH",
+                agent_role="AGT-001",
+                model_profile="CODING_STANDARD",
+                executor="codex",
+                verification_profile="STANDARD_REGRESSION",
+                feasibility_status="HUMAN_APPROVAL_REQUIRED",
+                policy_decision="HUMAN_APPROVAL_REQUIRED",
+                implements_json="{}",
+                write_scope_json="{}",
+                acceptance_json="[]",
+            )
+        )
+        session.add(
+            RuntimeHumanGate(
+                id="GATE-A",
+                import_id=receipt.id,
+                task_id=task.id,
+                plan_id=receipt.plan_id,
+                plan_version=receipt.plan_version,
+                status="pending",
+                reason="approval required",
+                risk_level="HIGH",
+                approval_boundary="execution",
+                expected_evidence_json="[]",
+                downstream_task_ids_json="[]",
+                resume_semantics="resume",
+            )
+        )
+        session.commit()
+
+        persisted = session.get(RuntimePlanImport, receipt.id)
+
+        assert persisted is not None
+        assert persisted.project_id == "project-1"
+        assert persisted.task_bindings[0].task_id == "IMPL-A"
+        assert persisted.human_gates[0].status == "pending"
 
 
 def test_task_dependency_persistence() -> None:

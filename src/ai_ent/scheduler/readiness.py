@@ -6,7 +6,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_ent.persistence.models import Task, TaskDependency, TaskLease
+from ai_ent.persistence.models import RuntimeHumanGate, Task, TaskDependency, TaskLease
 from ai_ent.persistence.repositories.tasks import TaskRepository
 from ai_ent.scheduler.claiming import database_now
 
@@ -47,6 +47,7 @@ class _ProjectGraph:
     dependencies: dict[str, set[str]] = field(default_factory=dict)
     active_leased_task_ids: frozenset[str] = frozenset()
     cycle_tasks: frozenset[str] = frozenset()
+    pending_gate_task_ids: frozenset[str] = frozenset()
 
 
 class TaskReadinessService:
@@ -98,6 +99,8 @@ class TaskReadinessService:
             )
         if not task.schedulable:
             return ReadinessDecision(task_id=task_id, status="NOT_SCHEDULABLE", reasons=("not_schedulable",))
+        if task_id in graph.pending_gate_task_ids:
+            return ReadinessDecision(task_id=task_id, status="NOT_SCHEDULABLE", reasons=("pending_human_gate",))
         if task.execution_class != "implementation":
             return ReadinessDecision(
                 task_id=task_id,
@@ -186,11 +189,19 @@ class TaskReadinessService:
                 )
             ).all()
         )
+        pending_gate_task_ids = set(
+            session.scalars(
+                select(RuntimeHumanGate.task_id)
+                .join(Task, RuntimeHumanGate.task_id == Task.id)
+                .where(Task.project_id == project_id, RuntimeHumanGate.status == "pending")
+            ).all()
+        )
         return _ProjectGraph(
             tasks=tasks,
             dependencies=dependencies,
             active_leased_task_ids=frozenset(active_leased_task_ids),
             cycle_tasks=frozenset(_cycle_nodes(dependencies)),
+            pending_gate_task_ids=frozenset(pending_gate_task_ids),
         )
 
 

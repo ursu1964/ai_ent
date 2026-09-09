@@ -25,6 +25,8 @@ LeaseStatus = Literal["active", "released", "completed", "expired"]
 BootstrapRunStatus = Literal["pending", "running", "blocked", "failed", "completed"]
 BootstrapCheckpointKind = Literal["task_completed", "run_blocked", "run_failed", "run_completed", "state_snapshot"]
 BootstrapStateBackend = Literal["local_json", "postgresql"]
+RuntimePlanImportStatus = Literal["imported", "conflict", "failed"]
+RuntimeHumanGateStatus = Literal["pending", "approved", "rejected"]
 
 
 def utc_now() -> datetime:
@@ -58,6 +60,7 @@ class Project(TimestampMixin, Base):
 
     tasks: Mapped[list[Task]] = relationship(back_populates="project")
     bootstrap_runs: Mapped[list[BootstrapRun]] = relationship(back_populates="project")
+    runtime_plan_imports: Mapped[list[RuntimePlanImport]] = relationship(back_populates="project")
 
     __table_args__ = (
         CheckConstraint("status in ('active', 'archived')", name="ck_projects_status"),
@@ -89,6 +92,8 @@ class Task(TimestampMixin, Base):
     executions: Mapped[list[Execution]] = relationship(back_populates="task")
     checkpoints: Mapped[list[Checkpoint]] = relationship(back_populates="task")
     leases: Mapped[list[TaskLease]] = relationship(back_populates="task")
+    runtime_plan_binding: Mapped[RuntimeTaskPlanBinding | None] = relationship(back_populates="task")
+    runtime_human_gates: Mapped[list[RuntimeHumanGate]] = relationship(back_populates="task")
 
     __table_args__ = (
         CheckConstraint(
@@ -302,4 +307,99 @@ class BootstrapStateAuthority(TimestampMixin, Base):
         CheckConstraint("backend in ('local_json', 'postgresql')", name="ck_bootstrap_state_authority_backend"),
         CheckConstraint("status in ('pending', 'active')", name="ck_bootstrap_state_authority_status"),
         Index("ix_bootstrap_state_authority_project_backend", "project_id", "backend", "status"),
+    )
+
+
+class RuntimePlanImport(TimestampMixin, Base):
+    __tablename__ = "runtime_plan_imports"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    plan_project_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[RuntimePlanImportStatus] = mapped_column(String(40), default="imported", nullable=False)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    compiled_project_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    capability_resolution_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    trace_validation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    implementation_plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    feasibility_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dry_run_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_fingerprint_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dependency_graph_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    importer_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    task_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    dependency_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    human_gate_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    effective_concurrency: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    project: Mapped[Project] = relationship(back_populates="runtime_plan_imports")
+    task_bindings: Mapped[list[RuntimeTaskPlanBinding]] = relationship(back_populates="plan_import")
+    human_gates: Mapped[list[RuntimeHumanGate]] = relationship(back_populates="plan_import")
+
+    __table_args__ = (
+        CheckConstraint("status in ('imported', 'conflict', 'failed')", name="ck_runtime_plan_imports_status"),
+        CheckConstraint("task_count >= 0", name="ck_runtime_plan_imports_task_count"),
+        CheckConstraint("dependency_count >= 0", name="ck_runtime_plan_imports_dependency_count"),
+        CheckConstraint("human_gate_count >= 0", name="ck_runtime_plan_imports_human_gate_count"),
+        CheckConstraint("effective_concurrency >= 1", name="ck_runtime_plan_imports_effective_concurrency"),
+        UniqueConstraint("plan_id", "plan_version", name="uq_runtime_plan_imports_plan"),
+        Index("ix_runtime_plan_imports_project", "project_id"),
+    )
+
+
+class RuntimeTaskPlanBinding(TimestampMixin, Base):
+    __tablename__ = "runtime_task_plan_bindings"
+
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), primary_key=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("runtime_plan_imports.id", ondelete="RESTRICT"), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(40), nullable=False)
+    agent_role: Mapped[str] = mapped_column(String(80), nullable=False)
+    model_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    executor: Mapped[str] = mapped_column(String(80), nullable=False)
+    verification_profile: Mapped[str] = mapped_column(String(80), nullable=False)
+    feasibility_status: Mapped[str] = mapped_column(String(80), nullable=False)
+    policy_decision: Mapped[str] = mapped_column(String(80), nullable=False)
+    implements_json: Mapped[str] = mapped_column(Text, nullable=False)
+    write_scope_json: Mapped[str] = mapped_column(Text, nullable=False)
+    acceptance_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    task: Mapped[Task] = relationship(back_populates="runtime_plan_binding")
+    plan_import: Mapped[RuntimePlanImport] = relationship(back_populates="task_bindings")
+
+    __table_args__ = (
+        UniqueConstraint("import_id", "task_id", name="uq_runtime_task_plan_bindings_import_task"),
+        Index("ix_runtime_task_plan_bindings_import", "import_id"),
+        Index("ix_runtime_task_plan_bindings_plan", "plan_id", "plan_version"),
+    )
+
+
+class RuntimeHumanGate(TimestampMixin, Base):
+    __tablename__ = "runtime_human_gates"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("runtime_plan_imports.id", ondelete="RESTRICT"), nullable=False)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[RuntimeHumanGateStatus] = mapped_column(String(40), default="pending", nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(40), nullable=False)
+    approval_boundary: Mapped[str] = mapped_column(String(120), nullable=False)
+    expected_evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+    downstream_task_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    resume_semantics: Mapped[str] = mapped_column(Text, nullable=False)
+
+    plan_import: Mapped[RuntimePlanImport] = relationship(back_populates="human_gates")
+    task: Mapped[Task] = relationship(back_populates="runtime_human_gates")
+
+    __table_args__ = (
+        CheckConstraint("status in ('pending', 'approved', 'rejected')", name="ck_runtime_human_gates_status"),
+        UniqueConstraint("import_id", "id", name="uq_runtime_human_gates_import_gate"),
+        Index("ix_runtime_human_gates_import", "import_id"),
+        Index("ix_runtime_human_gates_task_status", "task_id", "status"),
     )
