@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -1828,18 +1830,21 @@ def freeze_implementation_plan(
 
 def current_environment_profile(repository_root: Path | None = None) -> EnvironmentProfile:
     root = repository_root or Path.cwd()
+    project_python = root / "aient" / "bin" / "python"
+    python_path = project_python if project_python.exists() else Path(sys.executable)
+    project_alembic = root / "aient" / "bin" / "alembic"
     return EnvironmentProfile(
         profile_id="local-current",
         repository_path=str(root.resolve()),
         git_available=_command_available("git"),
         postgresql_available=_command_available("psql"),
-        alembic_available=(root / "aient" / "bin" / "alembic").exists(),
+        alembic_available=project_alembic.exists() or importlib.util.find_spec("alembic") is not None,
         docker_available=_command_succeeds(["docker", "info"]),
         docker_compose_available=_command_succeeds(["docker", "compose", "version"]),
         codex_command_configured=bool(os.environ.get("AIENT_CODEX_COMMAND", "").strip()),
         codex_executable_available=_codex_executable_available(),
-        python_path=str(root / "aient" / "bin" / "python"),
-        python_available=(root / "aient" / "bin" / "python").exists(),
+        python_path=str(python_path),
+        python_available=python_path.exists(),
         ram_mb=_ram_mb(),
         gpu_available=bool(shutil.which("nvidia-smi")),
         external_network="available",
