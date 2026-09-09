@@ -1,0 +1,16 @@
+requirements:
+  - id: OPS-001
+    title: Runtime kernel supervises execution and enforces lifecycle state
+    classification: NORMATIVE
+    source_refs: [R20, R21]
+    capabilities: [C20]
+  - id: OPS-002
+    title: Crash recovery must inspect durable state before resuming work
+    classification: NORMATIVE
+    source_refs: [R12, R21, BEAG-001]
+    capabilities: [C12, C20]
+  - id: OPS-003
+    title: Operator guarded runs must remain bounded
+    classification: NORMATIVE
+    source_refs: [BEAG-001]
+    capabilities: [C12, C20]

@@ -1,0 +1,16 @@
+requirements:
+  - id: SEC-001
+    title: AI output is never authoritative without deterministic validation
+    classification: NORMATIVE
+    source_refs: [R4, R21, R22]
+    capabilities: [C03, C04, C20]
+  - id: SEC-002
+    title: Workers receive bounded task scope and no implicit commit or push authority
+    classification: NORMATIVE
+    source_refs: [R12, R18, R21, BEAG-001]
+    capabilities: [C12, C18, C20]
+  - id: SEC-003
+    title: Human approval is required for policy, ambiguity, or reconciliation boundaries
+    classification: NORMATIVE
+    source_refs: [R4, R10, R21]
+    capabilities: [C04, C10, C20]

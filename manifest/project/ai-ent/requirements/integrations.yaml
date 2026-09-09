@@ -1,0 +1,11 @@
+requirements:
+  - id: INT-001
+    title: External integration capabilities are governed and deferred until core compiler maturity
+    classification: FUTURE/DEFERRED
+    source_refs: [R11]
+    capabilities: [C11]
+  - id: INT-002
+    title: Model/tool adapters must be isolated behind explicit contracts
+    classification: NORMATIVE
+    source_refs: [R4, R18, R21]
+    capabilities: [C04, C18]

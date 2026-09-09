@@ -1,0 +1,13 @@
+security_controls:
+  - id: SC-001
+    name: Human approval boundary
+    classification: NORMATIVE
+    source_refs: [R4, R10, R21]
+  - id: SC-002
+    name: Bounded worker scope
+    classification: NORMATIVE
+    source_refs: [R12, R18, BEAG-001]
+  - id: SC-003
+    name: Verified commit boundary
+    classification: NORMATIVE
+    source_refs: [R12, R22, BEAG-001]

@@ -1,0 +1,11 @@
+deployment:
+  id: DEP-ARCH-001
+  classification: NORMATIVE
+  source_refs: [R12, R20]
+  topology: modular_monolith_first
+  database: postgresql
+  runtime_mode: guarded_operator_invoked
+  deferred:
+    - distributed_workers
+    - production_cloud_deployment
+    - external_marketplace

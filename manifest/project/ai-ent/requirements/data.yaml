@@ -1,0 +1,16 @@
+requirements:
+  - id: DATA-001
+    title: Store canonical objects and relationships as first-class records
+    classification: NORMATIVE
+    source_refs: [R1, R3, R16]
+    capabilities: [C02, C16]
+  - id: DATA-002
+    title: Store tasks, executions, checkpoints, leases, and run state durably
+    classification: NORMATIVE
+    source_refs: [R12, R17, R20, BEAG-001]
+    capabilities: [C12, C17, C20]
+  - id: DATA-003
+    title: Store artifact provenance and validation evidence
+    classification: NORMATIVE
+    source_refs: [R22]
+    capabilities: [C20]

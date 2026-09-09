@@ -1,0 +1,26 @@
+roadmap:
+  - id: MMC-001
+    title: Master Manifest Construction
+    classification: NORMATIVE
+    source_refs: [R14, R15, BEAG-001]
+    status: IN_PROGRESS
+  - id: MMC-002
+    title: Manifest Compiler and deterministic normalization
+    classification: NORMATIVE
+    source_refs: [R15]
+    status: PLANNED
+  - id: MMC-003
+    title: Capability dependency resolution
+    classification: NORMATIVE
+    source_refs: [R15, R16]
+    status: PLANNED
+  - id: MMC-004
+    title: Architecture and requirement trace validation
+    classification: NORMATIVE
+    source_refs: [R16, R22]
+    status: PLANNED
+  - id: MMC-005
+    title: Task DAG generation
+    classification: NORMATIVE
+    source_refs: [R17, R21]
+    status: PLANNED

@@ -1,0 +1,21 @@
+agents:
+  - id: ATP-001
+    name: Manifest Interpreter
+    classification: NORMATIVE
+    source_refs: [R4]
+    capability: C04
+  - id: ATP-002
+    name: Planner Worker
+    classification: NORMATIVE
+    source_refs: [R17]
+    capability: C17
+  - id: ATP-003
+    name: Generator Worker
+    classification: NORMATIVE
+    source_refs: [R18, R21]
+    capability: C18
+  - id: ATP-004
+    name: Verification Worker
+    classification: NORMATIVE
+    source_refs: [R3, R22]
+    capability: C03

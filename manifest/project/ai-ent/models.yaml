@@ -1,0 +1,13 @@
+models:
+  - id: MDL-001
+    name: Codex executor model
+    classification: NORMATIVE
+    source_refs: [R4, R18, BEAG-001]
+    usage: bounded code implementation through ExecutionPackage
+    status: DEVELOPMENT
+  - id: MDL-002
+    name: Future specialist model registry
+    classification: FUTURE/DEFERRED
+    source_refs: [R18]
+    usage: model selection for specialist generators
+    status: DEFERRED

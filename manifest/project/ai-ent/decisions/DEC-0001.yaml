@@ -1,0 +1,16 @@
+decisions:
+  - id: DEC-0001
+    title: Use PostgreSQL as authoritative runtime persistence before autonomous looping
+    classification: DECISION
+    status: accepted
+    source_refs: [R2, R12, BEAG-001]
+  - id: DEC-0002
+    title: Use guarded bounded autonomy rather than unbounded daemon execution
+    classification: DECISION
+    status: accepted
+    source_refs: [R12, R20, R21, BEAG-001]
+  - id: DEC-0003
+    title: Defer API UI deployment and distributed workers until after compiler input is validated
+    classification: DECISION
+    status: accepted
+    source_refs: [R10, R11, R21, BEAG-001]

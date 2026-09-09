@@ -1,0 +1,31 @@
+interfaces:
+  - id: IF-001
+    name: Manifest validation interface
+    classification: NORMATIVE
+    source_refs: [R14, R15]
+    from_component: CMP-001
+    to_component: CMP-002
+  - id: IF-002
+    name: Compiled project graph interface
+    classification: NORMATIVE
+    source_refs: [R15, R16]
+    from_component: CMP-002
+    to_component: CMP-003
+  - id: IF-003
+    name: Execution plan interface
+    classification: NORMATIVE
+    source_refs: [R17]
+    from_component: CMP-003
+    to_component: CMP-004
+  - id: IF-004
+    name: Worker package interface
+    classification: NORMATIVE
+    source_refs: [R18, R21]
+    from_component: CMP-004
+    to_component: CMP-005
+  - id: IF-005
+    name: Evidence recording interface
+    classification: NORMATIVE
+    source_refs: [R22]
+    from_component: CMP-005
+    to_component: CMP-007

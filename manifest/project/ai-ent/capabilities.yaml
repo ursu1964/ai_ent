@@ -1,0 +1,139 @@
+capabilities:
+  - id: C01
+    name: AEPM manifest intake
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R1, R2]
+  - id: C02
+    name: Canonical AEIR project model
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R1, R3]
+    depends_on: [C01]
+  - id: C03
+    name: Deterministic validation engine
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R1, R3]
+    depends_on: [C01, C02]
+  - id: C04
+    name: Controlled AI interpretation
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R4]
+    depends_on: [C01, C03]
+  - id: C05
+    name: Universal manifest transformation engine
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R5]
+    depends_on: [C02, C03]
+  - id: C06
+    name: Universal artifact generation framework
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R6]
+    depends_on: [C05]
+  - id: C07
+    name: Universal execution and runtime model
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R7, BEAG-001]
+    depends_on: [C06]
+  - id: C08
+    name: Governance evolution and intelligence framework
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R8]
+    depends_on: [C07]
+  - id: C09
+    name: Universal AI-Enterprise kernel
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R9, BEAG-001]
+    depends_on: [C03, C07]
+  - id: C10
+    name: Experience and interaction framework
+    status: CONDITIONAL
+    maturity: NOT_IMPLEMENTED
+    classification: FUTURE/DEFERRED
+    source_refs: [R10]
+    depends_on: [C09]
+  - id: C11
+    name: Integration and ecosystem framework
+    status: CONDITIONAL
+    maturity: NOT_IMPLEMENTED
+    classification: FUTURE/DEFERRED
+    source_refs: [R11]
+    depends_on: [C09]
+  - id: C12
+    name: Implementation and bootstrap engine
+    status: REQUIRED
+    maturity: VALIDATED
+    classification: NORMATIVE
+    source_refs: [R12, R13, BEAG-001]
+  - id: C13
+    name: Repository bootstrap structure
+    status: REQUIRED
+    maturity: VALIDATED
+    classification: NORMATIVE
+    source_refs: [R13, BEAG-001]
+    depends_on: [C12]
+  - id: C14
+    name: Executable manifest schema
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R14]
+    depends_on: [C01, C13]
+  - id: C15
+    name: Manifest compiler
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R15]
+    depends_on: [C14]
+  - id: C16
+    name: Knowledge graph
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    classification: NORMATIVE
+    source_refs: [R16]
+    depends_on: [C15]
+  - id: C17
+    name: Execution planning engine
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R17, BEAG-001]
+    depends_on: [C16]
+  - id: C18
+    name: Generator orchestration framework
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R18, BEAG-001]
+    depends_on: [C17]
+  - id: C19
+    name: Project memory and context engine
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R19, BEAG-001]
+    depends_on: [C16, C18]
+  - id: C20
+    name: Runtime kernel and evidence graph
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    classification: NORMATIVE
+    source_refs: [R20, R21, R22, BEAG-001]
+    depends_on: [C09, C17, C18, C19]

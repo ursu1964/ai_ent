@@ -1,0 +1,29 @@
+data_objects:
+  - id: DAT-001
+    name: ProjectManifest
+    classification: NORMATIVE
+    source_refs: [R1, R14]
+  - id: DAT-002
+    name: CanonicalObject
+    classification: NORMATIVE
+    source_refs: [R1, R3, R16]
+  - id: DAT-003
+    name: CanonicalRelationship
+    classification: NORMATIVE
+    source_refs: [R1, R3, R16]
+  - id: DAT-004
+    name: ExecutionPlan
+    classification: NORMATIVE
+    source_refs: [R17]
+  - id: DAT-005
+    name: WorkPackage
+    classification: NORMATIVE
+    source_refs: [R18, R21]
+  - id: DAT-006
+    name: ArtifactEvidence
+    classification: NORMATIVE
+    source_refs: [R22]
+  - id: DAT-007
+    name: BootstrapRuntimeState
+    classification: NORMATIVE
+    source_refs: [R12, BEAG-001]

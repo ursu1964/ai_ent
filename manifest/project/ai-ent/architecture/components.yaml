@@ -1,0 +1,26 @@
+components:
+  - id: CMP-009
+    name: Deterministic Validator
+    classification: NORMATIVE
+    source_refs: [R3, R4]
+    capabilities: [C03]
+  - id: CMP-010
+    name: AI Interpretation Adapter
+    classification: NORMATIVE
+    source_refs: [R4]
+    capabilities: [C04]
+  - id: CMP-011
+    name: Project Memory
+    classification: NORMATIVE
+    source_refs: [R19]
+    capabilities: [C19]
+  - id: CMP-012
+    name: Human Interaction Boundary
+    classification: FUTURE/DEFERRED
+    source_refs: [R10]
+    capabilities: [C10]
+  - id: CMP-013
+    name: Integration Boundary
+    classification: FUTURE/DEFERRED
+    source_refs: [R11]
+    capabilities: [C11]

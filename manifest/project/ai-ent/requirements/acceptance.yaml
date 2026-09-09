@@ -1,0 +1,16 @@
+requirements:
+  - id: ACC-001
+    title: Bootstrap engine acceptance gate must remain passing
+    classification: NORMATIVE
+    source_refs: [BEAG-001]
+    capabilities: [C12, C17, C20]
+  - id: ACC-002
+    title: Master manifest validation must pass before task DAG generation
+    classification: NORMATIVE
+    source_refs: [R15, R17]
+    capabilities: [C15, C17]
+  - id: ACC-003
+    title: Generated implementation DAG must dry-run before execution
+    classification: NORMATIVE
+    source_refs: [R17, R21]
+    capabilities: [C17, C20]

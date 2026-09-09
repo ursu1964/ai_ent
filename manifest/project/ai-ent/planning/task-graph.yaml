@@ -1,0 +1,5 @@
+task_graph:
+  status: NOT_GENERATED
+  classification: FUTURE/DEFERRED
+  source_refs: [R17, R21]
+  note: MMC-001 validates master manifest input only. Execution DAG generation begins in MMC-005.

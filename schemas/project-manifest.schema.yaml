@@ -1,0 +1,41 @@
+schema_id: ai-ent-project-manifest-v0.1
+format: yaml
+validator: ai_ent.project_manifest.validate_project_manifest
+required_documents:
+  - project.yaml
+  - intake.yaml
+  - capabilities.yaml
+  - requirements/functional.yaml
+  - requirements/nonfunctional.yaml
+  - requirements/security.yaml
+  - requirements/data.yaml
+  - requirements/integrations.yaml
+  - requirements/operations.yaml
+  - requirements/acceptance.yaml
+  - architecture/system.yaml
+  - architecture/components.yaml
+  - architecture/data.yaml
+  - architecture/interfaces.yaml
+  - architecture/agent-topology.yaml
+  - architecture/deployment.yaml
+  - architecture/security.yaml
+  - agents.yaml
+  - models.yaml
+  - tools.yaml
+  - verification.yaml
+  - repository.yaml
+  - deployment.yaml
+  - operations.yaml
+  - planning/roadmap.yaml
+  - planning/epics.yaml
+  - planning/features.yaml
+  - planning/task-graph.yaml
+  - planning/implementation-waves.yaml
+checks:
+  - schema_validity
+  - duplicate_ids
+  - source_traceability
+  - capability_dependency_validity
+  - architecture_component_validity
+  - requirement_reference_validity
+  - deterministic_compilation_hash

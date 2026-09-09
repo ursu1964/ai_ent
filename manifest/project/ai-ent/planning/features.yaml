@@ -1,0 +1,13 @@
+features:
+  - id: FEA-001
+    title: Master manifest validator
+    epic: EPC-001
+    requirements: [ACC-002]
+  - id: FEA-002
+    title: Deterministic manifest compiler hash
+    epic: EPC-002
+    requirements: [NFR-001]
+  - id: FEA-003
+    title: Generated implementation DAG dry-run
+    epic: EPC-003
+    requirements: [ACC-003]

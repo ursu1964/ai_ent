@@ -1,0 +1,11 @@
+repository:
+  id: REPO-001
+  classification: NORMATIVE
+  source_refs: [R12, R13, BEAG-001]
+  path: /home/user/projects/ai_ent
+  branch_policy: verified_commits_only
+  protected_paths:
+    - .env
+    - aient/
+    - .bootstrap/
+  evidence_path: artifacts/

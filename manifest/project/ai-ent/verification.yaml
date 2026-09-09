@@ -1,0 +1,19 @@
+verification:
+  gates:
+    - id: VG-001
+      name: Manifest validation
+      classification: NORMATIVE
+      source_refs: [R14, R15]
+    - id: VG-002
+      name: Compiler dry-run
+      classification: NORMATIVE
+      source_refs: [R15, R17]
+    - id: VG-003
+      name: Bootstrap engine regression suite
+      classification: NORMATIVE
+      source_refs: [BEAG-001]
+  commands:
+    - ./aient/bin/python scripts/project_manifest.py validate --manifest-root manifest/project/ai-ent
+    - ./aient/bin/python -m pytest -q
+    - ./aient/bin/python -m ruff check .
+    - ./aient/bin/python -m pyright

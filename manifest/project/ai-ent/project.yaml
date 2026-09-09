@@ -1,0 +1,84 @@
+id: PRJ-AI-ENT
+name: AI-Enterprise
+version: 0.1.0
+classification: NORMATIVE
+status: DEVELOPMENT
+source_corpus:
+  - id: R1
+    path: /home/user/projects/ai-enterprise/1/r1.txt
+    role: source_specification
+  - id: R2
+    path: /home/user/projects/ai-enterprise/1/r2.txt
+    role: source_specification
+  - id: R3
+    path: /home/user/projects/ai-enterprise/1/r3.txt
+    role: source_specification
+  - id: R4
+    path: /home/user/projects/ai-enterprise/1/r4.txt
+    role: source_specification
+  - id: R5
+    path: /home/user/projects/ai-enterprise/1/r5.txt
+    role: source_specification
+  - id: R6
+    path: /home/user/projects/ai-enterprise/1/r6.txt
+    role: source_specification
+  - id: R7
+    path: /home/user/projects/ai-enterprise/1/r7.txt
+    role: source_specification
+  - id: R8
+    path: /home/user/projects/ai-enterprise/1/r8.txt
+    role: source_specification
+  - id: R9
+    path: /home/user/projects/ai-enterprise/1/r9.txt
+    role: source_specification
+  - id: R10
+    path: /home/user/projects/ai-enterprise/1/r10.txt
+    role: source_specification
+  - id: R11
+    path: /home/user/projects/ai-enterprise/1/r11.txt
+    role: source_specification
+  - id: R12
+    path: /home/user/projects/ai-enterprise/1/r12.txt
+    role: source_specification
+  - id: R13
+    path: /home/user/projects/ai-enterprise/1/r13.txt
+    role: source_specification
+  - id: R14
+    path: /home/user/projects/ai-enterprise/1/r14.txt
+    role: source_specification
+  - id: R15
+    path: /home/user/projects/ai-enterprise/1/r15.txt
+    role: source_specification
+  - id: R16
+    path: /home/user/projects/ai-enterprise/1/r16.txt
+    role: source_specification
+  - id: R17
+    path: /home/user/projects/ai-enterprise/1/r17.txt
+    role: source_specification
+  - id: R18
+    path: /home/user/projects/ai-enterprise/1/r18.txt
+    role: source_specification
+  - id: R19
+    path: /home/user/projects/ai-enterprise/1/r19.txt
+    role: source_specification
+  - id: R20
+    path: /home/user/projects/ai-enterprise/1/r20.txt
+    role: source_specification
+  - id: R21
+    path: /home/user/projects/ai-enterprise/1/r21.txt
+    role: extension_specification
+  - id: R22
+    path: /home/user/projects/ai-enterprise/1/r22.txt
+    role: evidence_specification
+objectives:
+  - OBJ-001
+  - OBJ-002
+  - OBJ-003
+already_implemented_platform_capabilities:
+  - C12
+  - C17
+  - C20
+authority:
+  state_backend: postgresql
+  bootstrap_acceptance_gate: BEAG-001
+  baseline_commit: 353e1a0

@@ -1,0 +1,21 @@
+requirements:
+  - id: NFR-001
+    title: Deterministic compilation and execution planning
+    classification: NORMATIVE
+    source_refs: [R2, R15, R17]
+    capabilities: [C15, C17]
+  - id: NFR-002
+    title: Full traceability from source intent to artifact evidence
+    classification: NORMATIVE
+    source_refs: [R2, R3, R22]
+    capabilities: [C02, C16, C20]
+  - id: NFR-003
+    title: Bounded autonomous operation with explicit stop conditions
+    classification: NORMATIVE
+    source_refs: [R12, R20, R21, BEAG-001]
+    capabilities: [C12, C20]
+  - id: NFR-004
+    title: Reproducible validation reports
+    classification: NORMATIVE
+    source_refs: [R3, R22]
+    capabilities: [C03, C20]

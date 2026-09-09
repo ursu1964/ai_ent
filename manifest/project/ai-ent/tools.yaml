@@ -1,0 +1,17 @@
+tools:
+  - id: TOOL-001
+    name: PostgreSQL
+    classification: NORMATIVE
+    source_refs: [R2, R12, BEAG-001]
+  - id: TOOL-002
+    name: Alembic
+    classification: NORMATIVE
+    source_refs: [R12, BEAG-001]
+  - id: TOOL-003
+    name: Git worktrees
+    classification: NORMATIVE
+    source_refs: [R12, R21, BEAG-001]
+  - id: TOOL-004
+    name: Codex CLI
+    classification: NORMATIVE
+    source_refs: [R18, BEAG-001]

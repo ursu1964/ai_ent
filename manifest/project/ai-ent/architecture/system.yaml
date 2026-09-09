@@ -1,0 +1,50 @@
+components:
+  - id: CMP-001
+    name: Manifest Intake
+    classification: NORMATIVE
+    source_refs: [R1, R14]
+    capabilities: [C01, C14]
+  - id: CMP-002
+    name: Manifest Compiler
+    classification: NORMATIVE
+    source_refs: [R15]
+    capabilities: [C15]
+  - id: CMP-003
+    name: Knowledge Graph
+    classification: NORMATIVE
+    source_refs: [R16]
+    capabilities: [C16]
+  - id: CMP-004
+    name: Execution Planner
+    classification: NORMATIVE
+    source_refs: [R17]
+    capabilities: [C17]
+  - id: CMP-005
+    name: Generator Orchestrator
+    classification: NORMATIVE
+    source_refs: [R18, R21]
+    capabilities: [C18, C20]
+  - id: CMP-006
+    name: Runtime Kernel
+    classification: NORMATIVE
+    source_refs: [R20, R21]
+    capabilities: [C20]
+  - id: CMP-007
+    name: Artifact Evidence Graph
+    classification: NORMATIVE
+    source_refs: [R22]
+    capabilities: [C20]
+  - id: CMP-008
+    name: Bootstrap Execution Engine
+    classification: NORMATIVE
+    source_refs: [R12, R13, BEAG-001]
+    capabilities: [C12, C13, C17, C20]
+    implementation_state: VALIDATED
+flow:
+  - CMP-001
+  - CMP-002
+  - CMP-003
+  - CMP-004
+  - CMP-005
+  - CMP-006
+  - CMP-007

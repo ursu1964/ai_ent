@@ -1,0 +1,25 @@
+agents:
+  - id: AGT-001
+    name: Manifest Interpreter
+    capability: C04
+    status: REQUIRED
+    maturity: NOT_IMPLEMENTED
+    source_refs: [R4]
+  - id: AGT-002
+    name: Planner Worker
+    capability: C17
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    source_refs: [R17, BEAG-001]
+  - id: AGT-003
+    name: Generator Worker
+    capability: C18
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    source_refs: [R18, R21, BEAG-001]
+  - id: AGT-004
+    name: Verification Worker
+    capability: C03
+    status: REQUIRED
+    maturity: DEVELOPMENT
+    source_refs: [R3, R22, BEAG-001]

@@ -1,0 +1,6 @@
+deployment:
+  id: DEP-001
+  classification: FUTURE/DEFERRED
+  source_refs: [R12, R20]
+  current_mode: local_development
+  next_required_decision: production hosting target

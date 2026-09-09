@@ -1,0 +1,39 @@
+objectives:
+  - id: OBJ-001
+    title: Manifest-to-enterprise-system generation
+    classification: NORMATIVE
+    source_refs: [R14, R15, R17, R18, R21]
+    statement: Convert an approved AI-Enterprise Manifest into controlled, validated implementation work.
+  - id: OBJ-002
+    title: Governed autonomous execution
+    classification: NORMATIVE
+    source_refs: [R12, R20, R21, R22]
+    statement: Execute bounded work under policy, provenance, verification, recovery, and human stop conditions.
+  - id: OBJ-003
+    title: Persistent semantic project memory
+    classification: NORMATIVE
+    source_refs: [R16, R19, R22]
+    statement: Preserve semantic truth, decisions, artifacts, evidence, and execution history outside conversational context.
+stakeholders:
+  - id: STK-001
+    name: Business stakeholder
+    classification: NORMATIVE
+    source_refs: [R10, R14]
+  - id: STK-002
+    name: Platform operator
+    classification: NORMATIVE
+    source_refs: [R12, R20, R21]
+  - id: STK-003
+    name: AI worker
+    classification: NORMATIVE
+    source_refs: [R4, R18, R21]
+success_measures:
+  - id: SM-001
+    title: Traceable project compilation
+    source_refs: [R2, R15, R22]
+  - id: SM-002
+    title: Verified bounded execution
+    source_refs: [R12, R21, BEAG-001]
+  - id: SM-003
+    title: Reproducible generated implementation DAG
+    source_refs: [R15, R17]
