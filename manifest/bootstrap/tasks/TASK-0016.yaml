@@ -1,0 +1,23 @@
+id: TASK-0016
+stage: B04
+title: Core runtime persistence schema
+objective: >
+  Create the first durable PostgreSQL runtime schema and corresponding
+  SQLAlchemy 2.x ORM models for projects, tasks, task dependencies,
+  executions, and checkpoints.
+executor: fake
+depends_on:
+  - TASK-0015
+allowed_paths:
+  - src/ai_ent/persistence/models.py
+  - migrations/versions/0016_core_runtime_schema.py
+  - manifest/bootstrap/tasks/TASK-0016.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/persistence/models.py
+  - migrations/versions/0016_core_runtime_schema.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

@@ -42,7 +42,13 @@ def test_alembic_config_construction(tmp_path: Path) -> None:
 
 def test_metadata_linkage() -> None:
     assert Base.metadata is not None
-    assert Base.metadata.tables == {}
+    assert {
+        "projects",
+        "tasks",
+        "task_dependencies",
+        "executions",
+        "checkpoints",
+    }.issubset(Base.metadata.tables)
 
 
 def test_migration_environment_imports_cleanly() -> None:
