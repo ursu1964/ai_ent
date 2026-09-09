@@ -133,10 +133,12 @@ capabilities:
   - id: C16
     name: Knowledge graph
     status: REQUIRED
-    maturity: NOT_IMPLEMENTED
+    maturity: DEVELOPMENT
     classification: NORMATIVE
     source_refs: [R16]
     depends_on: [C15]
+    evidence_refs:
+      - CMP-003:knowledge-graph-service
   - id: C17
     name: Execution planning engine
     status: REQUIRED
