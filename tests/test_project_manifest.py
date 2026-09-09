@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from ai_ent.project_manifest import (
+    EnvironmentProfile,
     GeneratedImplementationTask,
     compile_project_manifest,
+    default_feasibility_policy,
+    evaluate_feasibility,
+    evaluate_implementation_plan_feasibility,
     generate_implementation_plan,
     load_manifest_documents,
     resolve_capabilities,
@@ -12,6 +17,7 @@ from ai_ent.project_manifest import (
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_feasibility_evaluation,
     write_implementation_plan,
     write_trace_validation,
 )
@@ -618,6 +624,172 @@ def test_generated_implementation_dag_cycle_is_rejected() -> None:
     assert any(finding.finding_id == "PLAN-CYCLE" for finding in findings)
 
 
+def test_feasibility_evaluator_processes_all_generated_tasks() -> None:
+    evaluation = evaluate_feasibility(
+        Path("manifest/project/ai-ent"),
+        environment=_environment(codex_configured=False, codex_available=True),
+    )
+    summary = evaluation.as_dict()["summary"]
+
+    assert evaluation.ok
+    assert evaluation.evaluator_version == "mmc-006.1"
+    assert len(evaluation.feasibility_hash) == 64
+    assert summary["total_tasks"] == 13
+    assert summary["human_gates"] == 6
+    assert summary["blocked"] == 0
+    assert summary["technical_blockers"] == 0
+    assert summary["feasible_with_conditions"] == 7
+    assert summary["human_approval_required"] == 6
+
+
+def test_feasibility_evaluator_marks_safe_task_feasible_when_configured() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(
+        plan,
+        _environment(codex_configured=True, codex_available=True),
+        default_feasibility_policy(plan),
+    )
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C01-CMP-001"].status == "FEASIBLE"
+    assert by_task["IMPL-C01-CMP-001"].policy_decision == "AUTO_ALLOWED"
+
+
+def test_feasibility_evaluator_marks_missing_codex_command_as_condition() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(
+        plan,
+        _environment(codex_configured=False, codex_available=True),
+        default_feasibility_policy(plan),
+    )
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C01-CMP-001"].status == "FEASIBLE_WITH_CONDITIONS"
+    assert "set AIENT_CODEX_COMMAND before real execution" in by_task["IMPL-C01-CMP-001"].conditions
+
+
+def test_feasibility_evaluator_blocks_missing_agent_role() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    policy = replace(default_feasibility_policy(plan), agent_roles=("AGT-002", "AGT-003", "AGT-004"))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), policy)
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C01-CMP-001"].status == "BLOCKED"
+    assert any("missing agent role AGT-001" in blocker for blocker in by_task["IMPL-C01-CMP-001"].blockers)
+
+
+def test_feasibility_evaluator_blocks_missing_model_profile() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    policy = replace(default_feasibility_policy(plan), model_profiles=("ARCHITECTURE_REASONING", "SECURITY_REVIEW"))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), policy)
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C01-CMP-001"].status == "BLOCKED"
+    assert any("missing model profile CODING_STANDARD" in blocker for blocker in by_task["IMPL-C01-CMP-001"].blockers)
+
+
+def test_feasibility_evaluator_blocks_unavailable_tool() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(
+        plan,
+        _environment(codex_configured=False, codex_available=False),
+        default_feasibility_policy(plan),
+    )
+
+    assert evaluation.plan_status == "BLOCKED"
+    assert any("Codex executable is unavailable" in blocker for blocker in evaluation.technical_blockers)
+
+
+def test_feasibility_evaluator_blocks_invalid_write_scope() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    bad_task = replace(
+        plan.tasks[0],
+        write_scope={"allowed": ("../outside",), "prohibited": (".env",)},
+    )
+    bad_plan = replace(plan, tasks=(bad_task, *plan.tasks[1:]))
+    evaluation = evaluate_implementation_plan_feasibility(bad_plan, _environment(), default_feasibility_policy(plan))
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task[bad_task.id].status == "BLOCKED"
+    assert any("write scope escapes repository" in blocker for blocker in by_task[bad_task.id].blockers)
+
+
+def test_feasibility_evaluator_blocks_missing_verification_profile() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    policy = replace(default_feasibility_policy(plan), verification_profiles=("FULL_REGRESSION",))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), policy)
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C01-CMP-001"].status == "BLOCKED"
+    assert any("missing verification profile STANDARD_REGRESSION" in blocker for blocker in by_task["IMPL-C01-CMP-001"].blockers)
+
+
+def test_feasibility_evaluator_marks_human_gated_task() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), default_feasibility_policy(plan))
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C14-CMP-001"].status == "HUMAN_APPROVAL_REQUIRED"
+    assert by_task["IMPL-C14-CMP-001"].required_human_gates == ("GATE-IMPL-C14-CMP-001",)
+
+
+def test_feasibility_evaluator_high_risk_cannot_bypass_policy() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    policy = replace(default_feasibility_policy(plan), guarded_allowed_risks=("LOW", "MEDIUM"))
+    evaluation = evaluate_implementation_plan_feasibility(plan, _environment(), policy)
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C14-CMP-001"].status == "BLOCKED"
+    assert by_task["IMPL-C14-CMP-001"].policy_decision == "PROHIBITED"
+
+
+def test_feasibility_evaluator_propagates_blocked_prerequisite() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    bad_task = replace(plan.tasks[0], write_scope={"allowed": ("../outside",), "prohibited": (".env",)})
+    bad_plan = replace(plan, tasks=(bad_task, *plan.tasks[1:]))
+    evaluation = evaluate_implementation_plan_feasibility(bad_plan, _environment(), default_feasibility_policy(plan))
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task["IMPL-C02-CONTRACT"].status == "BLOCKED"
+    assert any(blocker == "BLOCKED_BY_DEPENDENCY:IMPL-C01-CMP-001" for blocker in by_task["IMPL-C02-CONTRACT"].blockers)
+
+
+def test_feasibility_evaluator_detects_resource_constraint() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    gpu_task = replace(plan.tasks[0], execution={**plan.tasks[0].execution, "model_profile": "GPU_REQUIRED"})
+    gpu_plan = replace(plan, tasks=(gpu_task, *plan.tasks[1:]))
+    policy = replace(default_feasibility_policy(plan), model_profiles=(*default_feasibility_policy(plan).model_profiles, "GPU_REQUIRED"))
+    evaluation = evaluate_implementation_plan_feasibility(
+        gpu_plan,
+        _environment(gpu_available=False),
+        policy,
+    )
+    by_task = {result.task_id: result for result in evaluation.task_results}
+
+    assert by_task[gpu_task.id].status == "BLOCKED"
+    assert any("GPU resource is required" in blocker for blocker in by_task[gpu_task.id].blockers)
+
+
+def test_feasibility_evaluation_hash_is_repeatable_and_changes_with_policy(tmp_path: Path) -> None:
+    environment = _environment()
+    first = write_feasibility_evaluation(Path("manifest/project/ai-ent"), tmp_path / "compiled-a")
+    second = write_feasibility_evaluation(Path("manifest/project/ai-ent"), tmp_path / "compiled-b")
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    changed_policy = replace(default_feasibility_policy(plan), max_parallel_width=1)
+    changed = evaluate_implementation_plan_feasibility(plan, environment, changed_policy)
+
+    assert first.feasibility_hash == second.feasibility_hash
+    assert (tmp_path / "compiled-a" / "feasibility-report.json").read_bytes() == (
+        tmp_path / "compiled-b" / "feasibility-report.json"
+    ).read_bytes()
+    assert first.feasibility_hash != changed.feasibility_hash
+    assert (tmp_path / "compiled-a" / "task-feasibility.json").exists()
+    assert (tmp_path / "compiled-a" / "policy-decisions.json").exists()
+    assert (tmp_path / "compiled-a" / "human-gate-plan.json").exists()
+    assert (tmp_path / "compiled-a" / "resource-plan.json").exists()
+    assert (tmp_path / "compiled-a" / "concurrency-plan.json").exists()
+
+
 def _generated_test_task(
     task_id: str,
     depends_on: tuple[str, ...],
@@ -647,6 +819,31 @@ def _generated_test_task(
         fingerprint=task_id,
         epic_id="EPC-001",
         feature_id="FEA-001",
+    )
+
+
+def _environment(
+    *,
+    codex_configured: bool = True,
+    codex_available: bool = True,
+    gpu_available: bool = False,
+) -> EnvironmentProfile:
+    return EnvironmentProfile(
+        profile_id="test",
+        repository_path="/repo",
+        git_available=True,
+        postgresql_available=True,
+        alembic_available=True,
+        docker_available=True,
+        docker_compose_available=True,
+        codex_command_configured=codex_configured,
+        codex_executable_available=codex_available,
+        python_path="/repo/aient/bin/python",
+        python_available=True,
+        ram_mb=8192,
+        gpu_available=gpu_available,
+        external_network="available",
+        configured_secret_names=(),
     )
 
 

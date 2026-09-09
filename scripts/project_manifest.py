@@ -6,12 +6,14 @@ from pathlib import Path
 
 from ai_ent.project_manifest import (
     compile_project_manifest,
+    evaluate_feasibility,
     generate_implementation_plan,
     resolve_capabilities,
     validate_project_manifest,
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_feasibility_evaluation,
     write_implementation_plan,
     write_trace_validation,
 )
@@ -197,6 +199,62 @@ def critical_path(args: argparse.Namespace) -> int:
     return 0 if plan.ok else 1
 
 
+def evaluate_feasibility_command(args: argparse.Namespace) -> int:
+    evaluation = write_feasibility_evaluation(Path(args.manifest_root), Path(args.output_dir))
+    summary = evaluation.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "feasibility_hash": evaluation.feasibility_hash,
+                "evaluator_version": evaluation.evaluator_version,
+                "implementation_plan_hash": evaluation.implementation_plan_hash,
+                "plan_status": evaluation.plan_status,
+                "total_tasks": summary["total_tasks"],
+                "feasible": summary["feasible"],
+                "feasible_with_conditions": summary["feasible_with_conditions"],
+                "human_approval_required": summary["human_approval_required"],
+                "blocked": summary["blocked"],
+                "deferred": summary["deferred"],
+                "human_gates": summary["human_gates"],
+                "feasible_parallel_width": summary["feasible_parallel_width"],
+                "technical_blockers": summary["technical_blockers"],
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if evaluation.ok else 1
+
+
+def feasibility_summary(args: argparse.Namespace) -> int:
+    evaluation = evaluate_feasibility(Path(args.manifest_root))
+    print(
+        json.dumps(
+            {
+                "feasibility_hash": evaluation.feasibility_hash,
+                "plan_status": evaluation.plan_status,
+                "summary": evaluation.as_dict()["summary"],
+                "technical_blockers": list(evaluation.technical_blockers),
+                "human_gates": list(evaluation.human_gates),
+                "task_statuses": [
+                    {
+                        "task_id": result.task_id,
+                        "status": result.status,
+                        "policy_decision": result.policy_decision,
+                        "conditions": list(result.conditions),
+                        "blockers": list(result.blockers),
+                    }
+                    for result in evaluation.task_results
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if evaluation.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -244,6 +302,15 @@ def build_parser() -> argparse.ArgumentParser:
     critical_path_parser = subparsers.add_parser("critical-path")
     critical_path_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     critical_path_parser.set_defaults(func=critical_path)
+
+    feasibility_parser = subparsers.add_parser("evaluate-feasibility")
+    feasibility_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    feasibility_parser.add_argument("--output-dir", default=".build/compiled")
+    feasibility_parser.set_defaults(func=evaluate_feasibility_command)
+
+    feasibility_summary_parser = subparsers.add_parser("feasibility-summary")
+    feasibility_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    feasibility_summary_parser.set_defaults(func=feasibility_summary)
     return parser
 
 
