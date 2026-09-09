@@ -24,8 +24,14 @@ def _run(command: list[str]) -> tuple[bool, str]:
         )
     except OSError as exc:
         return False, f"{command[0]}: {exc}"
-    first_line = completed.stdout.strip().splitlines()[0] if completed.stdout.strip() else "ok"
-    return completed.returncode == 0, first_line
+    lines = completed.stdout.strip().splitlines()
+    if not lines:
+        detail = "ok"
+    elif completed.returncode == 0:
+        detail = lines[0]
+    else:
+        detail = lines[-1]
+    return completed.returncode == 0, detail
 
 
 def check() -> int:
@@ -39,6 +45,7 @@ def check() -> int:
     checks.append(("venv", (ROOT / "aient" / "bin" / "python").exists(), "aient/bin/python"))
     checks.append(("docker", *_run(["docker", "--version"])))
     checks.append(("docker-compose", *_run(["docker", "compose", "version"])))
+    checks.append(("docker-daemon", *_run(["docker", "info"])))
     checks.append(("psql", *_run(["psql", "--version"])))
 
     ollama_path = shutil.which("ollama")
@@ -49,7 +56,8 @@ def check() -> int:
 
     failed_required = False
     for name, ok, detail in checks:
-        status = "PASS" if ok else "WARN" if name in {"docker", "docker-compose", "psql"} else "FAIL"
+        optional = {"docker", "docker-compose", "docker-daemon", "psql"}
+        status = "PASS" if ok else "WARN" if name in optional else "FAIL"
         print(f"{status} {name}: {detail}")
         if not ok and status == "FAIL":
             failed_required = True
