@@ -1,0 +1,28 @@
+id: TASK-0022
+stage: B04
+title: Local bootstrap state migration and reconciliation
+objective: >
+  Safely migrate and reconcile .bootstrap/state.json into PostgreSQL-backed
+  bootstrap state, then mark PostgreSQL as the authoritative runtime source
+  while preserving local JSON as legacy/pre-DB fallback.
+executor: fake
+depends_on:
+  - TASK-0021
+allowed_paths:
+  - scripts/bootstrap.py
+  - src/ai_ent/bootstrap/state.py
+  - src/ai_ent/bootstrap/state_reconciliation.py
+  - src/ai_ent/persistence/__init__.py
+  - src/ai_ent/persistence/models.py
+  - src/ai_ent/persistence/repositories/**
+  - migrations/versions/0019_bootstrap_state_authority.py
+  - manifest/bootstrap/tasks/TASK-0022.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/bootstrap/state_reconciliation.py
+  - migrations/versions/0019_bootstrap_state_authority.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

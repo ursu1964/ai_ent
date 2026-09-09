@@ -14,6 +14,7 @@ from ai_ent.bootstrap.manifest import (
 from ai_ent.bootstrap.paths import ROOT
 from ai_ent.bootstrap.proof import run_codex_proof
 from ai_ent.bootstrap.state import load_state, mark_blocked, mark_completed
+from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
 from ai_ent.bootstrap.verifier import verify_task
 
 
@@ -141,6 +142,32 @@ def codex_proof(_: argparse.Namespace) -> int:
     return 1
 
 
+def state_inspect(_: argparse.Namespace) -> int:
+    result = BootstrapStateReconciler().inspect()
+    print(f"outcome: {result.outcome}")
+    if result.differences:
+        print(f"differences: {', '.join(result.differences)}")
+    return 0 if result.outcome != "CONFLICT" else 1
+
+
+def state_migrate(args: argparse.Namespace) -> int:
+    result = BootstrapStateReconciler().migrate(confirm_cutover=args.confirm_cutover)
+    print(f"outcome: {result.outcome}")
+    if result.backup_path:
+        print(f"backup: {result.backup_path}")
+    if result.differences:
+        print(f"differences: {', '.join(result.differences)}")
+    return 0 if result.outcome == "IN_SYNC" else 1
+
+
+def state_reconcile(_: argparse.Namespace) -> int:
+    result = BootstrapStateReconciler().reconcile()
+    print(f"outcome: {result.outcome}")
+    if result.differences:
+        print(f"differences: {', '.join(result.differences)}")
+    return 0 if result.outcome in {"IN_SYNC", "LOCAL_ONLY", "DATABASE_ONLY"} else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise bootstrap runner")
     subparsers = parser.add_subparsers(required=True)
@@ -182,6 +209,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     codex_proof_parser = subparsers.add_parser("codex-proof")
     codex_proof_parser.set_defaults(func=codex_proof)
+
+    state_parser = subparsers.add_parser("state")
+    state_subparsers = state_parser.add_subparsers(required=True)
+    inspect_parser = state_subparsers.add_parser("inspect")
+    inspect_parser.set_defaults(func=state_inspect)
+    migrate_parser = state_subparsers.add_parser("migrate")
+    migrate_parser.add_argument("--no-cutover", action="store_false", dest="confirm_cutover")
+    migrate_parser.set_defaults(func=state_migrate, confirm_cutover=True)
+    reconcile_parser = state_subparsers.add_parser("reconcile")
+    reconcile_parser.set_defaults(func=state_reconcile)
 
     return parser
 

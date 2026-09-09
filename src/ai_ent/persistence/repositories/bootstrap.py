@@ -12,6 +12,7 @@ from ai_ent.persistence.models import (
     BootstrapCheckpointKind,
     BootstrapRun,
     BootstrapRunStatus,
+    BootstrapStateAuthority,
 )
 from ai_ent.persistence.repositories.errors import (
     DuplicateBootstrapCheckpointError,
@@ -253,6 +254,48 @@ class BootstrapRunRepository:
     def next_checkpoint_sequence(self, session: Session, run_id: str) -> int:
         statement = select(func.max(BootstrapCheckpoint.sequence)).where(BootstrapCheckpoint.run_id == run_id)
         return (session.scalar(statement) or 0) + 1
+
+    def activate_postgresql_authority(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        run_id: str,
+        source_snapshot_path: str | None = None,
+    ) -> BootstrapStateAuthority:
+        authority = session.get(BootstrapStateAuthority, project_id)
+        if authority is None:
+            authority = BootstrapStateAuthority(
+                id=project_id,
+                project_id=project_id,
+                run_id=run_id,
+                backend="postgresql",
+                status="active",
+                activated_at=func.now(),
+                source_snapshot_path=source_snapshot_path,
+            )
+            session.add(authority)
+        else:
+            authority.run_id = run_id
+            authority.backend = "postgresql"
+            authority.status = "active"
+            authority.activated_at = func.now()
+            authority.source_snapshot_path = source_snapshot_path
+        try:
+            session.flush()
+        except IntegrityError as exc:
+            raise RepositoryError(f"invalid bootstrap state authority: {project_id}") from exc
+        except SQLAlchemyError as exc:
+            raise RepositoryError("bootstrap state authority update failed") from exc
+        return authority
+
+    def get_active_authority(self, session: Session, project_id: str) -> BootstrapStateAuthority | None:
+        statement = select(BootstrapStateAuthority).where(
+            BootstrapStateAuthority.project_id == project_id,
+            BootstrapStateAuthority.backend == "postgresql",
+            BootstrapStateAuthority.status == "active",
+        )
+        return session.scalars(statement).first()
 
     def _validate_git_ref(self, field: str, value: str | None) -> None:
         if value is not None and not _GIT_REF_RE.fullmatch(value):

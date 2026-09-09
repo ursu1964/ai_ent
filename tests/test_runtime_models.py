@@ -11,6 +11,7 @@ from ai_ent.persistence.models import (
     Base,
     BootstrapCheckpoint,
     BootstrapRun,
+    BootstrapStateAuthority,
     Checkpoint,
     Execution,
     Project,
@@ -28,6 +29,7 @@ EXPECTED_TABLES = {
     "task_leases",
     "bootstrap_runs",
     "bootstrap_checkpoints",
+    "bootstrap_state_authority",
 }
 
 
@@ -215,6 +217,14 @@ def test_bootstrap_run_and_checkpoint_relationship() -> None:
             state='{"completed":["TASK-1"]}',
         )
         session.add_all([run, checkpoint])
+        authority = BootstrapStateAuthority(
+            id="project-1",
+            project_id=task.project_id,
+            run_id=run.id,
+            backend="postgresql",
+            status="active",
+        )
+        session.add(authority)
         session.commit()
 
         persisted = session.get(BootstrapRun, run.id)
@@ -223,6 +233,7 @@ def test_bootstrap_run_and_checkpoint_relationship() -> None:
         assert persisted.current_task is not None
         assert persisted.current_task.id == task.id
         assert persisted.bootstrap_checkpoints[0].verified_commit == "def456"
+        assert session.get(BootstrapStateAuthority, "project-1").run_id == run.id  # type: ignore[union-attr]
 
 
 def test_checkpoint_relationship() -> None:

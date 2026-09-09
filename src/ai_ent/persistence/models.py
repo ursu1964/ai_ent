@@ -24,6 +24,7 @@ CheckpointType = Literal["task", "execution", "bootstrap", "runtime"]
 LeaseStatus = Literal["active", "released", "completed", "expired"]
 BootstrapRunStatus = Literal["pending", "running", "blocked", "failed", "completed"]
 BootstrapCheckpointKind = Literal["task_completed", "run_blocked", "run_failed", "run_completed", "state_snapshot"]
+BootstrapStateBackend = Literal["local_json", "postgresql"]
 
 
 def utc_now() -> datetime:
@@ -280,4 +281,25 @@ class BootstrapCheckpoint(TimestampMixin, Base):
         UniqueConstraint("run_id", "sequence", name="uq_bootstrap_checkpoints_run_sequence"),
         Index("ix_bootstrap_checkpoints_run_created", "run_id", "created_at"),
         Index("ix_bootstrap_checkpoints_task", "task_id"),
+    )
+
+
+class BootstrapStateAuthority(TimestampMixin, Base):
+    __tablename__ = "bootstrap_state_authority"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    run_id: Mapped[str] = mapped_column(ForeignKey("bootstrap_runs.id", ondelete="RESTRICT"), nullable=False)
+    backend: Mapped[BootstrapStateBackend] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_snapshot_path: Mapped[str | None] = mapped_column(String(500))
+
+    project: Mapped[Project] = relationship(foreign_keys=[project_id])
+    run: Mapped[BootstrapRun] = relationship(foreign_keys=[run_id])
+
+    __table_args__ = (
+        CheckConstraint("backend in ('local_json', 'postgresql')", name="ck_bootstrap_state_authority_backend"),
+        CheckConstraint("status in ('pending', 'active')", name="ck_bootstrap_state_authority_status"),
+        Index("ix_bootstrap_state_authority_project_backend", "project_id", "backend", "status"),
     )

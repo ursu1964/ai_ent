@@ -13,6 +13,7 @@ from ai_ent.persistence.migrations import build_alembic_config
 from ai_ent.persistence.models import (
     BootstrapCheckpoint,
     BootstrapRun,
+    BootstrapStateAuthority,
     Checkpoint,
     Execution,
     Project,
@@ -39,6 +40,7 @@ def integration_database() -> Database:
 
 def clean_tables(database: Database) -> None:
     with database.session() as session:
+        session.execute(delete(BootstrapStateAuthority))
         session.execute(delete(BootstrapCheckpoint))
         session.execute(delete(BootstrapRun))
         session.execute(delete(TaskLease))

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from typing import Any
 
 from ai_ent.bootstrap.paths import STATE_FILE
 
 
 def load_state() -> dict[str, Any]:
+    try:
+        from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
+
+        authoritative = BootstrapStateReconciler().load_authoritative_state()
+    except (ImportError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        authoritative = None
+    if authoritative is not None:
+        authoritative.setdefault("completed_tasks", [])
+        authoritative.setdefault("blocked_tasks", {})
+        return authoritative
     if not STATE_FILE.exists():
         return {"completed_tasks": [], "blocked_tasks": {}}
     with STATE_FILE.open("r", encoding="utf-8") as handle:
@@ -24,6 +35,18 @@ def save_state(state: dict[str, Any]) -> None:
 
 
 def mark_completed(task_id: str, message: str) -> None:
+    try:
+        from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
+
+        if BootstrapStateReconciler().mark_completed(task_id, message):
+            return
+    except (ImportError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        _mark_completed_local(task_id, message)
+        return
+    _mark_completed_local(task_id, message)
+
+
+def _mark_completed_local(task_id: str, message: str) -> None:
     state = load_state()
     completed = list(dict.fromkeys([*state.get("completed_tasks", []), task_id]))
     blocked = dict(state.get("blocked_tasks", {}))
@@ -36,6 +59,18 @@ def mark_completed(task_id: str, message: str) -> None:
 
 
 def mark_blocked(task_id: str, reason: str) -> None:
+    try:
+        from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
+
+        if BootstrapStateReconciler().mark_blocked(task_id, reason):
+            return
+    except (ImportError, RuntimeError, OSError, ValueError, subprocess.SubprocessError):
+        _mark_blocked_local(task_id, reason)
+        return
+    _mark_blocked_local(task_id, reason)
+
+
+def _mark_blocked_local(task_id: str, reason: str) -> None:
     state = load_state()
     blocked = dict(state.get("blocked_tasks", {}))
     blocked[task_id] = reason
@@ -43,4 +78,3 @@ def mark_blocked(task_id: str, reason: str) -> None:
     state["last_blocked_task"] = task_id
     state["last_result"] = reason
     save_state(state)
-
