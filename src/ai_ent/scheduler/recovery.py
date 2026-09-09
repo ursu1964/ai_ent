@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ai_ent.bootstrap.git import candidate_tree_hash, changed_files, require_git
 from ai_ent.bootstrap.models import ExecutionPackage
+from ai_ent.bootstrap.worktree import WORKTREE_ROOT
 from ai_ent.persistence.models import Checkpoint, Execution, Task, TaskLease
 from ai_ent.persistence.repositories.checkpoints import CheckpointRepository
 from ai_ent.persistence.repositories.executions import ExecutionRepository
@@ -66,6 +67,7 @@ class SchedulerRecoveryService:
         claiming: TaskClaimingService | None = None,
         readiness: TaskReadinessService | None = None,
         finalizer: ExecutionFinalizer | None = None,
+        worktree_root: Path = WORKTREE_ROOT,
     ) -> None:
         self.tasks = tasks or TaskRepository()
         self.executions = executions or ExecutionRepository()
@@ -74,6 +76,7 @@ class SchedulerRecoveryService:
         self.claiming = claiming or TaskClaimingService()
         self.readiness = readiness or TaskReadinessService()
         self.finalizer = finalizer or ExecutionFinalizer()
+        self.worktree_root = worktree_root
 
     def recover_execution(
         self,
@@ -188,6 +191,22 @@ class SchedulerRecoveryService:
                 "BLOCK",
                 remaining_blocker="running_task_present",
             )
+        orphan = _orphan_execution_worktree(session, project_id=project_id, worktree_root=self.worktree_root)
+        if orphan is not None:
+            task, execution_id, worktree = orphan
+            evidence = (
+                "orphan execution worktree without PostgreSQL execution",
+                f"worktree={worktree}",
+                f"changed_files={','.join(_safe_changed_files(worktree))}",
+            )
+            return RecoveryResult(
+                task.id,
+                execution_id,
+                "UNKNOWN",
+                evidence,
+                "BLOCK",
+                remaining_blocker="orphan_execution_worktree",
+            )
         ready = self.readiness.list_ready_tasks(session, project_id=project_id, limit=1)
         return RecoveryResult(
             ready[0].id if ready else None,
@@ -288,3 +307,34 @@ def _worktree_tree(worktree: Path) -> str | None:
         return candidate_tree_hash(worktree)
     except RuntimeError:
         return None
+
+
+def _orphan_execution_worktree(
+    session: Session,
+    *,
+    project_id: str,
+    worktree_root: Path,
+) -> tuple[Task, str, Path] | None:
+    if not worktree_root.exists():
+        return None
+    tasks = sorted(
+        (task for task in TaskRepository().list_by_project(session, project_id) if task.status != "passed"),
+        key=lambda item: item.id,
+    )
+    for task in tasks:
+        task_worktree_root = worktree_root / task.id
+        if not task_worktree_root.exists() or not task_worktree_root.is_dir():
+            continue
+        for execution_worktree in sorted(task_worktree_root.iterdir(), key=lambda item: item.name):
+            if not execution_worktree.is_dir():
+                continue
+            if session.get(Execution, execution_worktree.name) is None:
+                return task, execution_worktree.name, execution_worktree
+    return None
+
+
+def _safe_changed_files(worktree: Path) -> tuple[str, ...]:
+    try:
+        return changed_files(worktree)
+    except RuntimeError:
+        return ()

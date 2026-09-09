@@ -308,6 +308,28 @@ def test_crash_between_tasks_is_ready_to_continue() -> None:
         assert result.safe_to_continue
 
 
+def test_recover_project_blocks_orphan_execution_worktree(tmp_path: Path) -> None:
+    factory = session_factory()
+    task = task_manifest("IMPL-ORPHAN")
+    worktree_root = tmp_path / "worktrees"
+    orphan = worktree_root / task.id / "execution-orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "src").mkdir()
+    (orphan / "src/orphan.py").write_text("# orphaned partial task output\n", encoding="utf-8")
+
+    with factory() as session:
+        ProjectRepository().create(session, project_id="project-1", name="Project 1")
+        TaskRepository().create(session, task_id=task.id, project_id="project-1", title=task.title, status="pending")
+
+        result = SchedulerRecoveryService(worktree_root=worktree_root).recover_project(session, project_id="project-1")
+
+        assert result.detected_stage == "UNKNOWN"
+        assert result.action == "BLOCK"
+        assert result.remaining_blocker == "orphan_execution_worktree"
+        assert result.interrupted_task_id == task.id
+        assert result.execution_id == "execution-orphan"
+
+
 def test_recover_then_run_stops_when_recovery_not_safe(tmp_path: Path) -> None:
     class BlockRecovery:
         def recover_project(self, _: object, *, project_id: str) -> object:
