@@ -7,6 +7,7 @@ from typing import Any, Literal
 ExecutorName = Literal["fake", "codex"]
 SimulationResult = Literal["success", "failure", "timeout", "invalid_output", "scope_violation"]
 TerminalState = Literal["success", "failure", "timeout", "cancelled", "not_configured"]
+ExecutionClass = Literal["implementation", "simulation"]
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,8 @@ class BootstrapTask:
     objective: str | None = None
     allowed_paths: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
+    execution_class: ExecutionClass = "implementation"
+    schedulable: bool = True
     simulation_result: SimulationResult = "success"
     verification: VerificationSpec = field(default_factory=VerificationSpec)
 
@@ -45,6 +48,8 @@ class BootstrapTask:
         outputs = raw.get("outputs", [])
         simulation = raw.get("simulation") or {}
         objective = raw.get("objective")
+        execution_class = raw.get("execution_class", "implementation")
+        schedulable = raw.get("schedulable", True)
 
         if not isinstance(raw.get("id"), str):
             raise TypeError("task id must be a string")
@@ -64,6 +69,10 @@ class BootstrapTask:
             raise TypeError("outputs must be a list of strings")
         if objective is not None and not isinstance(objective, str):
             raise TypeError("objective must be a string")
+        if execution_class not in {"implementation", "simulation"}:
+            raise ValueError("execution_class must be implementation or simulation")
+        if not isinstance(schedulable, bool):
+            raise TypeError("schedulable must be a boolean")
         if not isinstance(simulation, dict):
             raise TypeError("simulation must be a mapping")
 
@@ -86,6 +95,8 @@ class BootstrapTask:
             objective=objective,
             allowed_paths=tuple(allowed_paths),
             outputs=tuple(outputs),
+            execution_class=execution_class,
+            schedulable=schedulable,
             simulation_result=simulation_result,
             verification=VerificationSpec.from_raw(raw.get("verification")),
         )

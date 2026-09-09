@@ -57,6 +57,8 @@ def validate_task_graph(tasks: dict[str, BootstrapTask]) -> None:
 def task_status(task: BootstrapTask, completed: set[str], blocked: set[str]) -> str:
     if task.id in completed:
         return "done"
+    if not task.schedulable:
+        return "simulation"
     if task.id in blocked:
         return "blocked"
     if any(dependency not in completed for dependency in task.depends_on):
@@ -68,6 +70,5 @@ def ready_tasks(tasks: dict[str, BootstrapTask], completed: set[str], blocked: s
     return [
         task.id
         for task in tasks.values()
-        if task_status(task, completed=completed, blocked=blocked) == "ready"
+        if task.schedulable and task_status(task, completed=completed, blocked=blocked) == "ready"
     ]
-

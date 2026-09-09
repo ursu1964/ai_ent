@@ -12,6 +12,7 @@ from ai_ent.bootstrap.manifest import (
     task_status,
 )
 from ai_ent.bootstrap.paths import ROOT
+from ai_ent.bootstrap.proof import run_codex_proof
 from ai_ent.bootstrap.state import load_state, mark_blocked, mark_completed
 from ai_ent.bootstrap.verifier import verify_task
 
@@ -42,6 +43,14 @@ def run(args: argparse.Namespace) -> int:
     task = tasks.get(args.task)
     if task is None:
         print(f"Unknown task: {args.task}", file=sys.stderr)
+        return 2
+
+    if not task.schedulable and not args.allow_simulation:
+        print(
+            f"{task.id} is a non-schedulable {task.execution_class} task; "
+            "use test-task for explicit simulation",
+            file=sys.stderr,
+        )
         return 2
 
     state = load_state()
@@ -109,6 +118,26 @@ def init(_: argparse.Namespace) -> int:
     return 0
 
 
+def codex_proof(_: argparse.Namespace) -> int:
+    result = run_codex_proof()
+    print(result.execution.message)
+    print(f"terminal_state: {result.execution.terminal_state}")
+    if result.execution.exit_code is not None:
+        print(f"exit_code: {result.execution.exit_code}")
+    if result.worktree_path:
+        print(f"worktree: {result.worktree_path}")
+    if result.candidate:
+        print(f"candidate_tree: {result.candidate.tree_hash}")
+        print(f"changed_files: {', '.join(result.candidate.changed_files) or 'none'}")
+    if result.verification:
+        print(f"verification: {'PASS' if result.verification.ok else 'FAIL'}")
+    if result.commit_id:
+        print(f"commit: {result.commit_id}")
+    if result.committed_tree_hash:
+        print(f"committed_tree: {result.committed_tree_hash}")
+    return 0 if result.execution.ok and result.verification and result.verification.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise bootstrap runner")
     subparsers = parser.add_subparsers(required=True)
@@ -126,13 +155,30 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--task", required=True)
     run_parser.add_argument("--executor", choices=["fake"])
     run_parser.add_argument("--force", action="store_true")
+    run_parser.add_argument("--allow-simulation", action="store_true")
     run_parser.set_defaults(func=run)
+
+    test_task_parser = subparsers.add_parser("test-task")
+    test_task_parser.add_argument("task")
+    test_task_parser.set_defaults(
+        func=lambda args: run(
+            argparse.Namespace(
+                task=args.task,
+                executor="fake",
+                force=True,
+                allow_simulation=True,
+            )
+        )
+    )
 
     resume_parser = subparsers.add_parser("resume")
     resume_parser.set_defaults(func=status)
 
     plan_parser = subparsers.add_parser("plan")
     plan_parser.set_defaults(func=status)
+
+    codex_proof_parser = subparsers.add_parser("codex-proof")
+    codex_proof_parser.set_defaults(func=codex_proof)
 
     return parser
 

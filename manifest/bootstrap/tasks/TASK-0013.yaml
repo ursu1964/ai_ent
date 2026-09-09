@@ -1,0 +1,17 @@
+id: TASK-0013
+stage: B03
+title: Real Codex isolated execution proof
+objective: >
+  Prove that a real configured CodexExecutor can execute one trivial bounded
+  task inside an isolated Git worktree while independent verification and the
+  verified commit boundary remain authoritative.
+executor: codex
+depends_on:
+  - TASK-0012
+allowed_paths:
+  - tests/fixtures/codex_proof.txt
+outputs:
+  - tests/fixtures/codex_proof.txt
+verification:
+  commands:
+    - test "$(cat tests/fixtures/codex_proof.txt)" = "AIENT_CODEX_PROOF=TASK-0013"

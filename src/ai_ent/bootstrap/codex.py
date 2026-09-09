@@ -45,7 +45,12 @@ def build_execution_package(
             f"Objective: {task.objective}" if task.objective else "",
             "Allowed paths:",
             *(f"- {path}" for path in task.allowed_paths),
+            "Required output:",
+            *(f"- {path}" for path in task.outputs),
+            "For TASK-0013, create tests/fixtures/codex_proof.txt with exactly:",
+            "AIENT_CODEX_PROOF=TASK-0013",
             "Do not verify, commit, push, or schedule another task.",
+            "Do not modify source code, manifests, scripts, .env, virtualenvs, or Git metadata.",
         )
         if part
     )

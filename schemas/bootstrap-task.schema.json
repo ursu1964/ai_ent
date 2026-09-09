@@ -30,6 +30,13 @@
         "type": "string"
       }
     },
+    "execution_class": {
+      "type": "string",
+      "enum": ["implementation", "simulation"]
+    },
+    "schedulable": {
+      "type": "boolean"
+    },
     "depends_on": {
       "type": "array",
       "items": {

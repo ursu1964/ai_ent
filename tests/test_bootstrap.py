@@ -16,6 +16,16 @@ def test_task_graph_exposes_ready_tasks() -> None:
     ready = ready_tasks(tasks, completed=set(), blocked=set())
     assert "TASK-0001" in ready
     assert "TASK-0002" not in ready
+    assert "TASK-0004" not in ready
+
+
+def test_simulation_task_is_not_normal_ready_work() -> None:
+    tasks = load_tasks()
+    completed = {"TASK-0003"}
+    ready = ready_tasks(tasks, completed=completed, blocked=set())
+    assert tasks["TASK-0004"].execution_class == "simulation"
+    assert not tasks["TASK-0004"].schedulable
+    assert "TASK-0004" not in ready
 
 
 def test_fake_executor_failure_is_not_success() -> None:
