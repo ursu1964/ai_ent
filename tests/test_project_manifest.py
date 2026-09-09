@@ -3,13 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from ai_ent.project_manifest import (
+    GeneratedImplementationTask,
     compile_project_manifest,
+    generate_implementation_plan,
     load_manifest_documents,
     resolve_capabilities,
     validate_project_manifest,
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_implementation_plan,
     write_trace_validation,
 )
 
@@ -501,6 +504,150 @@ def test_material_trace_change_changes_trace_hash(tmp_path: Path) -> None:
     assert validate_traces(Path("manifest/project/ai-ent")).trace_validation_hash != validate_traces(
         target
     ).trace_validation_hash
+
+
+def test_implementation_plan_generates_remaining_task_dag() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    summary = plan.as_dict()["summary"]
+
+    assert plan.ok
+    assert plan.generator_version == "mmc-005.1"
+    assert len(plan.implementation_plan_hash) == 64
+    assert summary["executable_task_count"] == 13
+    assert summary["dependency_edge_count"] == 23
+    assert summary["wave_count"] == 10
+    assert summary["critical_path_task_count"] == 10
+    assert summary["human_gate_count"] == 6
+
+
+def test_implementation_plan_covers_all_trace_gaps_without_orphan_tasks() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    trace = validate_traces(Path("manifest/project/ai-ent"))
+    covered = {capability_id for task in plan.tasks for capability_id in task.implements["capabilities"]}
+
+    assert set(trace.implementation_gaps) <= covered
+    for task in plan.tasks:
+        assert task.implements["requirements"] or task.implements["capabilities"] or task.implements["components"]
+        assert task.verification["acceptance_criteria"]
+        assert task.provenance["trace_validation_hash"] == plan.trace_validation_hash
+
+
+def test_implementation_plan_does_not_regenerate_satisfied_bootstrap_capabilities() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    executable_capabilities = {capability_id for task in plan.tasks for capability_id in task.implements["capabilities"]}
+    satisfied_capabilities = {capability_id for unit in plan.satisfied_units for capability_id in unit.capabilities}
+
+    assert {"C12", "C13"} <= satisfied_capabilities
+    assert "C12" not in executable_capabilities
+    assert "C13" not in executable_capabilities
+
+
+def test_implementation_plan_dependency_graph_is_acyclic_and_complete() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    task_ids = {task.id for task in plan.tasks}
+
+    assert all(task_id in task_ids and dependency_id in task_ids for task_id, dependency_id in plan.dependency_edges)
+    assert all(task_id != dependency_id for task_id, dependency_id in plan.dependency_edges)
+    assert plan.critical_path[0] == "IMPL-C01-CMP-001"
+    assert plan.critical_path[-1] == "IMPL-C20-CMP-007"
+
+
+def test_implementation_plan_classifies_trace_warnings() -> None:
+    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+
+    assert len(plan.warning_classifications) == 44
+    assert {warning.classification for warning in plan.warning_classifications} == {"PLANNING_RELEVANT"}
+
+
+def test_implementation_plan_writes_repeatable_artifacts(tmp_path: Path) -> None:
+    first = write_implementation_plan(Path("manifest/project/ai-ent"), tmp_path / "compiled-a")
+    second = write_implementation_plan(Path("manifest/project/ai-ent"), tmp_path / "compiled-b")
+
+    assert first.implementation_plan_hash == second.implementation_plan_hash
+    assert (tmp_path / "compiled-a" / "implementation-plan.json").read_bytes() == (
+        tmp_path / "compiled-b" / "implementation-plan.json"
+    ).read_bytes()
+    assert (tmp_path / "compiled-a" / "implementation-dag.json").exists()
+    assert (tmp_path / "compiled-a" / "implementation-waves.json").exists()
+    assert (tmp_path / "compiled-a" / "critical-path.json").exists()
+    assert (tmp_path / "compiled-a" / "human-gates.json").exists()
+    assert (tmp_path / "compiled-a" / "task-generation-findings.json").exists()
+    assert len(list((tmp_path / "compiled-a" / "generated-tasks").glob("*.json"))) == len(first.tasks)
+
+
+def test_material_manifest_change_changes_implementation_plan_hash(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    functional = target / "requirements" / "functional.yaml"
+    functional.write_text(
+        functional.read_text(encoding="utf-8").replace("Persist project memory", "Persist durable project memory"),
+        encoding="utf-8",
+    )
+
+    assert generate_implementation_plan(Path("manifest/project/ai-ent")).implementation_plan_hash != generate_implementation_plan(
+        target
+    ).implementation_plan_hash
+
+
+def test_trace_error_blocks_implementation_plan_generation(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    verification = target / "verification.yaml"
+    verification.write_text("verification:\n  gates: []\n  commands: []\n", encoding="utf-8")
+
+    try:
+        generate_implementation_plan(target)
+    except ValueError as exc:
+        assert "trace validation failed" in str(exc)
+    else:
+        raise AssertionError("trace errors did not block implementation DAG generation")
+
+
+def test_generated_implementation_dag_cycle_is_rejected() -> None:
+    from ai_ent.project_manifest import _validate_implementation_plan
+
+    first = _generated_test_task("IMPL-TEST-A", ("IMPL-TEST-B",), "C01")
+    second = _generated_test_task("IMPL-TEST-B", ("IMPL-TEST-A",), "C02")
+
+    findings = _validate_implementation_plan(
+        (first, second),
+        (("IMPL-TEST-A", "IMPL-TEST-B"), ("IMPL-TEST-B", "IMPL-TEST-A")),
+        ("C01", "C02"),
+    )
+
+    assert any(finding.finding_id == "PLAN-CYCLE" for finding in findings)
+
+
+def _generated_test_task(
+    task_id: str,
+    depends_on: tuple[str, ...],
+    capability_id: str,
+) -> GeneratedImplementationTask:
+    return GeneratedImplementationTask(
+        id=task_id,
+        title=task_id,
+        objective=task_id,
+        implements={
+            "requirements": ("REQ-001",),
+            "capabilities": (capability_id,),
+            "components": (),
+            "interfaces": (),
+        },
+        depends_on=depends_on,
+        write_scope={"allowed": ("src/ai_ent/**",), "prohibited": (".env",)},
+        execution={"agent_role": "AGT-001", "model_profile": "CODING_STANDARD", "executor": "codex"},
+        verification={"profile": "STANDARD_REGRESSION", "acceptance_criteria": ("passes",)},
+        risk={"level": "LOW", "reason": "test"},
+        provenance={
+            "compiled_project_hash": "compiled",
+            "capability_resolution_hash": "capabilities",
+            "trace_validation_hash": "trace",
+            "generator_version": "test",
+        },
+        fingerprint=task_id,
+        epic_id="EPC-001",
+        feature_id="FEA-001",
+    )
 
 
 def _copy_manifest(source: Path, target: Path) -> None:

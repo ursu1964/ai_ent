@@ -6,11 +6,13 @@ from pathlib import Path
 
 from ai_ent.project_manifest import (
     compile_project_manifest,
+    generate_implementation_plan,
     resolve_capabilities,
     validate_project_manifest,
     validate_traces,
     write_capability_resolution,
     write_compiled_project,
+    write_implementation_plan,
     write_trace_validation,
 )
 
@@ -133,6 +135,68 @@ def trace_gaps(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def generate_dag(args: argparse.Namespace) -> int:
+    plan = write_implementation_plan(Path(args.manifest_root), Path(args.output_dir))
+    summary = plan.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "implementation_plan_hash": plan.implementation_plan_hash,
+                "generator_version": plan.generator_version,
+                "source_compiled_hash": plan.source_compiled_hash,
+                "capability_resolution_hash": plan.capability_resolution_hash,
+                "trace_validation_hash": plan.trace_validation_hash,
+                "executable_task_count": summary["executable_task_count"],
+                "dependency_edge_count": summary["dependency_edge_count"],
+                "wave_count": summary["wave_count"],
+                "critical_path_task_count": summary["critical_path_task_count"],
+                "human_gate_count": summary["human_gate_count"],
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if plan.ok else 1
+
+
+def plan_summary(args: argparse.Namespace) -> int:
+    plan = generate_implementation_plan(Path(args.manifest_root))
+    report = plan.as_dict()
+    print(
+        json.dumps(
+            {
+                "implementation_plan_hash": plan.implementation_plan_hash,
+                "summary": report["summary"],
+                "implementation_gaps_covered": sorted(
+                    {capability for task in plan.tasks for capability in task.implements["capabilities"]}
+                ),
+                "human_gates": list(plan.human_gates),
+                "findings": [finding.as_dict() for finding in plan.findings],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if plan.ok else 1
+
+
+def critical_path(args: argparse.Namespace) -> int:
+    plan = generate_implementation_plan(Path(args.manifest_root))
+    print(
+        json.dumps(
+            {
+                "implementation_plan_hash": plan.implementation_plan_hash,
+                "critical_path": list(plan.critical_path),
+                "critical_path_length": len(plan.critical_path),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if plan.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -167,6 +231,19 @@ def build_parser() -> argparse.ArgumentParser:
     trace_gaps_parser = subparsers.add_parser("trace-gaps")
     trace_gaps_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     trace_gaps_parser.set_defaults(func=trace_gaps)
+
+    dag_parser = subparsers.add_parser("generate-dag")
+    dag_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    dag_parser.add_argument("--output-dir", default=".build/compiled")
+    dag_parser.set_defaults(func=generate_dag)
+
+    summary_parser = subparsers.add_parser("plan-summary")
+    summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    summary_parser.set_defaults(func=plan_summary)
+
+    critical_path_parser = subparsers.add_parser("critical-path")
+    critical_path_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    critical_path_parser.set_defaults(func=critical_path)
     return parser
 
 
