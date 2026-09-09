@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shlex
 import subprocess
 import sys
 import unittest
@@ -8,6 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from alembic import command
+from sqlalchemy import select
 
 from ai_ent.bootstrap.codex import CodexConfig
 from ai_ent.bootstrap.git import require_git
@@ -15,12 +18,13 @@ from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
+from ai_ent.persistence.models import Execution, Task, TaskLease
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
 from ai_ent.scheduler.iteration import ExecutionPackageFactory, SchedulerIterationService
-from ai_ent.scheduler.repair import RepairPlanner, RepairPolicy
+from ai_ent.scheduler.repair import RepairExecutionService, RepairPlanner, RepairPolicy
 from tests.integration.helpers import clean_test_tables, make_test_project_id, make_test_suffix
 
 
@@ -165,5 +169,103 @@ def test_postgres_repair_limit_blocks_additional_execution() -> None:
             assert decision.repair_attempt_count == 2
             assert decision.next_execution is None
     finally:
+        clean_test_tables(database)
+        database.dispose()
+
+
+def test_postgres_one_real_repair_execution_can_complete_task(tmp_path: Path) -> None:
+    raw_command = os.environ.get("AIENT_CODEX_COMMAND")
+    if not raw_command:
+        raise unittest.SkipTest("AIENT_CODEX_COMMAND is not configured for real TASK-0027 repair proof")
+
+    database = integration_database()
+    clean_test_tables(database)
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
+    project_id = make_test_project_id(suffix)
+    task = proof_task(f"TEST-REPAIR-REAL-{suffix}")
+    scheduler = SchedulerIterationService(
+        package_factory=ExecutionPackageFactory(manifest_tasks={task.id: task}, timeout_seconds=30),
+        owner_id="worker-1",
+        lease_duration=timedelta(minutes=5),
+    )
+    wrong_writer = (
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "p=Path('tests/fixtures/repair_plan.txt'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); "
+            "p.write_text('AIENT_REPAIR_PLAN=wrong\\n', encoding='utf-8')"
+        ),
+    )
+    first_worktree: Path | None = None
+    first_execution_id: str | None = None
+    repair_worktree: Path | None = None
+    repair_execution_id: str | None = None
+
+    try:
+        with database.session() as session:
+            ProjectRepository().create(session, project_id=project_id, name=f"Project {suffix}")
+            TaskRepository().create(session, task_id=task.id, project_id=project_id, title=task.title)
+
+        with database.session() as session:
+            scheduled = scheduler.run_once(session, project_id=project_id)
+            assert scheduled.status == "PACKAGE_READY"
+            assert scheduled.package is not None
+            first_execution_id = scheduled.package.execution_id
+            first = ClaimedExecutionRunner(
+                config=CodexConfig(command=wrong_writer, default_timeout_seconds=30),
+                repository_path=Path.cwd(),
+                worktree_root=tmp_path / "worktrees",
+            ).run_claimed(session, package=scheduled.package, owner_id="worker-1")
+            assert first.status == "EXECUTED"
+            assert first.package is not None
+            first_worktree = first.worktree_path
+
+            failed = ExecutionFinalizer(manifest_tasks={task.id: task}).finalize(
+                session,
+                package=first.package,
+                owner_id="worker-1",
+            )
+            assert failed.status == "VERIFICATION_FAILED"
+            assert failed.execution is not None
+
+            repair = RepairExecutionService(
+                planner=RepairPlanner(manifest_tasks={task.id: task}),
+                runner=ClaimedExecutionRunner(
+                    config=CodexConfig(command=tuple(shlex.split(raw_command)), default_timeout_seconds=60),
+                    repository_path=Path.cwd(),
+                    worktree_root=tmp_path / "worktrees",
+                ),
+                finalizer=ExecutionFinalizer(manifest_tasks={task.id: task}),
+                repository_path=Path.cwd(),
+                worktree_root=tmp_path / "worktrees",
+            ).run_once(session, failed_execution_id=failed.execution.id)
+
+            assert repair.status == "REPAIRED"
+            assert repair.decision.next_execution is not None
+            repair_execution_id = repair.decision.next_execution.id
+            assert repair.execution_result is not None
+            assert repair.execution_result.status == "EXECUTED"
+            repair_worktree = repair.execution_result.worktree_path
+            assert repair.finalization is not None
+            assert repair.finalization.status == "COMPLETED"
+
+        with database.session() as session:
+            executions = session.scalars(select(Execution).where(Execution.task_id == task.id).order_by(Execution.attempt)).all()
+            leases = session.scalars(select(TaskLease).where(TaskLease.task_id == task.id).order_by(TaskLease.acquired_at)).all()
+            persisted_task = session.get(Task, task.id)
+            assert persisted_task is not None
+            assert persisted_task.status == "passed"
+            assert len(executions) == 2
+            assert executions[0].status == "failed"
+            assert executions[0].commit_hash is None
+            assert executions[1].status == "succeeded"
+            assert executions[1].commit_hash is not None
+            assert len(leases) == 2
+            assert sorted(lease.status for lease in leases) == ["completed", "released"]
+    finally:
+        remove_execution_worktree(Path.cwd(), task.id, first_execution_id, first_worktree)
+        remove_execution_worktree(Path.cwd(), task.id, repair_execution_id, repair_worktree)
         clean_test_tables(database)
         database.dispose()

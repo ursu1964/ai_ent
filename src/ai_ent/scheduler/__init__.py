@@ -13,6 +13,8 @@ from ai_ent.scheduler.repair import (
     FailureClassification,
     FailureClassifier,
     RepairDecision,
+    RepairExecutionResult,
+    RepairExecutionService,
     RepairPlanner,
     RepairPolicy,
 )
@@ -29,6 +31,8 @@ __all__ = [
     "LeaseActionResult",
     "ReadinessDecision",
     "RepairDecision",
+    "RepairExecutionResult",
+    "RepairExecutionService",
     "RepairPlanner",
     "RepairPolicy",
     "SchedulerIterationResult",

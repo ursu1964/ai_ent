@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy.orm import Session
@@ -10,11 +11,14 @@ from sqlalchemy.orm import Session
 from ai_ent.bootstrap.codex import build_execution_package
 from ai_ent.bootstrap.manifest import load_tasks
 from ai_ent.bootstrap.models import BootstrapTask, ExecutionPackage
+from ai_ent.bootstrap.paths import ROOT
 from ai_ent.persistence.models import Checkpoint, Execution, Task
 from ai_ent.persistence.repositories.checkpoints import CheckpointRepository
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.persistence.repositories.tasks import TaskRepository
 from ai_ent.scheduler.claiming import TaskClaimingService, database_now
+from ai_ent.scheduler.execution import ClaimedExecutionResult, ClaimedExecutionRunner
+from ai_ent.scheduler.finalization import ExecutionFinalizationResult, ExecutionFinalizer
 
 FailureCategory = Literal[
     "IMPLEMENTATION_DEFECT",
@@ -87,6 +91,29 @@ class RepairDecision:
     @property
     def next_execution_allowed(self) -> bool:
         return self.next_execution is not None and self.next_package is not None
+
+
+RepairExecutionStatus = Literal[
+    "REPAIRED",
+    "REPAIR_FAILED",
+    "REPAIR_NOT_ALLOWED",
+    "REPAIR_ALREADY_EXISTS",
+    "EXECUTION_FAILED",
+]
+
+
+@dataclass(frozen=True)
+class RepairExecutionResult:
+    status: RepairExecutionStatus
+    decision: RepairDecision
+    execution_result: ClaimedExecutionResult | None = None
+    finalization: ExecutionFinalizationResult | None = None
+    followup_classification: FailureClassification | None = None
+    reason: str | None = None
+
+    @property
+    def repaired(self) -> bool:
+        return self.status == "REPAIRED"
 
 
 class FailureClassifier:
@@ -248,6 +275,7 @@ class RepairPlanner:
         package = build_execution_package(
             _repair_task(manifest_task, execution, latest_checkpoint, classification),
             execution_id=claim.execution.id,
+            timeout_seconds=900,
         )
         return RepairDecision(
             classification=classification,
@@ -279,6 +307,120 @@ class RepairPlanner:
         if manifest_task is None:
             raise ValueError(f"manifest task not found: {task.id}")
         return manifest_task
+
+
+class RepairExecutionService:
+    def __init__(
+        self,
+        *,
+        planner: RepairPlanner | None = None,
+        runner: ClaimedExecutionRunner | None = None,
+        finalizer: ExecutionFinalizer | None = None,
+        executions: ExecutionRepository | None = None,
+        checkpoints: CheckpointRepository | None = None,
+        classifier: FailureClassifier | None = None,
+        owner_id: str | None = None,
+        repository_path: Path = ROOT,
+        worktree_root: Path | None = None,
+    ) -> None:
+        self.planner = planner or RepairPlanner()
+        self.runner = runner or ClaimedExecutionRunner(repository_path=repository_path, worktree_root=worktree_root)
+        self.finalizer = finalizer or ExecutionFinalizer(manifest_tasks=self.planner.manifest_tasks)
+        self.executions = executions or ExecutionRepository()
+        self.checkpoints = checkpoints or CheckpointRepository()
+        self.classifier = classifier or FailureClassifier()
+        self.owner_id = owner_id or self.planner.policy.repair_owner_id
+
+    def run_once(self, session: Session, *, failed_execution_id: str) -> RepairExecutionResult:
+        failed_execution = self.executions.require(session, failed_execution_id)
+        existing_repair = self._existing_repair_attempt(session, failed_execution)
+        if existing_repair is not None:
+            decision = self._read_only_decision(session, failed_execution)
+            return RepairExecutionResult(
+                status="REPAIR_ALREADY_EXISTS",
+                decision=decision,
+                reason=f"repair execution already exists: {existing_repair.id}",
+            )
+
+        decision = self.planner.plan(session, execution_id=failed_execution_id)
+        if decision.action != "REPAIR_WITH_NEW_EXECUTION" or decision.next_package is None:
+            return RepairExecutionResult(
+                status="REPAIR_NOT_ALLOWED",
+                decision=decision,
+                reason=decision.action,
+            )
+
+        executed = self.runner.run_claimed(
+            session,
+            package=decision.next_package,
+            owner_id=self.owner_id,
+        )
+        if executed.status != "EXECUTED" or executed.package is None:
+            classification = None
+            if executed.execution is not None:
+                checkpoint = self.checkpoints.latest_for_execution(session, executed.execution.id)
+                classification = self.classifier.classify(executed.execution, latest_checkpoint=checkpoint)
+            return RepairExecutionResult(
+                status="EXECUTION_FAILED",
+                decision=decision,
+                execution_result=executed,
+                followup_classification=classification,
+                reason=executed.status,
+            )
+
+        finalization = self.finalizer.finalize(
+            session,
+            package=executed.package,
+            owner_id=self.owner_id,
+        )
+        if finalization.completed:
+            return RepairExecutionResult(
+                status="REPAIRED",
+                decision=decision,
+                execution_result=executed,
+                finalization=finalization,
+            )
+
+        classification = None
+        if finalization.execution is not None:
+            checkpoint = self.checkpoints.latest_for_execution(session, finalization.execution.id)
+            classification = self.classifier.classify(finalization.execution, latest_checkpoint=checkpoint)
+        return RepairExecutionResult(
+            status="REPAIR_FAILED",
+            decision=decision,
+            execution_result=executed,
+            finalization=finalization,
+            followup_classification=classification,
+            reason=finalization.status,
+        )
+
+    def _existing_repair_attempt(self, session: Session, failed_execution: Execution) -> Execution | None:
+        executions = self.executions.list_by_task(session, failed_execution.task_id)
+        for execution in executions:
+            if execution.attempt > failed_execution.attempt and execution.status in {
+                "pending",
+                "running",
+                "succeeded",
+                "timeout",
+            }:
+                return execution
+        return None
+
+    def _read_only_decision(self, session: Session, failed_execution: Execution) -> RepairDecision:
+        task = self.planner.tasks.require(session, failed_execution.task_id)
+        checkpoint = self.checkpoints.latest_for_execution(session, failed_execution.id)
+        classification = self.classifier.classify(failed_execution, latest_checkpoint=checkpoint)
+        repair_attempt_count = _repair_attempt_count(self.executions.list_by_task(session, task.id))
+        action = self.planner._action_for(classification, repair_attempt_count)
+        return RepairDecision(
+            classification=classification,
+            action=action,
+            failed_execution=failed_execution,
+            task=task,
+            repair_attempt_count=repair_attempt_count,
+            max_attempts=self.planner.policy.max_autonomous_repair_attempts,
+            human_reason=classification.reason if action == "ESCALATE_HUMAN" else None,
+        )
 
 
 def _checkpoint_status(checkpoint: Checkpoint | None) -> str | None:

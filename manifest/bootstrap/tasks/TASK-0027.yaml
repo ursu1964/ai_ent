@@ -1,0 +1,20 @@
+id: TASK-0027
+stage: B05
+title: One bounded repair execution
+objective: >
+  Execute exactly one planned repair attempt from a repairable failed
+  execution, then verify/finalize or classify the new failure and stop.
+executor: fake
+depends_on:
+  - TASK-0026
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0027.yaml
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/repair.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright

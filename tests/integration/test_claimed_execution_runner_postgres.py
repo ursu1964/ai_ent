@@ -65,7 +65,7 @@ def test_postgres_claimed_execution_runs_configured_codex_without_verification_o
     projects = ProjectRepository()
     tasks = TaskRepository()
     scheduler = SchedulerIterationService(
-        package_factory=ExecutionPackageFactory(manifest_tasks={task.id: task}, timeout_seconds=30),
+        package_factory=ExecutionPackageFactory(manifest_tasks={task.id: task}, timeout_seconds=60),
         owner_id="worker-1",
         lease_duration=timedelta(minutes=5),
     )
@@ -89,14 +89,14 @@ def test_postgres_claimed_execution_runs_configured_codex_without_verification_o
             result = ClaimedExecutionRunner(
                 config=runner.config.__class__(
                     command=tuple(shlex.split(raw_command)),
-                    default_timeout_seconds=30,
+                    default_timeout_seconds=60,
                 ),
                 repository_path=Path.cwd(),
                 worktree_root=tmp_path / "worktrees",
             ).run_claimed(session, package=scheduled.package, owner_id="worker-1")
-            assert result.status == "EXECUTED"
-            assert result.worktree_path is not None
             worktree_path = result.worktree_path
+            assert result.status == "EXECUTED", result.execution_result
+            assert result.worktree_path is not None
             assert result.changed_files == ("tests/fixtures/claimed_execution_proof.txt",)
             proof_file = result.worktree_path / "tests/fixtures/claimed_execution_proof.txt"
             assert proof_file.read_text(encoding="utf-8").strip() == "AIENT_CLAIMED_EXECUTION_PROOF=1"

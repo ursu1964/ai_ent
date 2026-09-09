@@ -1,19 +1,54 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from ai_ent.bootstrap.codex import CodexConfig
 from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
 from ai_ent.persistence.models import Base, Execution
 from ai_ent.persistence.repositories import CheckpointRepository, ProjectRepository, TaskRepository
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.persistence.repositories.leases import LeaseRepository
-from ai_ent.scheduler.repair import FailureClassifier, RepairPlanner, RepairPolicy
+from ai_ent.scheduler.execution import ClaimedExecutionRunner
+from ai_ent.scheduler.finalization import ExecutionFinalizer
+from ai_ent.scheduler.repair import (
+    FailureClassifier,
+    RepairExecutionService,
+    RepairPlanner,
+    RepairPolicy,
+)
+
+
+def git(cwd: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert completed.returncode == 0, completed.stdout
+    return completed.stdout.strip()
+
+
+def make_repo(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    git(tmp_path, "init")
+    git(tmp_path, "config", "user.email", "test@example.local")
+    git(tmp_path, "config", "user.name", "Test User")
+    (tmp_path / "README.md").write_text("seed\n", encoding="utf-8")
+    git(tmp_path, "add", "README.md")
+    git(tmp_path, "commit", "-m", "seed")
+    return tmp_path
 
 
 def session_factory() -> sessionmaker[Session]:
@@ -38,7 +73,7 @@ def manifest_task(task_id: str = "TASK-REPAIR") -> BootstrapTask:
         objective="Create the requested fixture.",
         allowed_paths=("tests/fixtures/repair.txt",),
         outputs=("tests/fixtures/repair.txt",),
-        verification=VerificationSpec(commands=("test -f tests/fixtures/repair.txt",)),
+        verification=VerificationSpec(commands=('test "$(cat tests/fixtures/repair.txt)" = "fixed"',)),
     )
 
 
@@ -244,3 +279,129 @@ def test_classifier_and_planner_do_not_invoke_codex_verifier_or_commit() -> None
             decision = RepairPlanner(manifest_tasks={task.id: task}).plan(session, execution_id=failed.id)
 
         assert decision.action == "REPAIR_WITH_NEW_EXECUTION"
+
+
+def test_repair_execution_service_runs_one_successful_repair(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    task = manifest_task()
+    factory = session_factory()
+    repair_writer = (
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; p=Path('tests/fixtures/repair.txt'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); p.write_text('fixed\\n', encoding='utf-8')"
+        ),
+    )
+    with factory() as session:
+        seed_task(session, task)
+        failed = seed_failed_execution(session, task)
+        before_head = git(repo, "rev-parse", "HEAD")
+
+        result = RepairExecutionService(
+            planner=RepairPlanner(manifest_tasks={task.id: task}),
+            runner=ClaimedExecutionRunner(
+                config=CodexConfig(command=repair_writer, default_timeout_seconds=30),
+                repository_path=repo,
+                worktree_root=tmp_path / "worktrees",
+            ),
+            finalizer=ExecutionFinalizer(manifest_tasks={task.id: task}),
+            repository_path=repo,
+            worktree_root=tmp_path / "worktrees",
+        ).run_once(session, failed_execution_id=failed.id)
+
+        assert result.status == "REPAIRED"
+        assert result.execution_result is not None
+        assert result.execution_result.status == "EXECUTED"
+        assert result.finalization is not None
+        assert result.finalization.status == "COMPLETED"
+        assert result.decision.next_execution is not None
+        assert result.decision.next_execution.attempt == 2
+        assert session.get(Execution, failed.id).status == "failed"  # type: ignore[union-attr]
+        repair_execution = session.get(Execution, result.decision.next_execution.id)
+        assert repair_execution is not None
+        assert repair_execution.status == "succeeded"
+        assert git(repo, "rev-parse", "HEAD") == before_head
+        assert git(result.execution_result.worktree_path, "rev-parse", "HEAD") != before_head  # type: ignore[arg-type]
+
+
+def test_repair_execution_service_failed_repair_stops_without_third_execution(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    task = manifest_task()
+    factory = session_factory()
+    wrong_writer = (
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; p=Path('tests/fixtures/repair.txt'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); p.write_text('', encoding='utf-8')"
+        ),
+    )
+    with factory() as session:
+        seed_task(session, task)
+        failed = seed_failed_execution(session, task)
+
+        result = RepairExecutionService(
+            planner=RepairPlanner(manifest_tasks={task.id: task}),
+            runner=ClaimedExecutionRunner(
+                config=CodexConfig(command=wrong_writer, default_timeout_seconds=30),
+                repository_path=repo,
+                worktree_root=tmp_path / "worktrees",
+            ),
+            finalizer=ExecutionFinalizer(manifest_tasks={task.id: task}),
+            repository_path=repo,
+            worktree_root=tmp_path / "worktrees",
+        ).run_once(session, failed_execution_id=failed.id)
+
+        executions = ExecutionRepository().list_by_task(session, task.id)
+        assert result.status == "REPAIR_FAILED"
+        assert result.followup_classification is not None
+        assert result.followup_classification.category == "VERIFICATION_FAILURE"
+        assert len(executions) == 2
+        assert executions[0].status == "failed"
+        assert executions[1].status == "failed"
+
+
+def test_repair_execution_service_budget_exhausted_does_not_call_codex(tmp_path: Path) -> None:
+    task = manifest_task()
+    factory = session_factory()
+    with factory() as session:
+        seed_task(session, task)
+        failed = seed_failed_execution(session, task, execution_id="execution-1", attempt=1)
+        seed_failed_execution(session, task, execution_id="execution-2", attempt=2)
+        seed_failed_execution(session, task, execution_id="execution-3", attempt=3)
+        with patch("ai_ent.bootstrap.codex.CodexExecutor.execute_package", side_effect=AssertionError("codex invoked")):
+            result = RepairExecutionService(
+                planner=RepairPlanner(
+                    manifest_tasks={task.id: task},
+                    policy=RepairPolicy(max_autonomous_repair_attempts=2),
+                ),
+                repository_path=tmp_path,
+            ).run_once(session, failed_execution_id=failed.id)
+
+        assert result.status == "REPAIR_NOT_ALLOWED"
+        assert result.decision.action == "ESCALATE_HUMAN"
+
+
+def test_repair_execution_service_rerun_does_not_duplicate_existing_repair(tmp_path: Path) -> None:
+    task = manifest_task()
+    factory = session_factory()
+    with factory() as session:
+        seed_task(session, task)
+        failed = seed_failed_execution(session, task)
+        ExecutionRepository().create(
+            session,
+            execution_id="existing-repair",
+            task_id=task.id,
+            executor_type="codex",
+            status="running",
+            attempt=2,
+        )
+
+        result = RepairExecutionService(
+            planner=RepairPlanner(manifest_tasks={task.id: task}),
+            repository_path=tmp_path,
+        ).run_once(session, failed_execution_id=failed.id)
+
+        assert result.status == "REPAIR_ALREADY_EXISTS"
+        assert len(ExecutionRepository().list_by_task(session, task.id)) == 2
