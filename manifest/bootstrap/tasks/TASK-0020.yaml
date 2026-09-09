@@ -1,0 +1,21 @@
+id: TASK-0020
+stage: B04
+title: DB-backed task readiness and dependency evaluation
+objective: >
+  Implement a PostgreSQL-backed readiness evaluator that derives claimable
+  tasks from persisted task status, dependency state, execution class,
+  schedulability, and active lease state.
+executor: fake
+depends_on:
+  - TASK-0019
+allowed_paths:
+  - src/ai_ent/scheduler/**
+  - manifest/bootstrap/tasks/TASK-0020.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/readiness.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
