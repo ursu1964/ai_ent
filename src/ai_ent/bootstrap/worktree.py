@@ -12,6 +12,10 @@ def task_worktree_path(task_id: str) -> Path:
     return WORKTREE_ROOT / task_id
 
 
+def execution_worktree_path(task_id: str, execution_id: str) -> Path:
+    return WORKTREE_ROOT / task_id / execution_id
+
+
 def worktree_supported() -> bool:
     return WORKTREE_ROOT.exists()
 
@@ -23,6 +27,23 @@ def create_task_worktree(task_id: str, base_ref: str = "HEAD") -> Path:
         raise FileExistsError(f"worktree already exists: {path}")
     branch = f"task/{task_id}"
     require_git(["worktree", "add", "-b", branch, str(path), base_ref], cwd=ROOT)
+    return path
+
+
+def create_execution_worktree(
+    task_id: str,
+    execution_id: str,
+    *,
+    base_ref: str = "HEAD",
+    root: Path = ROOT,
+    worktree_root: Path = WORKTREE_ROOT,
+) -> Path:
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    path = worktree_root / task_id / execution_id
+    if path.exists():
+        raise FileExistsError(f"worktree already exists: {path}")
+    branch = f"task/{task_id}/{execution_id}"
+    require_git(["worktree", "add", "-b", branch, str(path), base_ref], cwd=root)
     return path
 
 

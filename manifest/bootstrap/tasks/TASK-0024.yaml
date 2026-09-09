@@ -1,0 +1,22 @@
+id: TASK-0024
+stage: B04
+title: Claimed execution to isolated Codex worktree
+objective: >
+  Starting from a claimed task and ExecutionPackage, create an isolated Git
+  worktree, execute through the existing CodexExecutor, persist the execution
+  result, and stop before verification or commit.
+executor: fake
+depends_on:
+  - TASK-0023
+allowed_paths:
+  - src/ai_ent/bootstrap/worktree.py
+  - src/ai_ent/scheduler/**
+  - manifest/bootstrap/tasks/TASK-0024.yaml
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/execution.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
