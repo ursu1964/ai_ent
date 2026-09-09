@@ -1,0 +1,22 @@
+id: TASK-0030
+stage: B06
+title: Guarded autonomous runner
+objective: >
+  Package recovery, bounded scheduling, execution, verification, repair, and
+  PostgreSQL-authoritative state behind an operator-facing guarded autonomous
+  run boundary with explicit safety limits and dry-run inspection.
+executor: fake
+depends_on:
+  - TASK-0029
+allowed_paths:
+  - manifest/bootstrap/tasks/TASK-0030.yaml
+  - scripts/bootstrap.py
+  - src/ai_ent/scheduler/**
+  - tests/**
+outputs:
+  - src/ai_ent/scheduler/guarded.py
+verification:
+  commands:
+    - python -m pytest
+    - python -m ruff check .
+    - pyright
