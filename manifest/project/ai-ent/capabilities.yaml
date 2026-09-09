@@ -19,6 +19,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R1, R3]
     depends_on: [C01, C02]
+    evidence_refs:
+      - BEAG-001:independent-verification
   - id: C04
     name: Controlled AI interpretation
     status: REQUIRED
@@ -26,6 +28,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R4]
     depends_on: [C01, C03]
+    evidence_refs:
+      - BEAG-001:codex-executor-contract
   - id: C05
     name: Universal manifest transformation engine
     status: REQUIRED
@@ -33,6 +37,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R5]
     depends_on: [C02, C03]
+    evidence_refs:
+      - BEAG-001:pytest-regression-suite
   - id: C06
     name: Universal artifact generation framework
     status: REQUIRED
@@ -40,6 +46,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R6]
     depends_on: [C05]
+    evidence_refs:
+      - BEAG-001:scope-and-prohibited-path-checks
   - id: C07
     name: Universal execution and runtime model
     status: REQUIRED
@@ -68,6 +76,13 @@ capabilities:
     classification: FUTURE/DEFERRED
     source_refs: [R10]
     depends_on: [C09]
+    conditional_dependencies:
+      - id: CD-C10-C14
+        dependency_type: CONDITIONAL
+        condition:
+          path: deployment.deployment.current_mode
+          equals: authenticated_application
+        capabilities: [C14]
   - id: C11
     name: Integration and ecosystem framework
     status: CONDITIONAL
@@ -75,12 +90,21 @@ capabilities:
     classification: FUTURE/DEFERRED
     source_refs: [R11]
     depends_on: [C09]
+    conditional_dependencies:
+      - id: CD-C11-C06-C12
+        dependency_type: CONDITIONAL
+        condition:
+          path: deployment.deployment.current_mode
+          equals: production_cloud
+        capabilities: [C06, C12]
   - id: C12
     name: Implementation and bootstrap engine
     status: REQUIRED
     maturity: VALIDATED
     classification: NORMATIVE
     source_refs: [R12, R13, BEAG-001]
+    evidence_refs:
+      - BEAG-001:accepted-bootstrap-engine
   - id: C13
     name: Repository bootstrap structure
     status: REQUIRED
@@ -88,6 +112,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R13, BEAG-001]
     depends_on: [C12]
+    evidence_refs:
+      - BEAG-001:repository-bootstrap-structure
   - id: C14
     name: Executable manifest schema
     status: REQUIRED
@@ -102,6 +128,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R15]
     depends_on: [C14]
+    evidence_refs:
+      - MMC-002:deterministic-manifest-compiler
   - id: C16
     name: Knowledge graph
     status: REQUIRED
@@ -116,6 +144,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R17, BEAG-001]
     depends_on: [C16]
+    evidence_refs:
+      - BEAG-001:bounded-scheduler-runner
   - id: C18
     name: Generator orchestration framework
     status: REQUIRED
@@ -123,6 +153,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R18, BEAG-001]
     depends_on: [C17]
+    evidence_refs:
+      - BEAG-001:guarded-codex-execution
   - id: C19
     name: Project memory and context engine
     status: REQUIRED
@@ -130,6 +162,8 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R19, BEAG-001]
     depends_on: [C16, C18]
+    evidence_refs:
+      - BEAG-001:postgresql-runtime-state
   - id: C20
     name: Runtime kernel and evidence graph
     status: REQUIRED
@@ -137,3 +171,5 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R20, R21, R22, BEAG-001]
     depends_on: [C09, C17, C18, C19]
+    evidence_refs:
+      - BEAG-001:guarded-autonomous-runner

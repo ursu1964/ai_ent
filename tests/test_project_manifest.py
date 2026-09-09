@@ -5,7 +5,9 @@ from pathlib import Path
 from ai_ent.project_manifest import (
     compile_project_manifest,
     load_manifest_documents,
+    resolve_capabilities,
     validate_project_manifest,
+    write_capability_resolution,
     write_compiled_project,
 )
 
@@ -189,6 +191,132 @@ def test_unknown_normative_field_changes_hash_without_being_dropped(tmp_path: Pa
 
     assert compiled.lock.compiled_hash != compile_project_manifest(source).lock.compiled_hash
     assert compiled.compiled.as_dict()["operations"]
+
+
+def test_capability_resolver_resolves_all_twenty_capabilities() -> None:
+    resolution = resolve_capabilities(Path("manifest/project/ai-ent"))
+
+    assert len(resolution.capabilities) == 20
+    assert resolution.resolver_version == "mmc-003.1"
+    assert len(resolution.source_compiled_hash) == 64
+    assert len(resolution.capability_resolution_hash) == 64
+    assert "C12" in resolution.satisfied_capabilities
+    assert "C03" in resolution.partially_satisfied_capabilities
+    assert "C01" in resolution.unsatisfied_capabilities
+
+
+def test_capability_resolver_expands_direct_and_transitive_dependencies() -> None:
+    resolution = resolve_capabilities(Path("manifest/project/ai-ent"))
+    by_id = {capability.capability_id: capability for capability in resolution.capabilities}
+
+    assert "C19" in by_id["C20"].direct_dependencies
+    assert "C16" in by_id["C20"].transitive_dependencies
+    assert ("C20", "C19") in resolution.direct_edges
+    assert ("C20", "C01") in resolution.transitive_edges
+
+
+def test_capability_conditional_dependency_false_is_not_applied() -> None:
+    resolution = resolve_capabilities(Path("manifest/project/ai-ent"))
+    by_id = {capability.capability_id: capability for capability in resolution.capabilities}
+
+    assert by_id["C11"].conditional_dependencies_applied == ()
+    assert "C06" not in by_id["C11"].direct_dependencies
+    assert "C11" in resolution.deferred_capabilities
+
+
+def test_capability_conditional_dependency_true_is_applied(tmp_path: Path) -> None:
+    source = Path("manifest/project/ai-ent")
+    target = tmp_path / "manifest"
+    _copy_manifest(source, target)
+    deployment = target / "deployment.yaml"
+    deployment.write_text(
+        deployment.read_text(encoding="utf-8").replace("current_mode: local_development", "current_mode: production_cloud"),
+        encoding="utf-8",
+    )
+
+    resolution = resolve_capabilities(target)
+    by_id = {capability.capability_id: capability for capability in resolution.capabilities}
+
+    assert "C11" in resolution.conditional_capabilities_activated
+    assert "C06" in by_id["C11"].direct_dependencies
+    assert by_id["C11"].conditional_dependencies_applied
+
+
+def test_capability_unknown_dependency_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    capabilities = target / "capabilities.yaml"
+    capabilities.write_text(
+        capabilities.read_text(encoding="utf-8").replace("depends_on: [C01]", "depends_on: [C99]", 1),
+        encoding="utf-8",
+    )
+
+    try:
+        resolve_capabilities(target)
+    except ValueError as exc:
+        assert "unknown capability C99" in str(exc)
+    else:
+        raise AssertionError("unknown capability dependency was not rejected")
+
+
+def test_capability_self_dependency_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    capabilities = target / "capabilities.yaml"
+    capabilities.write_text(
+        capabilities.read_text(encoding="utf-8").replace("depends_on: [C01]", "depends_on: [C02]", 1),
+        encoding="utf-8",
+    )
+
+    try:
+        resolve_capabilities(target)
+    except ValueError as exc:
+        assert "C02 cannot depend on itself" in str(exc)
+    else:
+        raise AssertionError("self dependency was not rejected")
+
+
+def test_capability_cycle_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    capabilities = target / "capabilities.yaml"
+    capabilities.write_text(
+        capabilities.read_text(encoding="utf-8").replace("depends_on: [C01]", "depends_on: [C01, C20]", 1),
+        encoding="utf-8",
+    )
+
+    try:
+        resolve_capabilities(target)
+    except ValueError as exc:
+        assert "capability dependency cycle" in str(exc)
+    else:
+        raise AssertionError("cycle was not rejected")
+
+
+def test_capability_resolution_is_repeatable_and_writes_artifacts(tmp_path: Path) -> None:
+    first = write_capability_resolution(Path("manifest/project/ai-ent"), tmp_path / "compiled-a")
+    second = write_capability_resolution(Path("manifest/project/ai-ent"), tmp_path / "compiled-b")
+
+    assert first.capability_resolution_hash == second.capability_resolution_hash
+    assert (tmp_path / "compiled-a" / "capability-resolution.json").read_bytes() == (
+        tmp_path / "compiled-b" / "capability-resolution.json"
+    ).read_bytes()
+    assert (tmp_path / "compiled-a" / "capability-graph.json").exists()
+    assert (tmp_path / "compiled-a" / "capability-gaps.json").exists()
+
+
+def test_material_capability_change_changes_resolution_hash(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(Path("manifest/project/ai-ent"), target)
+    capabilities = target / "capabilities.yaml"
+    capabilities.write_text(
+        capabilities.read_text(encoding="utf-8").replace("maturity: VALIDATED", "maturity: NOT_IMPLEMENTED", 1),
+        encoding="utf-8",
+    )
+
+    assert resolve_capabilities(Path("manifest/project/ai-ent")).capability_resolution_hash != resolve_capabilities(
+        target
+    ).capability_resolution_hash
 
 
 def _copy_manifest(source: Path, target: Path) -> None:
