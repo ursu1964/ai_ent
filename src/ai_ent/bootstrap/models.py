@@ -112,3 +112,21 @@ class VerificationResult:
     ok: bool
     commands: tuple[CommandResult, ...]
 
+
+@dataclass(frozen=True)
+class Candidate:
+    task_id: str
+    tree_hash: str
+    changed_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ScopeResult:
+    ok: bool
+    findings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CommitEligibility:
+    ok: bool
+    reason: str

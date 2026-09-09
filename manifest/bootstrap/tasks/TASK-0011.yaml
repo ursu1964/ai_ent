@@ -9,8 +9,11 @@ depends_on:
   - TASK-0010
 allowed_paths:
   - src/ai_ent/bootstrap/git.py
+  - src/ai_ent/bootstrap/models.py
   - scripts/bootstrap.py
   - tests/**
+outputs:
+  - src/ai_ent/bootstrap/git.py
 verification:
   commands:
     - python -m pytest
