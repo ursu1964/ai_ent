@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ai_ent.execution_planner import ExecutionPlannerService
 from ai_ent.generator_orchestrator import (
+    C20_GENERATOR_REQUIREMENTS,
     EVIDENCE_RECORDING_INTERFACE_ID,
     GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
     GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
@@ -16,10 +17,12 @@ from ai_ent.generator_orchestrator import (
     GeneratorContract,
     GeneratorOrchestratorService,
 )
-from ai_ent.persistence.models import Base, Execution, TaskLease
+from ai_ent.persistence.models import Base, Execution, RuntimeHumanGate, TaskLease
 from ai_ent.project_manifest import EnvironmentProfile
 
 MANIFEST_ROOT = Path("manifest/project/ai-ent")
+C20_TASK_ID = "IMPL-C20-CMP-005"
+C20_EXECUTION_ID = "exec-IMPL-C20-CMP-005-001"
 
 
 def session_factory() -> sessionmaker[Session]:
@@ -211,6 +214,178 @@ def test_sec_002_worker_scope_is_bounded_and_forbidden_authority_is_rejected(
         assert "forbidden authority granted:unsafe-generator:commit" in denied.blockers
         assert "forbidden authority granted:unsafe-generator:push" in denied.blockers
         assert denied.work_orders == ()
+
+
+def test_c20_runtime_orchestration_blocks_pending_human_gate_with_evidence(
+    tmp_path: Path,
+) -> None:
+    service = ExecutionPlannerService()
+    factory = session_factory()
+    plan = service.plan(MANIFEST_ROOT, environment=_environment(codex_configured=False))
+
+    with factory() as session:
+        service.import_plan(
+            session,
+            plan,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        first = GeneratorOrchestratorService(planner=service).coordinate_runtime_task(
+            session,
+            task_id=C20_TASK_ID,
+            execution_id=C20_EXECUTION_ID,
+            repository_path=tmp_path,
+        )
+        second = GeneratorOrchestratorService(planner=service).coordinate_runtime_task(
+            session,
+            task_id=C20_TASK_ID,
+            execution_id=C20_EXECUTION_ID,
+            repository_path=tmp_path,
+        )
+
+        assert first.as_dict() == second.as_dict()
+        assert first.status == "BLOCKED"
+        assert first.work_orders == ()
+        assert f"human approval required:{C20_TASK_ID}:pending" in first.blockers
+        assert tuple(first.as_dict()["summary"]["requirements_covered"]) == C20_GENERATOR_REQUIREMENTS
+        assert first.as_dict()["summary"]["capabilities_covered"] == ["C20"]
+        assert first.as_dict()["summary"]["output_authority_state"] == "NON_AUTHORITATIVE"
+        evidence = first.runtime_evidence[0]
+        assert evidence.task_id == C20_TASK_ID
+        assert evidence.human_gate_ids == (f"GATE-{C20_TASK_ID}",)
+        assert evidence.human_gate_state == "pending"
+        assert {"pending_human_gate", "reconciliation_required", "task_limit"} <= set(
+            evidence.stop_conditions
+        )
+        assert evidence.worker_package_hash is None
+        assert evidence.work_order_input_hash is None
+        assert len(evidence.project_memory_hash) == 64
+        assert len(evidence.deterministic_validation_hash) == 64
+        assert session.scalar(select(func.count()).select_from(Execution)) == 0
+        assert session.scalar(select(func.count()).select_from(TaskLease)) == 0
+
+
+def test_c20_approved_runtime_orchestration_builds_bounded_worker_package(
+    tmp_path: Path,
+) -> None:
+    service = ExecutionPlannerService()
+    factory = session_factory()
+    plan = service.plan(MANIFEST_ROOT, environment=_environment(codex_configured=False))
+
+    with factory() as session:
+        service.import_plan(
+            session,
+            plan,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        gate = session.get(RuntimeHumanGate, f"GATE-{C20_TASK_ID}")
+        assert gate is not None
+        gate.status = "approved"
+        session.flush()
+
+        result = GeneratorOrchestratorService(planner=service).coordinate_runtime_task(
+            session,
+            task_id=C20_TASK_ID,
+            execution_id=C20_EXECUTION_ID,
+            repository_path=tmp_path,
+            timeout_seconds=321,
+        )
+
+        assert result.ok
+        assert result.output_hash == GeneratorOrchestratorService(
+            planner=service
+        ).coordinate_runtime_task(
+            session,
+            task_id=C20_TASK_ID,
+            execution_id=C20_EXECUTION_ID,
+            repository_path=tmp_path,
+            timeout_seconds=321,
+        ).output_hash
+        package = result.worker_package_plans[0].package
+        work_order = result.work_orders[0]
+        runtime_evidence = result.runtime_evidence[0]
+        boundaries = {boundary.service: boundary.interface_id for boundary in runtime_evidence.service_boundaries}
+
+        assert package.task_id == C20_TASK_ID
+        assert package.allowed_paths == ("src/ai_ent/**", "tests/**", "scripts/**")
+        assert ".env" in package.prohibited_paths
+        assert work_order.denied_authorities == (
+            "complete_task",
+            "commit",
+            "push",
+            "schedule",
+            "verify",
+        )
+        assert work_order.timeout_seconds == 321
+        assert runtime_evidence.worker_package_hash == result.worker_package_plans[0].package_hash
+        assert runtime_evidence.work_order_input_hash == work_order.input_hash
+        assert runtime_evidence.human_gate_state == "approved"
+        assert runtime_evidence.requirements_covered == C20_GENERATOR_REQUIREMENTS
+        assert boundaries["execution-planner"] == WORKER_PACKAGE_INTERFACE_ID
+        assert boundaries["runtime-kernel"] == WORKER_PACKAGE_INTERFACE_ID
+        assert boundaries["project-memory"] == EVIDENCE_RECORDING_INTERFACE_ID
+        assert boundaries["artifact-evidence-graph"] == EVIDENCE_RECORDING_INTERFACE_ID
+        assert boundaries["deterministic-validator"] == EVIDENCE_RECORDING_INTERFACE_ID
+        assert result.evidence_records[0].output_authority_state == "NON_AUTHORITATIVE"
+        assert session.scalar(select(func.count()).select_from(Execution)) == 0
+        assert session.scalar(select(func.count()).select_from(TaskLease)) == 0
+
+
+def test_c20_runtime_orchestration_requires_c20_generator_contract(
+    tmp_path: Path,
+) -> None:
+    service = ExecutionPlannerService()
+    factory = session_factory()
+    plan = service.plan(MANIFEST_ROOT, environment=_environment(codex_configured=False))
+    c18_only_contract = GeneratorContract(
+        generator_id="c18-only-generator",
+        name="C18-only generator",
+        adapter_kind="tool",
+        input_boundary=GeneratorBoundary(
+            service="execution-planner",
+            interface_id=WORKER_PACKAGE_INTERFACE_ID,
+            contract_version="c17.1",
+            schema_version="execution-planner-output-v0.1",
+        ),
+        output_boundary=GeneratorBoundary(
+            service="artifact-evidence-graph",
+            interface_id=EVIDENCE_RECORDING_INTERFACE_ID,
+            contract_version=GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
+            schema_version=GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
+        ),
+        capabilities=("C18",),
+    )
+
+    with factory() as session:
+        service.import_plan(
+            session,
+            plan,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        gate = session.get(RuntimeHumanGate, f"GATE-{C20_TASK_ID}")
+        assert gate is not None
+        gate.status = "approved"
+        session.flush()
+
+        result = GeneratorOrchestratorService(
+            planner=service,
+            generator_contracts=(c18_only_contract,),
+        ).coordinate_runtime_task(
+            session,
+            task_id=C20_TASK_ID,
+            execution_id=C20_EXECUTION_ID,
+            generator_id="c18-only-generator",
+            repository_path=tmp_path,
+        )
+
+        assert result.status == "BLOCKED"
+        assert "generator contract does not declare C20 capability:c18-only-generator" in result.blockers
+        assert result.work_orders == ()
 
 
 def _environment(*, codex_configured: bool = True) -> EnvironmentProfile:

@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
+from ai_ent.deterministic_validator import DeterministicValidatorService
 from ai_ent.execution_planner import (
     EXECUTION_PLANNER_CONTRACT_VERSION,
     EXECUTION_PLANNER_OUTPUT_SCHEMA_VERSION,
@@ -14,13 +15,53 @@ from ai_ent.execution_planner import (
     WorkerPackagePlan,
 )
 from ai_ent.project_manifest import GENERATED_MARKER, canonical_bytes
-from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
+from ai_ent.project_memory import (
+    PROJECT_MEMORY_CONTRACT_VERSION,
+    PROJECT_MEMORY_SCHEMA_VERSION,
+    ProjectMemoryService,
+    ProjectMemorySnapshot,
+)
+from ai_ent.runtime_handoff import (
+    DEFAULT_RUNTIME_PROJECT_ID,
+    RuntimePlanImporter,
+    RuntimePlanStatus,
+)
 
-GENERATOR_ORCHESTRATOR_CONTRACT_VERSION = "c18.1"
+GENERATOR_ORCHESTRATOR_CONTRACT_VERSION = "c20.1"
 GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION = "generator-orchestrator-output-v0.1"
 WORKER_PACKAGE_INTERFACE_ID = "IF-004"
 EVIDENCE_RECORDING_INTERFACE_ID = "IF-005"
 NON_AUTHORITATIVE_OUTPUT_STATE = "NON_AUTHORITATIVE"
+C18_GENERATOR_REQUIREMENTS = ("FR-005", "INT-002", "SEC-002")
+C20_GENERATOR_REQUIREMENTS = (
+    "ACC-001",
+    "ACC-003",
+    "DATA-002",
+    "DATA-003",
+    "FR-003",
+    "FR-004",
+    "FR-005",
+    "FR-006",
+    "NFR-002",
+    "NFR-003",
+    "NFR-004",
+    "OPS-001",
+    "OPS-002",
+    "OPS-003",
+    "SEC-001",
+    "SEC-002",
+    "SEC-003",
+)
+C20_STOP_CONDITIONS = (
+    "no_ready_task",
+    "pending_human_gate",
+    "reconciliation_required",
+    "failure_limit",
+    "time_limit",
+    "task_limit",
+    "crash_recovery_before_resume",
+    "runtime_error",
+)
 
 GeneratorAdapterKind = Literal["model", "tool", "service"]
 GeneratorAuthority = Literal[
@@ -163,6 +204,62 @@ class GeneratorEvidenceRecord:
 
 
 @dataclass(frozen=True)
+class GeneratorRuntimeEvidence:
+    evidence_id: str
+    orchestration_id: str
+    project_id: str
+    task_id: str
+    execution_id: str
+    plan_id: str
+    plan_version: str
+    runtime_status_hash: str
+    project_memory_hash: str
+    deterministic_validation_hash: str
+    requirements_covered: tuple[str, ...]
+    capabilities_covered: tuple[str, ...]
+    service_boundaries: tuple[GeneratorBoundary, ...]
+    human_gate_ids: tuple[str, ...]
+    human_gate_state: str
+    stop_conditions: tuple[str, ...]
+    worker_package_hash: str | None
+    work_order_input_hash: str | None
+    output_authority_state: str = NON_AUTHORITATIVE_OUTPUT_STATE
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "evidence_id": self.evidence_id,
+            "orchestration_id": self.orchestration_id,
+            "project_id": self.project_id,
+            "task_id": self.task_id,
+            "execution_id": self.execution_id,
+            "plan_id": self.plan_id,
+            "plan_version": self.plan_version,
+            "runtime_status_hash": self.runtime_status_hash,
+            "project_memory_hash": self.project_memory_hash,
+            "deterministic_validation_hash": self.deterministic_validation_hash,
+            "requirements_covered": list(self.requirements_covered),
+            "capabilities_covered": list(self.capabilities_covered),
+            "service_boundaries": [boundary.as_dict() for boundary in self.service_boundaries],
+            "human_gate_ids": list(self.human_gate_ids),
+            "human_gate_state": self.human_gate_state,
+            "stop_conditions": list(self.stop_conditions),
+            "worker_package_hash": self.worker_package_hash,
+            "work_order_input_hash": self.work_order_input_hash,
+            "output_authority_state": self.output_authority_state,
+        }
+
+
+@dataclass(frozen=True)
+class RuntimeTaskContext:
+    requirements: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    human_gate_ids: tuple[str, ...]
+    human_gate_state: str
+    plan_id: str | None
+    plan_version: str | None
+
+
+@dataclass(frozen=True)
 class GeneratorOrchestrationResult:
     contract_version: str
     schema_version: str
@@ -172,6 +269,9 @@ class GeneratorOrchestrationResult:
     work_orders: tuple[GeneratorWorkOrder, ...]
     worker_package_plans: tuple[WorkerPackagePlan, ...]
     evidence_records: tuple[GeneratorEvidenceRecord, ...]
+    requirements_covered: tuple[str, ...] = C18_GENERATOR_REQUIREMENTS
+    capabilities_covered: tuple[str, ...] = ("C18",)
+    runtime_evidence: tuple[GeneratorRuntimeEvidence, ...] = ()
     blockers: tuple[str, ...] = ()
 
     @property
@@ -191,8 +291,8 @@ class GeneratorOrchestrationResult:
         return {
             "generated": GENERATED_MARKER,
             "component_id": "CMP-005",
-            "capability_id": "C18",
-            "requirements": ["FR-005", "INT-002", "SEC-002"],
+            "capability_id": "C20" if "C20" in self.capabilities_covered else "C18",
+            "requirements": list(self.requirements_covered),
             "contract_version": self.contract_version,
             "schema_version": self.schema_version,
             "status": self.status,
@@ -228,11 +328,22 @@ class GeneratorOrchestrationResult:
                 evidence.as_dict()
                 for evidence in sorted(self.evidence_records, key=lambda item: item.evidence_id)
             ],
+            "runtime_evidence": [
+                evidence.as_dict()
+                for evidence in sorted(self.runtime_evidence, key=lambda item: item.evidence_id)
+            ],
             "blockers": list(self.blockers),
             "summary": {
                 "ready": self.ok,
                 "work_order_count": len(self.work_orders),
                 "evidence_record_count": len(self.evidence_records),
+                "runtime_evidence_count": len(self.runtime_evidence),
+                "requirements_covered": list(self.requirements_covered),
+                "capabilities_covered": list(self.capabilities_covered),
+                "human_approval_required": any(
+                    evidence.human_gate_state != "approved" for evidence in self.runtime_evidence
+                ),
+                "output_authority_state": NON_AUTHORITATIVE_OUTPUT_STATE,
                 "completion_authority_granted": _authority_granted(
                     self.generator_contracts,
                     "complete_task",
@@ -252,17 +363,23 @@ class GeneratorOrchestrationResult:
 
 
 class GeneratorOrchestratorService:
-    """Service boundary for coordinating specialized C18 generators."""
+    """Service boundary for coordinating specialized C18 and C20 generators."""
 
     def __init__(
         self,
         *,
         planner: ExecutionPlannerService | None = None,
+        runtime_importer: RuntimePlanImporter | None = None,
+        project_memory: ProjectMemoryService | None = None,
+        validator: DeterministicValidatorService | None = None,
         generator_contracts: tuple[GeneratorContract, ...] | None = None,
         contract_version: str = GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
         schema_version: str = GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
     ) -> None:
         self.planner = planner or ExecutionPlannerService()
+        self.runtime_importer = runtime_importer or RuntimePlanImporter()
+        self.project_memory = project_memory or ProjectMemoryService()
+        self.validator = validator or DeterministicValidatorService()
         contracts = generator_contracts or default_generator_contracts()
         self.generator_contracts = tuple(sorted(contracts, key=lambda item: item.generator_id))
         self.contract_version = contract_version
@@ -278,6 +395,8 @@ class GeneratorOrchestratorService:
         project_id: str = DEFAULT_RUNTIME_PROJECT_ID,
         repository_path: Path = Path("."),
         timeout_seconds: int = 900,
+        required_capability: str = "C18",
+        requirements_covered: tuple[str, ...] = C18_GENERATOR_REQUIREMENTS,
     ) -> GeneratorOrchestrationResult:
         contract = self._contract(generator_id)
         orchestration_id = _orchestration_id(generator_id, task_id, execution_id)
@@ -291,8 +410,8 @@ class GeneratorOrchestratorService:
         package_plan: WorkerPackagePlan | None = None
         if contract is None:
             blockers.append(f"generator contract not registered:{generator_id}")
-        elif "C18" not in contract.capabilities:
-            blockers.append(f"generator contract does not declare C18 capability:{generator_id}")
+        elif required_capability not in contract.capabilities:
+            blockers.append(f"generator contract does not declare {required_capability} capability:{generator_id}")
 
         if not blockers:
             try:
@@ -316,6 +435,7 @@ class GeneratorOrchestratorService:
             evidence_records = (_evidence_record(work_order),)
             worker_package_plans = (package_plan,)
 
+        capabilities_covered = (required_capability,)
         return GeneratorOrchestrationResult(
             contract_version=self.contract_version,
             schema_version=self.schema_version,
@@ -325,6 +445,120 @@ class GeneratorOrchestratorService:
             work_orders=work_orders,
             worker_package_plans=worker_package_plans,
             evidence_records=evidence_records,
+            requirements_covered=requirements_covered,
+            capabilities_covered=capabilities_covered,
+            blockers=tuple(sorted(blockers)),
+        )
+
+    def coordinate_runtime_task(
+        self,
+        session: Session,
+        *,
+        task_id: str,
+        execution_id: str,
+        generator_id: str = "codex-generator",
+        project_id: str = DEFAULT_RUNTIME_PROJECT_ID,
+        repository_path: Path = Path("."),
+        manifest_root: Path = Path("manifest/project/ai-ent"),
+        timeout_seconds: int = 900,
+    ) -> GeneratorOrchestrationResult:
+        contract = self._contract(generator_id)
+        orchestration_id = _orchestration_id(generator_id, task_id, execution_id)
+        blockers = list(
+            _contract_blockers(
+                contract,
+                contract_version=self.contract_version,
+                schema_version=self.schema_version,
+            )
+        )
+        if contract is None:
+            blockers.append(f"generator contract not registered:{generator_id}")
+        elif "C20" not in contract.capabilities:
+            blockers.append(f"generator contract does not declare C20 capability:{generator_id}")
+
+        runtime_status = self.runtime_importer.status(session, project_id=project_id)
+        snapshot: ProjectMemorySnapshot | None = None
+        task_context = RuntimeTaskContext(
+            requirements=(),
+            capabilities=(),
+            human_gate_ids=(),
+            human_gate_state="none",
+            plan_id=runtime_status.plan_id,
+            plan_version=runtime_status.plan_version,
+        )
+        if runtime_status.import_status != "imported":
+            blockers.append(f"runtime plan is not imported:{project_id}")
+        else:
+            snapshot = self.project_memory.snapshot(session, project_id=project_id)
+            task_context = _runtime_task_context(snapshot, task_id, runtime_status)
+            if not task_context.requirements:
+                blockers.append(f"runtime task binding not found:{task_id}")
+            elif set(C20_GENERATOR_REQUIREMENTS) - set(task_context.requirements):
+                missing = sorted(set(C20_GENERATOR_REQUIREMENTS) - set(task_context.requirements))
+                blockers.append(f"C20 requirement coverage missing:{task_id}:{','.join(missing)}")
+            if "C20" not in task_context.capabilities:
+                blockers.append(f"runtime task does not implement C20:{task_id}")
+            if task_context.human_gate_state != "approved":
+                blockers.append(f"human approval required:{task_id}:{task_context.human_gate_state}")
+
+        validation = self.validator.validate(manifest_root)
+        if not validation.ok:
+            blockers.append("deterministic validation failed")
+
+        package_plan: WorkerPackagePlan | None = None
+        work_orders: tuple[GeneratorWorkOrder, ...] = ()
+        evidence_records: tuple[GeneratorEvidenceRecord, ...] = ()
+        worker_package_plans: tuple[WorkerPackagePlan, ...] = ()
+        if contract is not None and not blockers:
+            try:
+                package_plan = self.planner.build_worker_package(
+                    session,
+                    task_id=task_id,
+                    execution_id=execution_id,
+                    project_id=project_id,
+                    repository_path=repository_path,
+                    timeout_seconds=timeout_seconds,
+                )
+            except ValueError as exc:
+                blockers.append(str(exc))
+
+        if contract is not None and package_plan is not None and not blockers:
+            work_order = _work_order(orchestration_id, contract, package_plan)
+            work_orders = (work_order,)
+            evidence_records = (_evidence_record(work_order),)
+            worker_package_plans = (package_plan,)
+
+        runtime_evidence = ()
+        if contract is not None and snapshot is not None:
+            runtime_evidence = (
+                _runtime_evidence(
+                    orchestration_id=orchestration_id,
+                    project_id=project_id,
+                    task_id=task_id,
+                    execution_id=execution_id,
+                    runtime_status=runtime_status,
+                    snapshot=snapshot,
+                    validation_hash=validation.report_hash,
+                    task_context=task_context,
+                    package_plan=package_plan,
+                    work_order=work_orders[0] if work_orders else None,
+                ),
+            )
+
+        requirements = task_context.requirements or C20_GENERATOR_REQUIREMENTS
+        capabilities = task_context.capabilities or ("C20",)
+        return GeneratorOrchestrationResult(
+            contract_version=self.contract_version,
+            schema_version=self.schema_version,
+            status="BLOCKED" if blockers else "READY",
+            orchestration_id=orchestration_id,
+            generator_contracts=(contract,) if contract is not None else (),
+            work_orders=work_orders,
+            worker_package_plans=worker_package_plans,
+            evidence_records=evidence_records,
+            requirements_covered=requirements,
+            capabilities_covered=capabilities,
+            runtime_evidence=runtime_evidence,
             blockers=tuple(sorted(blockers)),
         )
 
@@ -360,7 +594,7 @@ def default_generator_contracts() -> tuple[GeneratorContract, ...]:
                 contract_version=GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
                 schema_version=GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
             ),
-            capabilities=("C18",),
+            capabilities=("C18", "C20"),
             allowed_authorities=("generate",),
         ),
     )
@@ -485,6 +719,140 @@ def _evidence_record(work_order: GeneratorWorkOrder) -> GeneratorEvidenceRecord:
         output_authority_state=NON_AUTHORITATIVE_OUTPUT_STATE,
         validation_required="deterministic validation and scheduler finalization before completion",
     )
+
+
+def _runtime_task_context(
+    snapshot: ProjectMemorySnapshot,
+    task_id: str,
+    runtime_status: RuntimePlanStatus,
+) -> RuntimeTaskContext:
+    task_binding = next(
+        (
+            entry
+            for entry in snapshot.entries
+            if entry.source == "runtime-task-binding" and entry.task_id == task_id
+        ),
+        None,
+    )
+    implements = task_binding.payload.get("implements", {}) if task_binding is not None else {}
+    gates = tuple(
+        entry
+        for entry in snapshot.entries
+        if entry.source == "runtime-human-gate" and entry.task_id == task_id
+    )
+    gate_ids = tuple(sorted(str(entry.payload["gate_id"]) for entry in gates))
+    gate_states = {str(entry.payload.get("status", "")) for entry in gates}
+    if not gates or gate_states == {"approved"}:
+        gate_state = "approved"
+    elif "rejected" in gate_states:
+        gate_state = "rejected"
+    else:
+        gate_state = "pending"
+    return RuntimeTaskContext(
+        requirements=_string_tuple(implements.get("requirements", ())),
+        capabilities=_string_tuple(implements.get("capabilities", ())),
+        human_gate_ids=gate_ids,
+        human_gate_state=gate_state,
+        plan_id=runtime_status.plan_id,
+        plan_version=runtime_status.plan_version,
+    )
+
+
+def _runtime_evidence(
+    *,
+    orchestration_id: str,
+    project_id: str,
+    task_id: str,
+    execution_id: str,
+    runtime_status: RuntimePlanStatus,
+    snapshot: ProjectMemorySnapshot,
+    validation_hash: str,
+    task_context: RuntimeTaskContext,
+    package_plan: WorkerPackagePlan | None,
+    work_order: GeneratorWorkOrder | None,
+) -> GeneratorRuntimeEvidence:
+    status_payload = runtime_status.as_dict()
+    payload = {
+        "orchestration_id": orchestration_id,
+        "project_id": project_id,
+        "task_id": task_id,
+        "execution_id": execution_id,
+        "plan_id": task_context.plan_id,
+        "plan_version": task_context.plan_version,
+        "runtime_status_hash": hashlib.sha256(canonical_bytes(status_payload)).hexdigest(),
+        "project_memory_hash": snapshot.memory_hash,
+        "deterministic_validation_hash": validation_hash,
+        "requirements_covered": list(task_context.requirements),
+        "capabilities_covered": list(task_context.capabilities),
+        "human_gate_ids": list(task_context.human_gate_ids),
+        "human_gate_state": task_context.human_gate_state,
+        "worker_package_hash": package_plan.package_hash if package_plan is not None else None,
+        "work_order_input_hash": work_order.input_hash if work_order is not None else None,
+    }
+    evidence_hash = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    return GeneratorRuntimeEvidence(
+        evidence_id=f"GEN-RUNTIME-EVID-{evidence_hash[:12]}",
+        orchestration_id=orchestration_id,
+        project_id=project_id,
+        task_id=task_id,
+        execution_id=execution_id,
+        plan_id=task_context.plan_id or "",
+        plan_version=task_context.plan_version or "",
+        runtime_status_hash=str(payload["runtime_status_hash"]),
+        project_memory_hash=snapshot.memory_hash,
+        deterministic_validation_hash=validation_hash,
+        requirements_covered=task_context.requirements,
+        capabilities_covered=task_context.capabilities,
+        service_boundaries=_c20_service_boundaries(),
+        human_gate_ids=task_context.human_gate_ids,
+        human_gate_state=task_context.human_gate_state,
+        stop_conditions=C20_STOP_CONDITIONS,
+        worker_package_hash=package_plan.package_hash if package_plan is not None else None,
+        work_order_input_hash=work_order.input_hash if work_order is not None else None,
+    )
+
+
+def _c20_service_boundaries() -> tuple[GeneratorBoundary, ...]:
+    return (
+        GeneratorBoundary(
+            service="execution-planner",
+            interface_id=WORKER_PACKAGE_INTERFACE_ID,
+            contract_version=EXECUTION_PLANNER_CONTRACT_VERSION,
+            schema_version=EXECUTION_PLANNER_OUTPUT_SCHEMA_VERSION,
+        ),
+        GeneratorBoundary(
+            service="runtime-kernel",
+            interface_id=WORKER_PACKAGE_INTERFACE_ID,
+            contract_version=GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
+            schema_version=GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
+        ),
+        GeneratorBoundary(
+            service="project-memory",
+            interface_id=EVIDENCE_RECORDING_INTERFACE_ID,
+            contract_version=PROJECT_MEMORY_CONTRACT_VERSION,
+            schema_version=PROJECT_MEMORY_SCHEMA_VERSION,
+        ),
+        GeneratorBoundary(
+            service="artifact-evidence-graph",
+            interface_id=EVIDENCE_RECORDING_INTERFACE_ID,
+            contract_version=GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
+            schema_version=GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
+        ),
+        GeneratorBoundary(
+            service="deterministic-validator",
+            interface_id=EVIDENCE_RECORDING_INTERFACE_ID,
+            contract_version="c03.1",
+            schema_version="deterministic-validation-report-v0.1",
+        ),
+    )
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, list | tuple):
+        return tuple(sorted(str(item) for item in value))
+    return ()
 
 
 def _orchestration_id(generator_id: str, task_id: str, execution_id: str) -> str:
