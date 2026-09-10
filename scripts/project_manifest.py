@@ -12,6 +12,7 @@ from ai_ent.post_implementation import (
     write_post_implementation_review,
     write_post_residual_implementation_review,
 )
+from ai_ent.product_feasibility import write_product_feasibility
 from ai_ent.product_plan_acceptance import (
     EXPECTED_PRODUCTIZATION_PLAN_HASH,
     write_product_plan_acceptance,
@@ -123,7 +124,9 @@ def capability_gaps(args: argparse.Namespace) -> int:
                 "capability_resolution_hash": resolution.capability_resolution_hash,
                 "required_capabilities": list(resolution.required_capabilities),
                 "satisfied_capabilities": list(resolution.satisfied_capabilities),
-                "partially_satisfied_capabilities": list(resolution.partially_satisfied_capabilities),
+                "partially_satisfied_capabilities": list(
+                    resolution.partially_satisfied_capabilities
+                ),
                 "unsatisfied_capabilities": list(resolution.unsatisfied_capabilities),
                 "deferred_capabilities": list(resolution.deferred_capabilities),
                 "blocked_capabilities": list(resolution.blocked_capabilities),
@@ -168,7 +171,9 @@ def trace_gaps(args: argparse.Namespace) -> int:
                     finding.as_dict() for finding in result.findings if finding.severity == "ERROR"
                 ],
                 "warning_findings": [
-                    finding.as_dict() for finding in result.findings if finding.severity == "WARNING"
+                    finding.as_dict()
+                    for finding in result.findings
+                    if finding.severity == "WARNING"
                 ],
             },
             indent=2,
@@ -212,7 +217,11 @@ def plan_summary(args: argparse.Namespace) -> int:
                 "implementation_plan_hash": plan.implementation_plan_hash,
                 "summary": report["summary"],
                 "implementation_gaps_covered": sorted(
-                    {capability for task in plan.tasks for capability in task.implements["capabilities"]}
+                    {
+                        capability
+                        for task in plan.tasks
+                        for capability in task.implements["capabilities"]
+                    }
                 ),
                 "human_gates": list(plan.human_gates),
                 "findings": [finding.as_dict() for finding in plan.findings],
@@ -315,8 +324,12 @@ def dry_run_plan(args: argparse.Namespace) -> int:
                 "human_gates": len(dry_run.lock.human_gate_definitions),
                 "execution_batches": len(dry_run.execution_batches),
                 "execution_prerequisites": list(dry_run.execution_prerequisites),
-                "dry_run_errors": len([finding for finding in dry_run.findings if finding.severity == "ERROR"]),
-                "dry_run_warnings": len([finding for finding in dry_run.findings if finding.severity == "WARNING"]),
+                "dry_run_errors": len(
+                    [finding for finding in dry_run.findings if finding.severity == "ERROR"]
+                ),
+                "dry_run_warnings": len(
+                    [finding for finding in dry_run.findings if finding.severity == "WARNING"]
+                ),
                 "output_dir": args.output_dir,
             },
             indent=2,
@@ -602,6 +615,50 @@ def product_plan_acceptance(args: argparse.Namespace) -> int:
     return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_DECISIONS_REQUIRED"} else 1
 
 
+def product_feasibility(args: argparse.Namespace) -> int:
+    result = write_product_feasibility(
+        plan_path=Path(args.plan_path),
+        ppa_path=Path(args.ppa_path),
+        artifacts_dir=Path(args.artifacts_dir),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        expected_plan_hash=args.expected_plan_hash,
+    )
+    summary = result.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "baseline": result.baseline,
+                "evaluator_version": result.evaluator_version,
+                "productization_plan_hash": result.productization_plan_hash,
+                "product_feasibility_hash": result.product_feasibility_hash,
+                "total_tasks": summary["total_tasks"],
+                "feasible": summary["feasible"],
+                "feasible_with_conditions": summary["feasible_with_conditions"],
+                "human_approval_required": summary["human_approval_required"],
+                "blocked": summary["blocked"],
+                "deferred": summary["deferred"],
+                "auto_allowed": summary["auto_allowed"],
+                "guarded_allowed": summary["guarded_allowed"],
+                "policy_human_approval_required": summary["policy_human_approval_required"],
+                "prohibited": summary["prohibited"],
+                "human_gates": summary["human_gates"],
+                "theoretical_width": summary["theoretical_width"],
+                "feasible_width": summary["feasible_width"],
+                "technical_blockers": summary["technical_blockers"],
+                "decision_blockers": summary["decision_blockers"],
+                "artifact_dir": str(Path(args.artifacts_dir) / "pfe-001"),
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -733,8 +790,12 @@ def dry_run_residual_plan_command(args: argparse.Namespace) -> int:
                 "human_gates": len(dry_run.lock.human_gate_definitions),
                 "execution_batches": len(dry_run.execution_batches),
                 "execution_prerequisites": list(dry_run.execution_prerequisites),
-                "dry_run_errors": len([finding for finding in dry_run.findings if finding.severity == "ERROR"]),
-                "dry_run_warnings": len([finding for finding in dry_run.findings if finding.severity == "WARNING"]),
+                "dry_run_errors": len(
+                    [finding for finding in dry_run.findings if finding.severity == "ERROR"]
+                ),
+                "dry_run_warnings": len(
+                    [finding for finding in dry_run.findings if finding.severity == "WARNING"]
+                ),
                 "output_dir": args.output_dir,
             },
             indent=2,
@@ -1039,7 +1100,9 @@ def build_parser() -> argparse.ArgumentParser:
     e2e_parser.add_argument("--artifacts-dir", default="artifacts")
     e2e_parser.add_argument("--env-file", default=".env")
     e2e_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
-    e2e_parser.add_argument("--target-workspace", default="/home/user/projects/e2e-team-work-tracker")
+    e2e_parser.add_argument(
+        "--target-workspace", default="/home/user/projects/e2e-team-work-tracker"
+    )
     e2e_parser.add_argument("--skip-docker", action="store_true")
     e2e_parser.set_defaults(func=first_application_creation_proof)
 
@@ -1047,7 +1110,9 @@ def build_parser() -> argparse.ArgumentParser:
     e2e_alias_parser.add_argument("--artifacts-dir", default="artifacts")
     e2e_alias_parser.add_argument("--env-file", default=".env")
     e2e_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
-    e2e_alias_parser.add_argument("--target-workspace", default="/home/user/projects/e2e-team-work-tracker")
+    e2e_alias_parser.add_argument(
+        "--target-workspace", default="/home/user/projects/e2e-team-work-tracker"
+    )
     e2e_alias_parser.add_argument("--skip-docker", action="store_true")
     e2e_alias_parser.set_defaults(func=first_application_creation_proof)
 
@@ -1073,6 +1138,22 @@ def build_parser() -> argparse.ArgumentParser:
     ppa_alias_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
     ppa_alias_parser.set_defaults(func=product_plan_acceptance)
 
+    pfe_parser = subparsers.add_parser("product-feasibility")
+    pfe_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    pfe_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    pfe_parser.add_argument("--artifacts-dir", default="artifacts")
+    pfe_parser.add_argument("--output-dir", default=".build/compiled")
+    pfe_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    pfe_parser.set_defaults(func=product_feasibility)
+
+    pfe_alias_parser = subparsers.add_parser("pfe-001")
+    pfe_alias_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    pfe_alias_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    pfe_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    pfe_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    pfe_alias_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    pfe_alias_parser.set_defaults(func=product_feasibility)
+
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     residual_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
@@ -1081,13 +1162,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     residual_feasibility_parser = subparsers.add_parser("evaluate-residual-feasibility")
     residual_feasibility_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
-    residual_feasibility_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_feasibility_parser.add_argument(
+        "--pir-artifact", default="artifacts/pir-001/PIR-001.json"
+    )
     residual_feasibility_parser.add_argument("--output-dir", default=".build/compiled")
     residual_feasibility_parser.set_defaults(func=evaluate_residual_feasibility_command)
 
     residual_feasibility_summary_parser = subparsers.add_parser("residual-feasibility-summary")
-    residual_feasibility_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
-    residual_feasibility_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_feasibility_summary_parser.add_argument(
+        "--manifest-root", default="manifest/project/ai-ent"
+    )
+    residual_feasibility_summary_parser.add_argument(
+        "--pir-artifact", default="artifacts/pir-001/PIR-001.json"
+    )
     residual_feasibility_summary_parser.set_defaults(func=residual_feasibility_summary)
 
     residual_dry_run_parser = subparsers.add_parser("dry-run-residual-plan")
@@ -1119,15 +1206,21 @@ def build_parser() -> argparse.ArgumentParser:
     residual_accept_parser.set_defaults(func=accept_residual_plan_command)
 
     residual_accept_summary_parser = subparsers.add_parser("residual-acceptance-summary")
-    residual_accept_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
-    residual_accept_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_accept_summary_parser.add_argument(
+        "--manifest-root", default="manifest/project/ai-ent"
+    )
+    residual_accept_summary_parser.add_argument(
+        "--pir-artifact", default="artifacts/pir-001/PIR-001.json"
+    )
     residual_accept_summary_parser.add_argument("--expected-residual-plan-hash")
     residual_accept_summary_parser.set_defaults(func=residual_acceptance_summary)
 
     import_residual_parser = subparsers.add_parser("import-residual-plan")
     import_residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     import_residual_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
-    import_residual_parser.add_argument("--acceptance-artifact", default="artifacts/rpg-001/RPG-001.json")
+    import_residual_parser.add_argument(
+        "--acceptance-artifact", default="artifacts/rpg-001/RPG-001.json"
+    )
     import_residual_parser.add_argument("--env-file", default=".env")
     import_residual_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
     import_residual_parser.add_argument("--guarded-dry-run", action="store_true")
