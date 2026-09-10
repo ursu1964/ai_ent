@@ -33,6 +33,10 @@ from ai_ent.residual_feasibility import (
     evaluate_residual_feasibility,
     write_residual_feasibility,
 )
+from ai_ent.residual_plan_acceptance import (
+    accept_residual_plan,
+    write_residual_plan_acceptance,
+)
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
     RuntimePlanImporter,
@@ -588,6 +592,68 @@ def residual_plan_lock(args: argparse.Namespace) -> int:
     return 0 if dry_run.ok else 1
 
 
+def accept_residual_plan_command(args: argparse.Namespace) -> int:
+    gate = write_residual_plan_acceptance(
+        artifacts_dir=Path(args.artifacts_dir),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        expected_residual_plan_hash=args.expected_residual_plan_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "gate_id": gate.gate_id,
+                "gate_result": gate.gate_result,
+                "recommendation": gate.recommendation,
+                "residual_plan_id": gate.residual_plan_id,
+                "plan_version": gate.plan_version,
+                "residual_plan_hash": gate.bound_hashes["residual_plan_hash"],
+                "residual_feasibility_hash": gate.bound_hashes["residual_feasibility_hash"],
+                "residual_dry_run_hash": gate.bound_hashes["residual_dry_run_hash"],
+                "tasks": gate.counts["tasks"],
+                "dependency_edges": gate.counts["dependency_edges"],
+                "human_gates": gate.counts["human_gates"],
+                "defects": list(gate.defects),
+                "limitations": list(gate.limitations),
+                "artifacts_dir": args.artifacts_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if gate.ok else 1
+
+
+def residual_acceptance_summary(args: argparse.Namespace) -> int:
+    gate = accept_residual_plan(
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        expected_residual_plan_hash=args.expected_residual_plan_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "gate_id": gate.gate_id,
+                "gate_result": gate.gate_result,
+                "recommendation": gate.recommendation,
+                "counts": gate.counts,
+                "risk_distribution": gate.risk_distribution,
+                "human_gates": list(gate.human_gates),
+                "execution_prerequisites": list(gate.execution_prerequisites),
+                "defects": list(gate.defects),
+                "limitations": list(gate.limitations),
+                "validations": gate.validations,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if gate.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -728,6 +794,20 @@ def build_parser() -> argparse.ArgumentParser:
     residual_lock_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
     residual_lock_parser.add_argument("--expected-residual-plan-hash")
     residual_lock_parser.set_defaults(func=residual_plan_lock)
+
+    residual_accept_parser = subparsers.add_parser("accept-residual-plan")
+    residual_accept_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_accept_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_accept_parser.add_argument("--output-dir", default=".build/compiled")
+    residual_accept_parser.add_argument("--artifacts-dir", default="artifacts/rpg-001")
+    residual_accept_parser.add_argument("--expected-residual-plan-hash")
+    residual_accept_parser.set_defaults(func=accept_residual_plan_command)
+
+    residual_accept_summary_parser = subparsers.add_parser("residual-acceptance-summary")
+    residual_accept_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_accept_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_accept_summary_parser.add_argument("--expected-residual-plan-hash")
+    residual_accept_summary_parser.set_defaults(func=residual_acceptance_summary)
     return parser
 
 
