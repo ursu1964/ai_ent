@@ -158,11 +158,12 @@ def generate_residual_implementation_plan(
     pir = _load_pir(pir_artifact)
     compilation = compile_project_manifest(manifest_root)
     residual_gaps = tuple(ResidualGap(**gap) for gap in pir["residual_gaps"])
+    source_head = str(pir.get("head") or _git_rev(repository_root, "HEAD"))
     tasks = _residual_tasks(
         residual_gaps,
         pir,
         compilation.compiled.as_dict(),
-        head=_git_rev(repository_root, "HEAD"),
+        head=source_head,
     )
     dependency_edges = _dependency_edges(tasks)
     tasks = tuple(_replace_dependencies(task, tuple(sorted(dep for task_id, dep in dependency_edges if task_id == task.id))) for task in tasks)
@@ -172,7 +173,7 @@ def generate_residual_implementation_plan(
     human_gates = tuple(_human_gates(tasks))
     payload = {
         "generator_version": RESIDUAL_DAG_GENERATOR_VERSION,
-        "head": _git_rev(repository_root, "HEAD"),
+        "head": source_head,
         "post_compiled_hash": pir["hashes"]["post_compiled_hash"],
         "post_capability_hash": pir["hashes"]["post_capability_resolution_hash"],
         "post_trace_hash": pir["hashes"]["post_trace_validation_hash"],
@@ -187,7 +188,7 @@ def generate_residual_implementation_plan(
     residual_plan_hash = hashlib.sha256(canonical_bytes(payload)).hexdigest()
     return ResidualImplementationPlan(
         generator_version=RESIDUAL_DAG_GENERATOR_VERSION,
-        head=_git_rev(repository_root, "HEAD"),
+        head=source_head,
         post_compiled_hash=str(pir["hashes"]["post_compiled_hash"]),
         post_capability_hash=str(pir["hashes"]["post_capability_resolution_hash"]),
         post_trace_hash=str(pir["hashes"]["post_trace_validation_hash"]),

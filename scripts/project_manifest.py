@@ -24,6 +24,11 @@ from ai_ent.project_manifest import (
     write_trace_validation,
 )
 from ai_ent.residual_dag import write_residual_implementation_plan
+from ai_ent.residual_dry_run import (
+    dry_run_residual_plan,
+    freeze_residual_plan,
+    write_residual_dry_run_plan,
+)
 from ai_ent.residual_feasibility import (
     evaluate_residual_feasibility,
     write_residual_feasibility,
@@ -510,6 +515,79 @@ def residual_feasibility_summary(args: argparse.Namespace) -> int:
     return 0 if evaluation.ok else 1
 
 
+def dry_run_residual_plan_command(args: argparse.Namespace) -> int:
+    dry_run = write_residual_dry_run_plan(
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        expected_residual_plan_hash=args.expected_residual_plan_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "residual_dry_run_hash": dry_run.residual_dry_run_hash,
+                "dry_runner_version": dry_run.dry_runner_version,
+                "residual_plan_hash": dry_run.residual_plan_hash,
+                "residual_feasibility_hash": dry_run.residual_feasibility_hash,
+                "plan_acceptance_state": dry_run.plan_acceptance_state,
+                "frozen_plan_state": dry_run.frozen_plan_state,
+                "tasks_simulated": dry_run.task_count,
+                "dependency_edges": dry_run.dependency_edge_count,
+                "waves": dry_run.wave_count,
+                "theoretical_parallel_width": dry_run.theoretical_parallel_width,
+                "effective_parallel_width": dry_run.effective_parallel_width,
+                "human_gates": len(dry_run.lock.human_gate_definitions),
+                "execution_batches": len(dry_run.execution_batches),
+                "execution_prerequisites": list(dry_run.execution_prerequisites),
+                "dry_run_errors": len([finding for finding in dry_run.findings if finding.severity == "ERROR"]),
+                "dry_run_warnings": len([finding for finding in dry_run.findings if finding.severity == "WARNING"]),
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if dry_run.ok else 1
+
+
+def freeze_residual_plan_command(args: argparse.Namespace) -> int:
+    dry_run = freeze_residual_plan(
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        expected_residual_plan_hash=args.expected_residual_plan_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "residual_plan_id": dry_run.lock.residual_plan_id,
+                "plan_version": dry_run.lock.plan_version,
+                "state": dry_run.frozen_plan_state,
+                "residual_plan_hash": dry_run.residual_plan_hash,
+                "residual_feasibility_hash": dry_run.residual_feasibility_hash,
+                "residual_dry_run_hash": dry_run.residual_dry_run_hash,
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def residual_plan_lock(args: argparse.Namespace) -> int:
+    dry_run = dry_run_residual_plan(
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        expected_residual_plan_hash=args.expected_residual_plan_hash,
+    )
+    print(json.dumps(dry_run.lock.as_dict(), indent=2, sort_keys=True))
+    return 0 if dry_run.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -630,6 +708,26 @@ def build_parser() -> argparse.ArgumentParser:
     residual_feasibility_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     residual_feasibility_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
     residual_feasibility_summary_parser.set_defaults(func=residual_feasibility_summary)
+
+    residual_dry_run_parser = subparsers.add_parser("dry-run-residual-plan")
+    residual_dry_run_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_dry_run_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_dry_run_parser.add_argument("--output-dir", default=".build/compiled")
+    residual_dry_run_parser.add_argument("--expected-residual-plan-hash")
+    residual_dry_run_parser.set_defaults(func=dry_run_residual_plan_command)
+
+    residual_freeze_parser = subparsers.add_parser("freeze-residual-plan")
+    residual_freeze_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_freeze_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_freeze_parser.add_argument("--output-dir", default=".build/compiled")
+    residual_freeze_parser.add_argument("--expected-residual-plan-hash")
+    residual_freeze_parser.set_defaults(func=freeze_residual_plan_command)
+
+    residual_lock_parser = subparsers.add_parser("residual-plan-lock")
+    residual_lock_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_lock_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_lock_parser.add_argument("--expected-residual-plan-hash")
+    residual_lock_parser.set_defaults(func=residual_plan_lock)
     return parser
 
 
