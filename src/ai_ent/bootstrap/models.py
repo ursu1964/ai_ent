@@ -35,6 +35,7 @@ class BootstrapTask:
     depends_on: tuple[str, ...] = ()
     objective: str | None = None
     allowed_paths: tuple[str, ...] = ()
+    prohibited_paths: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
     execution_class: ExecutionClass = "implementation"
     schedulable: bool = True
@@ -45,6 +46,7 @@ class BootstrapTask:
     def from_raw(cls, raw: dict[str, Any]) -> BootstrapTask:
         depends_on = raw.get("depends_on", [])
         allowed_paths = raw.get("allowed_paths", [])
+        prohibited_paths = raw.get("prohibited_paths", [])
         outputs = raw.get("outputs", [])
         simulation = raw.get("simulation") or {}
         objective = raw.get("objective")
@@ -65,6 +67,10 @@ class BootstrapTask:
             isinstance(item, str) for item in allowed_paths
         ):
             raise TypeError("allowed_paths must be a list of strings")
+        if not isinstance(prohibited_paths, list) or not all(
+            isinstance(item, str) for item in prohibited_paths
+        ):
+            raise TypeError("prohibited_paths must be a list of strings")
         if not isinstance(outputs, list) or not all(isinstance(item, str) for item in outputs):
             raise TypeError("outputs must be a list of strings")
         if objective is not None and not isinstance(objective, str):
@@ -94,6 +100,7 @@ class BootstrapTask:
             depends_on=tuple(depends_on),
             objective=objective,
             allowed_paths=tuple(allowed_paths),
+            prohibited_paths=tuple(prohibited_paths),
             outputs=tuple(outputs),
             execution_class=execution_class,
             schedulable=schedulable,

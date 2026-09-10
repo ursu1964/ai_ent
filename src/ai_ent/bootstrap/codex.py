@@ -45,6 +45,8 @@ def build_execution_package(
             f"Objective: {task.objective}" if task.objective else "",
             "Allowed paths:",
             *(f"- {path}" for path in task.allowed_paths),
+            "Prohibited paths:",
+            *(f"- {path}" for path in (task.prohibited_paths or PROHIBITED_PATHS)),
             "Required output:",
             *(f"- {path}" for path in task.outputs),
             "Verification commands:",
@@ -62,7 +64,7 @@ def build_execution_package(
         execution_id=execution_id or str(uuid.uuid4()),
         instructions=instructions,
         allowed_paths=task.allowed_paths,
-        prohibited_paths=PROHIBITED_PATHS,
+        prohibited_paths=task.prohibited_paths or PROHIBITED_PATHS,
         python_path=VENV_PYTHON,
         timeout_seconds=timeout_seconds,
     )

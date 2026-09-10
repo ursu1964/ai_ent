@@ -494,6 +494,7 @@ def _repair_task(
         depends_on=task.depends_on,
         objective=repair_context,
         allowed_paths=task.allowed_paths,
+        prohibited_paths=task.prohibited_paths,
         outputs=task.outputs,
         execution_class=task.execution_class,
         schedulable=task.schedulable,

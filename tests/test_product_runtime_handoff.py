@@ -24,7 +24,7 @@ from ai_ent.product_runtime_handoff import (
     ProductRuntimePlanImporter,
     load_product_runtime_handoff_artifacts,
 )
-from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
+from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, build_runtime_manifest_tasks
 from ai_ent.scheduler.readiness import TaskReadinessService
 from tests.test_residual_runtime_handoff import seed_prior_plan_complete
 
@@ -242,6 +242,23 @@ def test_task_profiles_and_decision_bindings_preserved() -> None:
         assert binding.verification_profile
         assert acceptance["required_decisions"] == ["DECISION_REQUIRED:PRD-DEC-002"]
         assert implements["no_e2e_project_hardcoding"] is True
+
+
+def test_product_manifest_task_package_scope_and_prompt() -> None:
+    factory = session_factory()
+    plan_artifacts = artifacts()
+
+    with factory() as session:
+        seed_prior_and_residual_complete(session)
+        ProductRuntimePlanImporter().import_product_plan(session, plan_artifacts, require_clean_git=False)
+        manifest_tasks = build_runtime_manifest_tasks(session, DEFAULT_RUNTIME_PROJECT_ID)
+
+        task = manifest_tasks["PRD-TASK-019"]
+        assert "src/ai_ent_product_api/**" in task.allowed_paths
+        assert ".build/**" in task.prohibited_paths
+        assert "Acceptance criteria:" in (task.objective or "")
+        assert "Decision dependencies:" in (task.objective or "")
+        assert "DECISION_REQUIRED:PRD-DEC-002" in (task.objective or "")
 
 
 def test_guarded_dry_run_is_side_effect_free() -> None:

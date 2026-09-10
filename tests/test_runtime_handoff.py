@@ -185,6 +185,7 @@ def test_runtime_manifest_tasks_preserve_scope_fingerprint_and_verification(tmp_
     assert task.executor == "codex"
     assert task.execution_class == "implementation"
     assert "src/ai_ent/**" in task.allowed_paths
+    assert ".env" in task.prohibited_paths
     assert any("pytest" in command for command in task.verification.commands)
     assert "Acceptance criteria:" in (task.objective or "")
 

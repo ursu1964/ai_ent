@@ -89,7 +89,7 @@ def validate_scope(task: BootstrapTask, candidate: Candidate) -> ScopeResult:
         return ScopeResult(True)
 
     for path in candidate.changed_files:
-        if _matches(path, PROHIBITED_PATHS):
+        if _matches(path, task.prohibited_paths or PROHIBITED_PATHS):
             findings.append(f"prohibited path changed: {path}")
         if task.allowed_paths and not _matches(path, task.allowed_paths):
             findings.append(f"path outside task scope: {path}")

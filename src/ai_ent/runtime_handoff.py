@@ -184,7 +184,16 @@ def build_runtime_manifest_tasks(session: Session, project_id: str) -> dict[str,
         write_scope = json.loads(binding.write_scope_json)
         acceptance = json.loads(binding.acceptance_json)
         objective_parts = [task.objective or task.title]
-        if acceptance:
+        if isinstance(acceptance, dict):
+            criteria = acceptance.get("acceptance_criteria", [])
+            required_decisions = acceptance.get("required_decisions", [])
+            if criteria:
+                objective_parts.append("Acceptance criteria:")
+                objective_parts.extend(f"- {item}" for item in criteria)
+            if required_decisions:
+                objective_parts.append("Decision dependencies:")
+                objective_parts.extend(f"- {item}" for item in required_decisions)
+        elif acceptance:
             objective_parts.append("Acceptance criteria:")
             objective_parts.extend(f"- {item}" for item in acceptance)
         manifest_tasks[task_id] = BootstrapTask(
@@ -195,6 +204,7 @@ def build_runtime_manifest_tasks(session: Session, project_id: str) -> dict[str,
             depends_on=dependencies[task_id],
             objective="\n".join(objective_parts),
             allowed_paths=tuple(str(item) for item in write_scope.get("allowed", [])),
+            prohibited_paths=tuple(str(item) for item in write_scope.get("prohibited", [])),
             outputs=(),
             execution_class=task.execution_class,
             schedulable=task.schedulable,
