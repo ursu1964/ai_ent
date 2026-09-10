@@ -293,10 +293,13 @@ def _validation_findings(
 
 
 def _same_decision(existing: dict[str, Any], candidate: ProductDecisionRecord) -> bool:
+    existing_lineage = dict(existing["accepted_product_plan_lineage"])
+    candidate_lineage = dict(candidate.as_dict()["accepted_product_plan_lineage"])
+    existing_lineage.pop("current_head", None)
+    candidate_lineage.pop("current_head", None)
     existing_material = {
         key: existing[key]
         for key in (
-            "accepted_product_plan_lineage",
             "accepted_stack",
             "architectural_conditions",
             "decision_id",
@@ -308,10 +311,10 @@ def _same_decision(existing: dict[str, Any], candidate: ProductDecisionRecord) -
             "prd_dec_003_state",
         )
     }
+    existing_material["accepted_product_plan_lineage"] = existing_lineage
     candidate_material = {
         key: candidate.as_dict()[key]
         for key in (
-            "accepted_product_plan_lineage",
             "accepted_stack",
             "architectural_conditions",
             "decision_id",
@@ -323,6 +326,7 @@ def _same_decision(existing: dict[str, Any], candidate: ProductDecisionRecord) -
             "prd_dec_003_state",
         )
     }
+    candidate_material["accepted_product_plan_lineage"] = candidate_lineage
     return canonical_bytes(existing_material) == canonical_bytes(candidate_material)
 
 

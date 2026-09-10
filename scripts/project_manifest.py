@@ -13,6 +13,10 @@ from ai_ent.post_implementation import (
     write_post_residual_implementation_review,
 )
 from ai_ent.product_decisions import record_prd_dec_001
+from ai_ent.product_dry_run import (
+    EXPECTED_PRD_DEC_001_HASH,
+    write_product_dry_run,
+)
 from ai_ent.product_feasibility import write_product_feasibility
 from ai_ent.product_plan_acceptance import (
     EXPECTED_PRODUCTIZATION_PLAN_HASH,
@@ -699,6 +703,64 @@ def record_product_stack_decision(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def product_dry_run(args: argparse.Namespace) -> int:
+    result = write_product_dry_run(
+        accepted_plan_path=Path(args.plan_path),
+        ppa_path=Path(args.ppa_path),
+        pfe_path=Path(args.pfe_path),
+        decision_path=Path(args.decision_path),
+        artifacts_dir=Path(args.artifacts_dir),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        expected_plan_hash=args.expected_plan_hash,
+        expected_ppa_acceptance_hash=args.expected_ppa_acceptance_hash,
+        expected_pfe_hash=args.expected_pfe_hash,
+        expected_decision_hash=args.expected_decision_hash,
+    )
+    payload = result.as_dict()
+    summary = payload["summary"]
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "baseline_head": result.baseline_head,
+                "dry_runner_version": result.dry_runner_version,
+                "accepted_prd_plan_hash": result.accepted_prd_plan_hash,
+                "regenerated_candidate_hash": result.regenerated_candidate_hash,
+                "ppa_acceptance_hash": result.ppa_acceptance_hash,
+                "pfe_feasibility_hash": result.pfe_feasibility_hash,
+                "prd_dec_001_hash": result.prd_dec_001_hash,
+                "lineage_reconciliation": result.lineage_reconciliation["result"],
+                "semantic_diff_classification": result.lineage_reconciliation["classification"],
+                "product_plan_id": result.product_plan_id,
+                "plan_version": result.plan_version,
+                "frozen_plan_state": result.frozen_plan_state,
+                "product_dry_run_hash": result.product_dry_run_hash,
+                "tasks": summary["task_count"],
+                "dependency_edges": summary["dependency_edge_count"],
+                "waves": summary["wave_count"],
+                "human_gates": summary["human_gate_count"],
+                "risk_distribution": summary["risk_distribution"],
+                "policy_distribution": summary["policy_distribution"],
+                "theoretical_parallel_width": summary["theoretical_parallel_width"],
+                "effective_concurrency": summary["effective_concurrency"],
+                "execution_limits": summary["execution_limits"],
+                "prd_dec_001_state": result.decision_boundaries["PRD-DEC-001"]["state"],
+                "prd_dec_002_state": result.decision_boundaries["PRD-DEC-002"]["state"],
+                "prd_dec_003_state": result.decision_boundaries["PRD-DEC-003"]["state"],
+                "dry_run_errors": summary["dry_run_errors"],
+                "dry_run_warnings": summary["dry_run_warnings"],
+                "artifact_dir": str(Path(args.artifacts_dir) / "pdf-001"),
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -1225,6 +1287,52 @@ def build_parser() -> argparse.ArgumentParser:
         default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
     )
     prd_dec_alias_parser.set_defaults(func=record_product_stack_decision)
+
+    pdf_parser = subparsers.add_parser("product-dry-run")
+    pdf_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    pdf_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    pdf_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    pdf_parser.add_argument(
+        "--decision-path", default="artifacts/product-decisions/PRD-DEC-001.json"
+    )
+    pdf_parser.add_argument("--artifacts-dir", default="artifacts")
+    pdf_parser.add_argument("--output-dir", default=".build/compiled")
+    pdf_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    pdf_parser.add_argument(
+        "--expected-ppa-acceptance-hash",
+        default="cf97940d5848f8c651232e23b733325f4dd274aa7a45078abab0039d80e638e9",
+    )
+    pdf_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    pdf_parser.add_argument("--expected-decision-hash", default=EXPECTED_PRD_DEC_001_HASH)
+    pdf_parser.set_defaults(func=product_dry_run)
+
+    pdf_alias_parser = subparsers.add_parser("pdf-001")
+    pdf_alias_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    pdf_alias_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    pdf_alias_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    pdf_alias_parser.add_argument(
+        "--decision-path", default="artifacts/product-decisions/PRD-DEC-001.json"
+    )
+    pdf_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    pdf_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    pdf_alias_parser.add_argument(
+        "--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH
+    )
+    pdf_alias_parser.add_argument(
+        "--expected-ppa-acceptance-hash",
+        default="cf97940d5848f8c651232e23b733325f4dd274aa7a45078abab0039d80e638e9",
+    )
+    pdf_alias_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    pdf_alias_parser.add_argument(
+        "--expected-decision-hash", default=EXPECTED_PRD_DEC_001_HASH
+    )
+    pdf_alias_parser.set_defaults(func=product_dry_run)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")

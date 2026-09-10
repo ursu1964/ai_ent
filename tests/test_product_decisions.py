@@ -129,6 +129,32 @@ def test_prd_dec_001_is_idempotent_for_same_decision(tmp_path: Path) -> None:
     assert second.decision_hash == first.decision_hash
 
 
+def test_prd_dec_001_idempotency_preserves_historical_head(tmp_path: Path) -> None:
+    plan_path, ppa_path, pfe_path, plan_hash, ppa_hash, pfe_hash = write_decision_inputs(tmp_path)
+    kwargs = {
+        "plan_path": plan_path,
+        "ppa_path": ppa_path,
+        "pfe_path": pfe_path,
+        "artifacts_dir": tmp_path / "artifacts",
+        "output_dir": tmp_path / "compiled",
+        "repository_root": tmp_path,
+        "expected_plan_hash": plan_hash,
+        "expected_ppa_acceptance_hash": ppa_hash,
+        "expected_pfe_hash": pfe_hash,
+    }
+
+    first = record_prd_dec_001(decided_at="2026-09-10T12:00:00+00:00", **kwargs)
+    artifact_path = tmp_path / "artifacts" / "product-decisions" / "PRD-DEC-001.json"
+    artifact = json.loads(artifact_path.read_text())
+    artifact["accepted_product_plan_lineage"]["current_head"] = "historical-head"
+    artifact_path.write_text(json.dumps(artifact, sort_keys=True), encoding="utf-8")
+    second = record_prd_dec_001(decided_at="2026-09-10T12:05:00+00:00", **kwargs)
+
+    assert first.result == "RECORDED"
+    assert second.result == "ALREADY_RECORDED"
+    assert second.accepted_product_plan_lineage["current_head"] == "historical-head"
+
+
 def test_prd_dec_001_blocks_on_wrong_pfe_hash(tmp_path: Path) -> None:
     plan_path, ppa_path, pfe_path, plan_hash, ppa_hash, _pfe_hash = write_decision_inputs(tmp_path)
 
