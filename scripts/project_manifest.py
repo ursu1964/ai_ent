@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from ai_ent.e2e_application_proof import write_first_application_creation_proof
 from ai_ent.persistence.config import load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.models import RuntimePlanImport, Task
@@ -496,6 +497,43 @@ def system_acceptance(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def first_application_creation_proof(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = write_first_application_creation_proof(
+                session,
+                target_workspace=Path(args.target_workspace),
+                artifacts_dir=Path(args.artifacts_dir),
+                project_id=args.project,
+                run_docker=not args.skip_docker,
+                repository_root=Path.cwd(),
+            )
+            print(
+                json.dumps(
+                    {
+                        "result": result.result,
+                        "recommendation": result.recommendation,
+                        "head": result.head,
+                        "target_project_id": result.target_project_id,
+                        "target_workspace": result.target_workspace,
+                        "target_plan_hash": result.target_plan_hash,
+                        "application_commit": result.application_commit,
+                        "application_url": result.application_url,
+                        "acceptance_hash": result.acceptance_hash,
+                        "proof_count": len(result.proofs),
+                        "artifact_dir": str(Path(args.artifacts_dir) / "e2e-001"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_LIMITATIONS"} else 1
+    finally:
+        database.dispose()
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -928,6 +966,22 @@ def build_parser() -> argparse.ArgumentParser:
     saag_alias_parser.add_argument("--env-file", default=".env")
     saag_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
     saag_alias_parser.set_defaults(func=system_acceptance)
+
+    e2e_parser = subparsers.add_parser("first-application-proof")
+    e2e_parser.add_argument("--artifacts-dir", default="artifacts")
+    e2e_parser.add_argument("--env-file", default=".env")
+    e2e_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    e2e_parser.add_argument("--target-workspace", default="/home/user/projects/e2e-team-work-tracker")
+    e2e_parser.add_argument("--skip-docker", action="store_true")
+    e2e_parser.set_defaults(func=first_application_creation_proof)
+
+    e2e_alias_parser = subparsers.add_parser("e2e-001")
+    e2e_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    e2e_alias_parser.add_argument("--env-file", default=".env")
+    e2e_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    e2e_alias_parser.add_argument("--target-workspace", default="/home/user/projects/e2e-team-work-tracker")
+    e2e_alias_parser.add_argument("--skip-docker", action="store_true")
+    e2e_alias_parser.set_defaults(func=first_application_creation_proof)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
