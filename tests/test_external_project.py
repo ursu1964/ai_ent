@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from ai_ent.external_project import (
     CONTROL_PLANE_AUTHORITY,
     DEFAULT_PROHIBITED_PATHS,
     EXTERNAL_PROJECT_LIFECYCLE,
     MANDATORY_VERIFICATION_COMMANDS,
+    WORKSPACE_MARKER_PATH,
     ExternalProject,
+    ExternalProjectServiceError,
+    GeneratedAppWorkspaceManager,
     GeneratedArtifact,
     ProjectPlan,
     ProjectRepository,
@@ -66,6 +74,35 @@ def external_project() -> ExternalProject:
         plan=plan,
         runtime_binding=binding,
         artifacts=(artifact,),
+    )
+
+
+def service_project(tmp_path: Path, *, remote_url: str | None = None) -> ExternalProject:
+    project = external_project()
+    workspace_root = tmp_path / "generated-apps" / "customer-portal"
+    workspace = replace(
+        project.workspace,
+        root_path=str(workspace_root),
+        state="DECLARED",
+        allowed_roots=("src",),
+    )
+    repository = replace(
+        project.repository,
+        remote_url=remote_url,
+        state="DECLARED",
+    )
+    artifact = replace(project.artifacts[0], relative_path="src/app.py")
+    return replace(project, workspace=workspace, repository=repository, artifacts=(artifact,))
+
+
+def run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
 
 
@@ -194,3 +231,304 @@ def test_scope_policy_rejects_allowed_prohibited_path_overlap() -> None:
 
     assert validation.ok is False
     assert "EPM-SCOPE-CONFLICT-build-generated-app" in finding_ids
+
+
+def test_workspace_manager_repeated_prepare_is_idempotent(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(
+        tmp_path / "generated-apps",
+        control_plane_root=tmp_path / "control-plane",
+    )
+
+    first = manager.prepare_workspace(project)
+    second = manager.prepare_workspace(project)
+    marker_payload = json.loads(Path(first.marker_path).read_text(encoding="utf-8"))
+
+    assert first.as_dict() == second.as_dict()
+    assert first.workspace.state == "PREPARED"
+    assert first.prepared_paths == ("src",)
+    assert (Path(first.root_path) / "src").is_dir()
+    assert marker_payload["project_id"] == project.project_id
+    assert marker_payload["workspace_id"] == project.workspace.workspace_id
+    assert marker_payload["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+    assert marker_payload["verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+
+
+def test_workspace_marker_serialization_round_trips_without_reordering_commands(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    first = manager.prepare_workspace(project)
+    first_marker = Path(first.marker_path).read_text(encoding="utf-8")
+    first_payload = json.loads(first_marker)
+    second = manager.prepare_workspace(project)
+    second_marker = Path(second.marker_path).read_text(encoding="utf-8")
+
+    assert first_marker == second_marker
+    assert list(first_payload) == sorted(first_payload)
+    assert first_payload["state"] == "PREPARED"
+    assert first_payload["verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+
+
+def test_workspace_manager_reconciles_declared_input_to_prepared_marker(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    prepared = manager.prepare_workspace(project)
+    repeated = manager.prepare_workspace(project)
+
+    assert project.workspace.state == "DECLARED"
+    assert prepared.workspace.state == "PREPARED"
+    assert repeated.workspace.state == "PREPARED"
+    assert prepared.as_dict() == repeated.as_dict()
+
+
+def test_workspace_manager_reconciles_prepared_input_to_prepared_marker(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    prepared = manager.prepare_workspace(project)
+    first_repeat = manager.prepare_workspace(prepared.project)
+    second_repeat = manager.prepare_workspace(first_repeat.project)
+
+    assert prepared.as_dict() == first_repeat.as_dict() == second_repeat.as_dict()
+    assert second_repeat.project.workspace.state == "PREPARED"
+
+
+def test_workspace_manager_accepts_owned_declared_marker_and_converges(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+    marker_path = Path(prepared.marker_path)
+    marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker_payload["state"] = "DECLARED"
+    marker_path.write_text(
+        json.dumps(marker_payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    reconciled = manager.prepare_workspace(project)
+    reconciled_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert reconciled.workspace.state == "PREPARED"
+    assert reconciled_payload["state"] == "PREPARED"
+
+
+def test_workspace_manager_rejects_unowned_non_empty_workspace(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    workspace_root = Path(project.workspace.root_path)
+    workspace_root.mkdir(parents=True)
+    (workspace_root / "README.md").write_text("not owned\n", encoding="utf-8")
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    with pytest.raises(ExternalProjectServiceError, match="not ai-ent-owned"):
+        manager.prepare_workspace(project)
+
+
+def test_workspace_manager_rejects_root_traversal_outside_generated_root(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path)
+    blocked = replace(
+        project,
+        workspace=replace(
+            project.workspace,
+            root_path=str(tmp_path / "generated-apps" / ".." / "control-plane"),
+        ),
+    )
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    with pytest.raises(ExternalProjectServiceError, match="outside generated-app root"):
+        manager.prepare_workspace(blocked)
+
+
+def test_workspace_manager_rejects_control_plane_workspace_root(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    blocked = replace(
+        project,
+        workspace=replace(
+            project.workspace,
+            root_path=str(tmp_path / "control-plane" / "generated-app"),
+        ),
+    )
+    manager = GeneratedAppWorkspaceManager(
+        tmp_path,
+        control_plane_root=tmp_path / "control-plane",
+    )
+
+    with pytest.raises(ExternalProjectServiceError, match="control-plane repository"):
+        manager.prepare_workspace(blocked)
+
+
+def test_workspace_manager_rejects_symlink_escape(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+    workspace_root = Path(prepared.root_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (workspace_root / "src").rmdir()
+    (workspace_root / "src").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ExternalProjectServiceError, match="escapes workspace"):
+        manager.prepare_workspace(prepared.project)
+
+
+def test_workspace_manager_rejects_foreign_marker(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+    marker_path = Path(prepared.marker_path)
+    marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker_payload["project_id"] = "EXT-FOREIGN"
+    marker_path.write_text(
+        json.dumps(marker_payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ExternalProjectServiceError, match="project_id mismatch"):
+        manager.prepare_workspace(project)
+
+
+def test_repository_manager_initializes_local_git_without_control_authority(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+
+    repository = manager.initialize_repository(prepared.project)
+    completed = run_git(["rev-parse", "--is-inside-work-tree"], cwd=Path(repository.root_path))
+
+    assert completed.returncode == 0
+    assert completed.stdout.strip() == "true"
+    assert repository.repository.state == "INITIALIZED"
+    assert repository.repository.control_plane_write_authority is False
+    assert repository.repository.push_requires_human_gate is True
+    assert repository.remote_name is None
+    assert repository.as_dict()["verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+
+
+def test_repository_manager_repeated_initialization_is_convergent(tmp_path: Path) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+
+    first = manager.initialize_repository(prepared.project)
+    second = manager.initialize_repository(first.project)
+
+    assert first.as_dict() == second.as_dict()
+    assert run_git(["rev-parse", "--show-toplevel"], cwd=Path(first.root_path)).stdout.strip() == (
+        first.root_path
+    )
+
+
+def test_repository_manager_accepts_existing_matching_local_repository(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+    init = run_git(["init", "-b", project.repository.default_branch], cwd=Path(prepared.root_path))
+    assert init.returncode == 0
+
+    repository = manager.initialize_repository(prepared.project)
+
+    assert repository.repository.state == "INITIALIZED"
+    assert repository.git_dir == str(Path(prepared.root_path) / ".git")
+
+
+def test_repository_manager_rejects_foreign_repository_remote(tmp_path: Path) -> None:
+    original = service_project(tmp_path, remote_url="https://git.example/one.git")
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(original)
+    manager.initialize_repository(prepared.project)
+    changed = replace(
+        prepared.project,
+        repository=replace(
+            prepared.project.repository,
+            remote_url="https://git.example/two.git",
+            state="DECLARED",
+        ),
+    )
+
+    with pytest.raises(ExternalProjectServiceError, match="repository remote mismatch"):
+        manager.initialize_repository(changed)
+
+
+def test_repository_manager_rejects_secret_remote_without_exposing_value(
+    tmp_path: Path,
+) -> None:
+    project = service_project(
+        tmp_path,
+        remote_url="https://user:SUPERSECRET@git.example/customer-portal.git",
+    )
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+
+    with pytest.raises(ExternalProjectServiceError) as raised:
+        manager.initialize_repository(prepared.project)
+
+    message = str(raised.value)
+    assert "https://<redacted>@git.example/customer-portal.git" in message
+    assert "SUPERSECRET" not in message
+
+
+def test_repository_manager_rejects_secret_remote_query_without_exposing_value(
+    tmp_path: Path,
+) -> None:
+    project = service_project(
+        tmp_path,
+        remote_url="https://git.example/customer-portal.git?token=SUPERSECRET",
+    )
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+
+    with pytest.raises(ExternalProjectServiceError) as raised:
+        manager.initialize_repository(prepared.project)
+
+    message = str(raised.value)
+    assert "https://git.example/customer-portal.git?<redacted>" in message
+    assert "SUPERSECRET" not in message
+
+
+def test_workspace_manager_preserves_control_plane_authority(tmp_path: Path) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    blocked = replace(
+        project,
+        repository=replace(project.repository, control_plane_write_authority=True),
+    )
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    with pytest.raises(ExternalProjectServiceError, match="control-plane write authority"):
+        manager.prepare_workspace(blocked)
+
+
+def test_repository_manager_requires_workspace_marker_before_git_init(tmp_path: Path) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    workspace_root = Path(project.workspace.root_path)
+    workspace_root.mkdir(parents=True)
+    run_git(["init", "-b", project.repository.default_branch], cwd=workspace_root)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    with pytest.raises(ExternalProjectServiceError, match="workspace marker missing"):
+        manager.initialize_repository(project)
+
+
+def test_workspace_marker_path_is_scoped_under_workspace(tmp_path: Path) -> None:
+    project = service_project(tmp_path)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+
+    prepared = manager.prepare_workspace(project)
+    marker_path = Path(prepared.marker_path)
+
+    assert marker_path == Path(prepared.root_path) / WORKSPACE_MARKER_PATH
+    assert marker_path.resolve().is_relative_to(Path(prepared.root_path).resolve())

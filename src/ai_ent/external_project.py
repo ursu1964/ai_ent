@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
-from pathlib import PurePosixPath
+import json
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from ai_ent.project_manifest import canonical_bytes
@@ -52,6 +55,12 @@ MANDATORY_VERIFICATION_COMMANDS = (
 )
 DEFAULT_PROHIBITED_PATHS = (".bootstrap/**", ".build/**", ".env", ".env.*", "aient/**")
 SECRET_FIELD_MARKERS = ("secret", "token", "password", "credential", "private_key", "api_key")
+WORKSPACE_MARKER_PATH = ".ai-enterprise/workspace.json"
+GitCommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
+
+
+class ExternalProjectServiceError(RuntimeError):
+    """Raised when generated-app workspace or repository policy is violated."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +263,272 @@ class ExternalProject:
 
 
 @dataclass(frozen=True)
+class WorkspaceProvisioningRecord:
+    project: ExternalProject
+    workspace: ProjectWorkspace
+    root_path: str
+    marker_path: str
+    prepared_paths: tuple[str, ...]
+    scope_policy_hash: str
+
+    @property
+    def record_hash(self) -> str:
+        return _hash(self._payload())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self._payload(), "record_hash": self.record_hash}
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "record_kind": "generated_app_workspace_provisioning",
+            "project_id": self.project.project_id,
+            "workspace": self.workspace.as_dict(),
+            "root_path": self.root_path,
+            "marker_path": self.marker_path,
+            "prepared_paths": list(self.prepared_paths),
+            "scope_policy_hash": self.scope_policy_hash,
+            "control_plane_authority": self.project.runtime_binding.control_plane_authority,
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        }
+
+
+@dataclass(frozen=True)
+class RepositoryProvisioningRecord:
+    project: ExternalProject
+    repository: ProjectRepository
+    root_path: str
+    git_dir: str
+    remote_name: str | None = None
+
+    @property
+    def record_hash(self) -> str:
+        return _hash(self._payload())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self._payload(), "record_hash": self.record_hash}
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "record_kind": "generated_app_repository_provisioning",
+            "project_id": self.project.project_id,
+            "repository": self.repository.as_dict(),
+            "root_path": self.root_path,
+            "git_dir": self.git_dir,
+            "remote_name": self.remote_name,
+            "commit_policy": self.repository.commit_policy,
+            "human_gate_required_for_push": self.repository.push_requires_human_gate,
+            "control_plane_write_authority": self.repository.control_plane_write_authority,
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        }
+
+
+class GeneratedAppWorkspaceManager:
+    def __init__(
+        self,
+        generated_apps_root: Path,
+        *,
+        control_plane_root: Path | None = None,
+        git_runner: GitCommandRunner | None = None,
+    ) -> None:
+        self.generated_apps_root = generated_apps_root.resolve()
+        self.control_plane_root = control_plane_root.resolve() if control_plane_root else None
+        self._git_runner = git_runner
+
+    def prepare_workspace(self, project: ExternalProject) -> WorkspaceProvisioningRecord:
+        _require_service_safe_project(project)
+        workspace_root = self._resolve_workspace_root(project)
+        _require_safe_workspace_target(workspace_root, self.control_plane_root)
+        self._require_owned_or_empty_workspace(project, workspace_root)
+
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        prepared_paths = tuple(
+            sorted({_normalize_relative_path(path) for path in project.workspace.allowed_roots})
+        )
+        for relative_path in prepared_paths:
+            target = (workspace_root / relative_path).resolve()
+            if not target.is_relative_to(workspace_root):
+                raise ExternalProjectServiceError(
+                    f"workspace allowed root escapes workspace: {relative_path}"
+                )
+            target.mkdir(parents=True, exist_ok=True)
+
+        prepared_workspace = replace(project.workspace, state="PREPARED")
+        prepared_project = replace(project, workspace=prepared_workspace)
+        marker_path = workspace_root / WORKSPACE_MARKER_PATH
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_bytes(_deterministic_marker_bytes(prepared_project, workspace_root))
+        return WorkspaceProvisioningRecord(
+            project=prepared_project,
+            workspace=prepared_workspace,
+            root_path=str(workspace_root),
+            marker_path=str(marker_path),
+            prepared_paths=prepared_paths,
+            scope_policy_hash=_scope_policy_hash(project),
+        )
+
+    def initialize_repository(self, project: ExternalProject) -> RepositoryProvisioningRecord:
+        _require_service_safe_project(project)
+        if project.repository.remote_url and _remote_url_has_secret_material(
+            project.repository.remote_url
+        ):
+            raise ExternalProjectServiceError(
+                "repository remote contains secret-bearing material: "
+                f"{_redact_remote_url_for_error(project.repository.remote_url)}"
+            )
+
+        workspace_root = self._resolve_workspace_root(project)
+        _require_safe_workspace_target(workspace_root, self.control_plane_root)
+        marker = self._require_workspace_marker(project, workspace_root)
+        git_dir = workspace_root / ".git"
+        if git_dir.exists() and not git_dir.is_dir():
+            raise ExternalProjectServiceError(
+                f"repository git path is not a directory: {git_dir}"
+            )
+        if git_dir.exists():
+            self._require_matching_git_repository(workspace_root)
+        else:
+            self._require_git(["init", "-b", project.repository.default_branch], cwd=workspace_root)
+
+        remote_name: str | None = None
+        if project.repository.remote_url:
+            remote_name = "origin"
+            self._ensure_remote(workspace_root, remote_name, project.repository.remote_url)
+
+        repository_state: RepositoryState = (
+            "BOUND" if project.repository.remote_url else "INITIALIZED"
+        )
+        repository = replace(project.repository, state=repository_state)
+        provisioned_project = replace(project, workspace=marker, repository=repository)
+        return RepositoryProvisioningRecord(
+            project=provisioned_project,
+            repository=repository,
+            root_path=str(workspace_root),
+            git_dir=str(git_dir),
+            remote_name=remote_name,
+        )
+
+    def _resolve_workspace_root(self, project: ExternalProject) -> Path:
+        workspace_root = Path(project.workspace.root_path).resolve()
+        if not workspace_root.is_relative_to(self.generated_apps_root):
+            raise ExternalProjectServiceError(
+                "workspace root is outside generated-app root: "
+                f"{workspace_root} not under {self.generated_apps_root}"
+            )
+        return workspace_root
+
+    def _require_owned_or_empty_workspace(
+        self,
+        project: ExternalProject,
+        workspace_root: Path,
+    ) -> None:
+        if not workspace_root.exists():
+            return
+        if not workspace_root.is_dir():
+            raise ExternalProjectServiceError(
+                f"workspace root is not a directory: {workspace_root}"
+            )
+        marker = workspace_root / WORKSPACE_MARKER_PATH
+        if marker.exists():
+            self._read_workspace_marker(project, workspace_root)
+            return
+        if any(workspace_root.iterdir()):
+            raise ExternalProjectServiceError(
+                f"existing workspace is not ai-ent-owned: {workspace_root}"
+            )
+
+    def _require_workspace_marker(
+        self,
+        project: ExternalProject,
+        workspace_root: Path,
+    ) -> ProjectWorkspace:
+        if not workspace_root.exists() or not workspace_root.is_dir():
+            raise ExternalProjectServiceError(f"workspace has not been prepared: {workspace_root}")
+        return self._read_workspace_marker(project, workspace_root)
+
+    def _read_workspace_marker(
+        self,
+        project: ExternalProject,
+        workspace_root: Path,
+    ) -> ProjectWorkspace:
+        marker = workspace_root / WORKSPACE_MARKER_PATH
+        if not marker.exists():
+            raise ExternalProjectServiceError(f"workspace marker missing: {marker}")
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ExternalProjectServiceError(
+                f"workspace marker is not valid JSON: {marker}"
+            ) from exc
+        expected = _workspace_marker_payload(
+            replace(project, workspace=replace(project.workspace, state="PREPARED")),
+            workspace_root,
+        )
+        _require_marker_value(payload, "marker_kind", expected["marker_kind"])
+        _require_marker_value(payload, "schema_version", expected["schema_version"])
+        _require_marker_value(payload, "contract_version", expected["contract_version"])
+        _require_marker_value(payload, "project_id", expected["project_id"])
+        _require_marker_value(payload, "workspace_id", expected["workspace_id"])
+        _require_marker_value(payload, "root_path", expected["root_path"])
+        _require_marker_value(payload, "repository_id", expected["repository_id"])
+        _require_marker_value(payload, "plan_id", expected["plan_id"])
+        _require_marker_value(payload, "plan_hash", expected["plan_hash"])
+        _require_marker_value(payload, "control_plane_authority", expected["control_plane_authority"])
+        _require_marker_value(
+            payload,
+            "push_requires_human_gate",
+            expected["push_requires_human_gate"],
+        )
+        _require_marker_sequence(payload, "allowed_roots", expected["allowed_roots"])
+        _require_marker_sequence(payload, "prohibited_paths", expected["prohibited_paths"])
+        _require_marker_sequence(
+            payload,
+            "verification_commands",
+            expected["verification_commands"],
+        )
+        state = payload.get("state")
+        if state not in {"DECLARED", "PREPARED"}:
+            raise ExternalProjectServiceError("workspace marker state mismatch")
+        return replace(project.workspace, state="PREPARED")
+
+    def _require_matching_git_repository(self, workspace_root: Path) -> None:
+        top_level = self._require_git(["rev-parse", "--show-toplevel"], cwd=workspace_root)
+        if Path(top_level).resolve() != workspace_root:
+            raise ExternalProjectServiceError("repository root mismatch")
+
+    def _ensure_remote(self, cwd: Path, name: str, url: str) -> None:
+        existing = self._run_git(["remote", "get-url", name], cwd=cwd)
+        if existing.returncode == 0:
+            configured_url = existing.stdout.strip()
+            if configured_url != url:
+                raise ExternalProjectServiceError(
+                    "repository remote mismatch: "
+                    f"{_redact_remote_url_for_error(configured_url)} != "
+                    f"{_redact_remote_url_for_error(url)}"
+                )
+            return
+        self._require_git(["remote", "add", name, url], cwd=cwd)
+
+    def _require_git(self, args: list[str], *, cwd: Path) -> str:
+        completed = self._run_git(args, cwd=cwd)
+        if completed.returncode != 0:
+            output = completed.stdout.strip()
+            raise ExternalProjectServiceError(output or f"git {' '.join(args)} failed")
+        return completed.stdout.strip()
+
+    def _run_git(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        if self._git_runner is not None:
+            return self._git_runner(args, cwd)
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+
+@dataclass(frozen=True)
 class ExternalProjectModelFinding:
     finding_id: str
     severity: ExternalProjectFindingSeverity
@@ -307,6 +582,137 @@ def external_project_model_record(project: ExternalProject) -> dict[str, Any]:
         "project": project.as_dict(),
         "validation": validation.as_dict(),
     }
+
+
+def _require_service_safe_project(project: ExternalProject) -> None:
+    validation = validate_external_project(project)
+    if not validation.ok:
+        messages = "; ".join(
+            f"{finding.finding_id}: {finding.message}" for finding in validation.findings
+        )
+        raise ExternalProjectServiceError(f"external project model invalid: {messages}")
+    for artifact in project.artifacts:
+        if not _path_in_allowed_roots(artifact.relative_path, project.workspace.allowed_roots):
+            raise ExternalProjectServiceError(
+                "artifact path is outside workspace allowed roots: "
+                f"{artifact.artifact_id}"
+            )
+
+
+def _require_safe_workspace_target(
+    workspace_root: Path,
+    control_plane_root: Path | None,
+) -> None:
+    if control_plane_root and workspace_root.is_relative_to(control_plane_root):
+        raise ExternalProjectServiceError(
+            "workspace root is inside the control-plane repository: "
+            f"{workspace_root}"
+        )
+
+
+def _workspace_marker_payload(project: ExternalProject, workspace_root: Path) -> dict[str, Any]:
+    return {
+        "marker_kind": "generated_app_workspace",
+        "schema_version": project.schema_version,
+        "contract_version": project.contract_version,
+        "project_id": project.project_id,
+        "workspace_id": project.workspace.workspace_id,
+        "root_path": str(workspace_root),
+        "state": project.workspace.state,
+        "allowed_roots": sorted(
+            {_normalize_relative_path(path) for path in project.workspace.allowed_roots}
+        ),
+        "prohibited_paths": sorted(project.workspace.prohibited_paths),
+        "repository_id": project.repository.repository_id,
+        "plan_id": project.plan.plan_id,
+        "plan_hash": project.plan.effective_plan_hash,
+        "control_plane_authority": project.runtime_binding.control_plane_authority,
+        "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        "push_requires_human_gate": project.repository.push_requires_human_gate,
+    }
+
+
+def _deterministic_marker_bytes(project: ExternalProject, workspace_root: Path) -> bytes:
+    return (
+        json.dumps(
+            _workspace_marker_payload(project, workspace_root),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+
+
+def _scope_policy_hash(project: ExternalProject) -> str:
+    return _hash(
+        {
+            "allowed_roots": sorted(
+                {_normalize_relative_path(path) for path in project.workspace.allowed_roots}
+            ),
+            "prohibited_paths": sorted(project.workspace.prohibited_paths),
+            "control_plane_authority": project.runtime_binding.control_plane_authority,
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+            "push_requires_human_gate": project.repository.push_requires_human_gate,
+        }
+    )
+
+
+def _require_marker_value(payload: dict[str, Any], key: str, expected: object) -> None:
+    if payload.get(key) != expected:
+        raise ExternalProjectServiceError(f"workspace marker {key} mismatch")
+
+
+def _require_marker_sequence(
+    payload: dict[str, Any],
+    key: str,
+    expected: list[str],
+) -> None:
+    raw_value = payload.get(key)
+    if not isinstance(raw_value, list) or not all(
+        isinstance(item, str) for item in raw_value
+    ):
+        raise ExternalProjectServiceError(f"workspace marker {key} mismatch")
+    if raw_value != expected:
+        raise ExternalProjectServiceError(f"workspace marker {key} mismatch")
+
+
+def _normalize_relative_path(path: str) -> str:
+    normalized = str(PurePosixPath(path.strip("/")))
+    if _is_unsafe_relative_path(normalized):
+        raise ExternalProjectServiceError(f"unsafe workspace path: {path}")
+    return normalized
+
+
+def _path_in_allowed_roots(path: str, allowed_roots: tuple[str, ...]) -> bool:
+    normalized = _normalize_relative_path(path)
+    for allowed_root in allowed_roots:
+        normalized_root = _normalize_relative_path(allowed_root)
+        if normalized == normalized_root or normalized.startswith(f"{normalized_root}/"):
+            return True
+    return False
+
+
+def _remote_url_has_secret_material(url: str) -> bool:
+    scheme, separator, rest = url.partition("://")
+    if not separator or scheme.lower() not in {"http", "https"}:
+        return False
+    userinfo, at, _host = rest.partition("@")
+    if at and userinfo:
+        return True
+    query = rest.partition("?")[2]
+    fragment = rest.partition("#")[2]
+    normalized = f"{query} {fragment}".lower().replace("-", "_")
+    return any(marker in normalized for marker in SECRET_FIELD_MARKERS)
+
+
+def _redact_remote_url_for_error(url: str) -> str:
+    redacted = _redact_url(url)
+    if redacted is None:
+        return ""
+    redacted = redacted.partition("?")[0] + ("?<redacted>" if "?" in redacted else "")
+    redacted = redacted.partition("#")[0] + ("#<redacted>" if "#" in redacted else "")
+    return redacted
 
 
 def _validate_identity_bindings(
