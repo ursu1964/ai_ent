@@ -154,3 +154,25 @@ def test_pir_gap_c07_maps_to_runtime_source_tests_and_accepted_evidence(tmp_path
         "BEAG-001:runtime-plan-import",
         "BEAG-001:pytest-regression-suite",
     }
+
+
+def test_pir_gap_c09_maps_to_kernel_source_tests_and_accepted_evidence(tmp_path: Path) -> None:
+    factory = session_factory()
+    with factory() as session:
+        plan_id = import_runtime_plan(session, tmp_path)
+        mark_all_imported_tasks_passed(session)
+
+        review = evaluate_post_implementation(session, artifacts_dir=tmp_path / "artifacts", plan_id=plan_id)
+
+    by_gap = {gap.gap_id: gap for gap in review.residual_gaps}
+
+    assert set(by_gap["PIR-GAP-C09"].current_evidence) >= {
+        "BEAG-001:src/ai_ent/runtime_kernel.py",
+        "BEAG-001:src/ai_ent/execution_planner.py",
+        "BEAG-001:tests/test_runtime_kernel.py",
+        "BEAG-001:tests/test_execution_planner.py",
+        "BEAG-001:runtime-plan-import",
+        "BEAG-001:guarded-autonomous-runner",
+        "BEAG-001:pytest-regression-suite",
+    }
+    assert review.evidence_authority["artifact_evidence_graph"] == "NON_AUTHORITATIVE provenance/index only"

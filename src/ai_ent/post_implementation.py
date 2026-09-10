@@ -510,7 +510,7 @@ def _capability_postures(
         for capability_id in ("C03", "C04", "C14", "C15", "C16", "C17", "C18", "C19", "C20"):
             evidence_by_capability.setdefault(capability_id, []).append("IPCG-001")
     for capability in pre_resolution.capabilities:
-        if capability.capability_id == "C07":
+        if capability.capability_id in {"C07", "C09"}:
             evidence_by_capability.setdefault(capability.capability_id, []).extend(capability.evidence_refs)
 
     rows: list[CapabilityPosture] = []

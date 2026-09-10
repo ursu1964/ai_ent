@@ -89,6 +89,14 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R9, BEAG-001]
     depends_on: [C03, C07]
+    evidence_refs:
+      - BEAG-001:src/ai_ent/runtime_kernel.py
+      - BEAG-001:src/ai_ent/execution_planner.py
+      - BEAG-001:tests/test_runtime_kernel.py
+      - BEAG-001:tests/test_execution_planner.py
+      - BEAG-001:runtime-plan-import
+      - BEAG-001:guarded-autonomous-runner
+      - BEAG-001:pytest-regression-suite
   - id: C10
     name: Experience and interaction framework
     status: CONDITIONAL
