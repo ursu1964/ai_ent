@@ -7,7 +7,10 @@ from pathlib import Path
 from ai_ent.persistence.config import load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.models import RuntimePlanImport, Task
-from ai_ent.post_implementation import write_post_implementation_review
+from ai_ent.post_implementation import (
+    write_post_implementation_review,
+    write_post_residual_implementation_review,
+)
 from ai_ent.project_manifest import (
     compile_project_manifest,
     dry_run_implementation_plan,
@@ -419,6 +422,47 @@ def post_implementation_review(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def post_residual_implementation_review(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            review = write_post_residual_implementation_review(
+                session,
+                manifest_root=Path(args.manifest_root),
+                output_dir=Path(args.output_dir),
+                artifacts_dir=Path(args.artifacts_dir),
+                project_id=args.project,
+                prior_plan_id=args.prior_plan_id,
+                residual_plan_id=args.residual_plan_id,
+                plan_version=args.plan_version,
+                repository_root=Path.cwd(),
+            )
+            print(
+                json.dumps(
+                    {
+                        "result": review.result,
+                        "recommendation": review.as_dict()["recommendation"],
+                        "head": review.head,
+                        "plan_id": review.plan_id,
+                        "plan_version": review.plan_version,
+                        "pir_002_compiled_hash": review.post_compiled_hash,
+                        "pir_002_capability_hash": review.post_capability_resolution_hash,
+                        "pir_002_trace_hash": review.post_trace_validation_hash,
+                        "pir_002_residual_gap_hash": review.residual_gap_hash,
+                        "residual_gap_count": len(review.residual_gaps),
+                        "output_dir": args.output_dir,
+                        "artifact_dir": str(Path(args.artifacts_dir) / "pir-002"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+    finally:
+        database.dispose()
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -815,6 +859,28 @@ def build_parser() -> argparse.ArgumentParser:
     pir_alias_parser.add_argument("--plan-id", default="PLAN-1a75a2e3c5a7")
     pir_alias_parser.add_argument("--plan-version", default="1")
     pir_alias_parser.set_defaults(func=post_implementation_review)
+
+    pir2_parser = subparsers.add_parser("post-residual-implementation")
+    pir2_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    pir2_parser.add_argument("--output-dir", default=".build/compiled")
+    pir2_parser.add_argument("--artifacts-dir", default="artifacts")
+    pir2_parser.add_argument("--env-file", default=".env")
+    pir2_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    pir2_parser.add_argument("--prior-plan-id", default="PLAN-1a75a2e3c5a7")
+    pir2_parser.add_argument("--residual-plan-id", default=RESIDUAL_PLAN_ID)
+    pir2_parser.add_argument("--plan-version", default="1")
+    pir2_parser.set_defaults(func=post_residual_implementation_review)
+
+    pir2_alias_parser = subparsers.add_parser("pir-002")
+    pir2_alias_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    pir2_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    pir2_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    pir2_alias_parser.add_argument("--env-file", default=".env")
+    pir2_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    pir2_alias_parser.add_argument("--prior-plan-id", default="PLAN-1a75a2e3c5a7")
+    pir2_alias_parser.add_argument("--residual-plan-id", default=RESIDUAL_PLAN_ID)
+    pir2_alias_parser.add_argument("--plan-version", default="1")
+    pir2_alias_parser.set_defaults(func=post_residual_implementation_review)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")

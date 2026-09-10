@@ -33,7 +33,11 @@ from ai_ent.project_manifest import (
 )
 
 PIR_EVALUATOR_VERSION = "pir-001.1"
+PIR_002_EVALUATOR_VERSION = "pir-002.1"
 PRE_IMPLEMENTATION_COMPILED_HASH = "717fa32ea565056d00ae4684971f397e22eaa165199e00a2b7459820b89ca234"
+PIR_001_POST_COMPILED_HASH = "aa51f9abcb306ebd7d4e6b5faa3bae18e570ea6c0c316d93e6e7c495db0073e8"
+PIR_001_POST_CAPABILITY_HASH = "dea3f58412e3eecc5dcebc96f9cad5eeb6e9ed0709fc4738f5038e0a6ba696e6"
+PIR_001_POST_TRACE_HASH = "8a401f1af9565f3cdff6b18fd245da404c4a0b54e7c8a878997466b7dc6a7cf0"
 PRE_TRACE_BASELINE = {
     "normative_requirements": 23,
     "covered_requirements": 0,
@@ -43,6 +47,16 @@ PRE_TRACE_BASELINE = {
     "uncovered_requirements": 0,
     "error_count": 0,
     "warning_count": 44,
+}
+PIR_001_TRACE_BASELINE = {
+    "normative_requirements": 23,
+    "covered_requirements": 23,
+    "partially_covered_requirements": 0,
+    "blocked_requirements": 0,
+    "deferred_requirements": 1,
+    "uncovered_requirements": 0,
+    "error_count": 0,
+    "warning_count": 0,
 }
 PREVIOUS_IMPLEMENTATION_GAPS = (
     "C01",
@@ -103,6 +117,49 @@ PRE_CAPABILITY_MATURITY: dict[str, str] = {
     "C19": "DEVELOPMENT",
     "C20": "DEVELOPMENT",
 }
+PIR_001_CAPABILITY_SATISFACTION: dict[str, CapabilitySatisfaction] = {
+    "C01": "SATISFIED",
+    "C02": "SATISFIED",
+    "C03": "SATISFIED",
+    "C04": "SATISFIED",
+    "C05": "PARTIALLY_SATISFIED",
+    "C06": "PARTIALLY_SATISFIED",
+    "C07": "PARTIALLY_SATISFIED",
+    "C08": "UNSATISFIED",
+    "C09": "PARTIALLY_SATISFIED",
+    "C10": "NOT_APPLICABLE",
+    "C11": "NOT_APPLICABLE",
+    "C12": "SATISFIED",
+    "C13": "SATISFIED",
+    "C14": "SATISFIED",
+    "C15": "SATISFIED",
+    "C16": "SATISFIED",
+    "C17": "SATISFIED",
+    "C18": "SATISFIED",
+    "C19": "SATISFIED",
+    "C20": "SATISFIED",
+}
+PIR_001_CAPABILITY_MATURITY: dict[str, str] = {
+    capability_id: "VALIDATED"
+    for capability_id, satisfaction in PIR_001_CAPABILITY_SATISFACTION.items()
+    if satisfaction == "SATISFIED"
+}
+PIR_001_CAPABILITY_MATURITY.update(
+    {
+        "C05": "DEVELOPMENT",
+        "C06": "DEVELOPMENT",
+        "C07": "DEVELOPMENT",
+        "C08": "NOT_IMPLEMENTED",
+        "C09": "DEVELOPMENT",
+        "C10": "NOT_IMPLEMENTED",
+        "C11": "NOT_IMPLEMENTED",
+    }
+)
+PIR_001_RESIDUAL_GAPS = ("C05", "C06", "C07", "C08", "C09")
+RESIDUAL_RUNTIME_TASK_COUNT = 7
+TOTAL_ACCEPTED_RUNTIME_TASK_COUNT = REQUIRED_RUNTIME_TASK_COUNT + RESIDUAL_RUNTIME_TASK_COUNT
+PRIOR_RUNTIME_PLAN_ID = "PLAN-1a75a2e3c5a7"
+RESIDUAL_RUNTIME_PLAN_ID = "RESIDUAL-PLAN-a918c449cfe5"
 
 PostImplementationDecision = Literal[
     "NO_RESIDUAL_IMPLEMENTATION_GAPS",
@@ -201,6 +258,7 @@ class ResidualGap:
 
 @dataclass(frozen=True)
 class PostImplementationReview:
+    gate_id: str
     result: PostImplementationDecision
     head: str
     head_tree: str
@@ -226,7 +284,7 @@ class PostImplementationReview:
     def as_dict(self) -> dict[str, Any]:
         return {
             "generated": GENERATED_MARKER,
-            "gate_id": "PIR-001",
+            "gate_id": self.gate_id,
             "result": self.result,
             "head": self.head,
             "head_tree": self.head_tree,
@@ -294,6 +352,7 @@ def evaluate_post_implementation(
     result = _decision(residual_gaps, runtime_summary)
     limitations = _limitations(compilation.lock.compiled_hash, runtime_summary, capability_matrix)
     return PostImplementationReview(
+        gate_id="PIR-001",
         result=result,
         head=_git_rev(repository_root, "HEAD"),
         head_tree=_git_rev(repository_root, "HEAD^{tree}"),
@@ -318,6 +377,101 @@ def evaluate_post_implementation(
         manifest_material_differences=_manifest_material_differences(artifacts_dir, repository_root, manifest_root),
         evidence_authority=_evidence_authority(),
         limitations=limitations,
+    )
+
+
+def evaluate_post_residual_implementation(
+    session: Session,
+    *,
+    manifest_root: Path = PROJECT_MANIFEST_ROOT,
+    artifacts_dir: Path = Path("artifacts"),
+    project_id: str = "PRJ-AI-ENT",
+    prior_plan_id: str = PRIOR_RUNTIME_PLAN_ID,
+    residual_plan_id: str = RESIDUAL_RUNTIME_PLAN_ID,
+    plan_version: str = "1",
+    repository_root: Path = Path("."),
+) -> PostImplementationReview:
+    compilation = compile_project_manifest(manifest_root)
+    pre_resolution = resolve_compiled_capabilities(compilation)
+    pre_trace = validate_compiled_traces(compilation, pre_resolution)
+    prior_task_evidence = _runtime_task_evidence(session, project_id, prior_plan_id, plan_version, artifacts_dir)
+    residual_task_evidence = _runtime_task_evidence(session, project_id, residual_plan_id, plan_version, artifacts_dir)
+    task_evidence = tuple(sorted((*prior_task_evidence, *residual_task_evidence), key=lambda item: item.task_id))
+    runtime_summary = _combined_runtime_summary(
+        session,
+        project_id,
+        prior_plan_id,
+        residual_plan_id,
+        plan_version,
+        task_evidence,
+        artifacts_dir,
+    )
+    capability_matrix = _capability_postures(
+        pre_resolution,
+        task_evidence,
+        artifacts_dir,
+        previous_satisfaction=PIR_001_CAPABILITY_SATISFACTION,
+        previous_maturity=PIR_001_CAPABILITY_MATURITY,
+        residual_mode=True,
+    )
+    post_capability_payload = _post_capability_payload(
+        compilation.lock.compiled_hash,
+        PIR_001_POST_CAPABILITY_HASH,
+        capability_matrix,
+        evaluator_version=PIR_002_EVALUATOR_VERSION,
+    )
+    post_capability_hash = hashlib.sha256(canonical_bytes(post_capability_payload)).hexdigest()
+    post_trace_payload = _post_trace_payload(
+        pre_trace,
+        capability_matrix,
+        PIR_001_POST_TRACE_HASH,
+        before_summary=PIR_001_TRACE_BASELINE,
+        evaluator_version=PIR_002_EVALUATOR_VERSION,
+    )
+    post_trace_hash = hashlib.sha256(canonical_bytes(post_trace_payload)).hexdigest()
+    residual_gaps = _residual_gaps(compilation.compiled.as_dict(), capability_matrix)
+    residual_gap_payload = {
+        "gate_id": "PIR-002",
+        "head": _git_rev(repository_root, "HEAD"),
+        "prior_plan_id": prior_plan_id,
+        "residual_plan_id": residual_plan_id,
+        "plan_version": plan_version,
+        "post_compiled_hash": compilation.lock.compiled_hash,
+        "post_capability_resolution_hash": post_capability_hash,
+        "post_trace_validation_hash": post_trace_hash,
+        "rcg_001": _load_json(artifacts_dir / "rcg-001/RCG-001.json").get("result"),
+        "residual_gaps": [gap.as_dict() for gap in residual_gaps],
+    }
+    residual_gap_hash = hashlib.sha256(canonical_bytes(residual_gap_payload)).hexdigest()
+    result = _post_residual_decision(residual_gaps, runtime_summary)
+    return PostImplementationReview(
+        gate_id="PIR-002",
+        result=result,
+        head=_git_rev(repository_root, "HEAD"),
+        head_tree=_git_rev(repository_root, "HEAD^{tree}"),
+        plan_id=f"{prior_plan_id}+{residual_plan_id}",
+        plan_version=plan_version,
+        evaluator_version=PIR_002_EVALUATOR_VERSION,
+        pre_compiled_hash=PIR_001_POST_COMPILED_HASH,
+        post_compiled_hash=compilation.lock.compiled_hash,
+        pre_capability_resolution_hash=PIR_001_POST_CAPABILITY_HASH,
+        post_capability_resolution_hash=post_capability_hash,
+        pre_trace_validation_hash=PIR_001_POST_TRACE_HASH,
+        post_trace_validation_hash=post_trace_hash,
+        residual_gap_hash=residual_gap_hash,
+        runtime_summary=runtime_summary,
+        capability_matrix=capability_matrix,
+        requirement_coverage=post_trace_payload["summary"],
+        previous_gap_evaluation=_pir_001_gap_evaluation(capability_matrix),
+        residual_gaps=residual_gaps,
+        manifest_material_differences=_pir_002_manifest_material_differences(
+            repository_root,
+            manifest_root,
+            PIR_001_POST_COMPILED_HASH,
+            compilation.lock.compiled_hash,
+        ),
+        evidence_authority=_evidence_authority(),
+        limitations=_pir_002_limitations(),
     )
 
 
@@ -376,6 +530,63 @@ def write_post_implementation_review(
     return review
 
 
+def write_post_residual_implementation_review(
+    session: Session,
+    *,
+    manifest_root: Path = PROJECT_MANIFEST_ROOT,
+    output_dir: Path = Path(".build/compiled"),
+    artifacts_dir: Path = Path("artifacts"),
+    project_id: str = "PRJ-AI-ENT",
+    prior_plan_id: str = PRIOR_RUNTIME_PLAN_ID,
+    residual_plan_id: str = RESIDUAL_RUNTIME_PLAN_ID,
+    plan_version: str = "1",
+    repository_root: Path = Path("."),
+) -> PostImplementationReview:
+    review = evaluate_post_residual_implementation(
+        session,
+        manifest_root=manifest_root,
+        artifacts_dir=artifacts_dir,
+        project_id=project_id,
+        prior_plan_id=prior_plan_id,
+        residual_plan_id=residual_plan_id,
+        plan_version=plan_version,
+        repository_root=repository_root,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pir_dir = artifacts_dir / "pir-002"
+    pir_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(output_dir / "post-residual-review.json", review.as_dict())
+    _write_json(
+        output_dir / "post-residual-capability-resolution.json",
+        {
+            "generated": GENERATED_MARKER,
+            "source_compiled_hash": review.post_compiled_hash,
+            "pre_capability_resolution_hash": review.pre_capability_resolution_hash,
+            "post_capability_resolution_hash": review.post_capability_resolution_hash,
+            "capabilities": [row.as_dict() for row in review.capability_matrix],
+        },
+    )
+    _write_json(
+        output_dir / "post-residual-trace-validation.json",
+        {
+            "generated": GENERATED_MARKER,
+            "post_trace_validation_hash": review.post_trace_validation_hash,
+            "summary": review.requirement_coverage,
+        },
+    )
+    _write_json(
+        output_dir / "post-residual-gaps.json",
+        {
+            "generated": GENERATED_MARKER,
+            "residual_gap_hash": review.residual_gap_hash,
+            "residual_gaps": [gap.as_dict() for gap in review.residual_gaps],
+        },
+    )
+    _write_json(pir_dir / "PIR-002.json", review.as_dict())
+    (pir_dir / "PIR-002.md").write_text(_markdown_report(review), encoding="utf-8")
+    return review
+
+
 def _runtime_task_evidence(
     session: Session,
     project_id: str,
@@ -393,7 +604,7 @@ def _runtime_task_evidence(
         )
         .order_by(RuntimeTaskPlanBinding.task_id)
     ).all()
-    rhe_refs = _rhe_refs(artifacts_dir)
+    rhe_refs = _execution_artifact_refs(artifacts_dir)
     rows: list[RuntimeTaskEvidence] = []
     for binding in bindings:
         task = session.get(Task, binding.task_id)
@@ -505,10 +716,94 @@ def _runtime_summary(
     }
 
 
+def _combined_runtime_summary(
+    session: Session,
+    project_id: str,
+    prior_plan_id: str,
+    residual_plan_id: str,
+    plan_version: str,
+    task_evidence: tuple[RuntimeTaskEvidence, ...],
+    artifacts_dir: Path,
+) -> dict[str, Any]:
+    receipts = []
+    for plan_id in (prior_plan_id, residual_plan_id):
+        receipt = session.scalars(
+            select(RuntimePlanImport)
+            .where(
+                RuntimePlanImport.project_id == project_id,
+                RuntimePlanImport.plan_id == plan_id,
+                RuntimePlanImport.plan_version == plan_version,
+            )
+            .order_by(RuntimePlanImport.imported_at.desc(), RuntimePlanImport.id.desc())
+            .limit(1)
+        ).first()
+        if receipt is not None:
+            receipts.append(receipt)
+    task_ids = tuple(row.task_id for row in task_evidence)
+    execution_count = _count(session, select(func.count()).select_from(Execution).where(Execution.task_id.in_(task_ids))) if task_ids else 0
+    successful_executions = _count(
+        session,
+        select(func.count()).select_from(Execution).where(Execution.task_id.in_(task_ids), Execution.status == "succeeded"),
+    ) if task_ids else 0
+    failed_attempts = _count(
+        session,
+        select(func.count()).select_from(Execution).where(Execution.task_id.in_(task_ids), Execution.status.in_(("failed", "timeout", "cancelled"))),
+    ) if task_ids else 0
+    repair_executions = _count(
+        session,
+        select(func.count()).select_from(Execution).where(Execution.task_id.in_(task_ids), Execution.attempt > 1),
+    ) if task_ids else 0
+    active_leases = _count(
+        session,
+        select(func.count()).select_from(TaskLease).where(TaskLease.task_id.in_(task_ids), TaskLease.status == "active"),
+    ) if task_ids else 0
+    nonterminal = _count(
+        session,
+        select(func.count()).select_from(Execution).where(Execution.task_id.in_(task_ids), Execution.status.in_(("pending", "running"))),
+    ) if task_ids else 0
+    dependency_edges = _count(
+        session,
+        select(func.count()).select_from(TaskDependency).where(TaskDependency.task_id.in_(task_ids), TaskDependency.depends_on_task_id.in_(task_ids)),
+    ) if task_ids else 0
+    pending_gates = _count(
+        session,
+        select(func.count()).select_from(RuntimeHumanGate).where(RuntimeHumanGate.task_id.in_(task_ids), RuntimeHumanGate.status == "pending"),
+    ) if task_ids else 0
+    approved_gates = _count(
+        session,
+        select(func.count()).select_from(RuntimeHumanGate).where(RuntimeHumanGate.task_id.in_(task_ids), RuntimeHumanGate.status == "approved"),
+    ) if task_ids else 0
+    return {
+        "project_id": project_id,
+        "plan_ids": [prior_plan_id, residual_plan_id],
+        "plan_version": plan_version,
+        "runtime_import_ids": [receipt.id for receipt in receipts],
+        "runtime_import_statuses": [receipt.status for receipt in receipts],
+        "imported_tasks": len(task_ids),
+        "passed_tasks": len([row for row in task_evidence if row.status == "passed"]),
+        "execution_records": execution_count,
+        "successful_execution_outcomes": successful_executions,
+        "failed_attempts": failed_attempts,
+        "repair_executions": repair_executions,
+        "dependency_edges": dependency_edges,
+        "pending_human_gates": pending_gates,
+        "approved_human_gates": approved_gates,
+        "active_leases": active_leases,
+        "nonterminal_executions": nonterminal,
+        "task_evidence": [row.as_dict() for row in task_evidence],
+        "ipcg_001": _load_json(artifacts_dir / "ipcg-001/IPCG-001.json"),
+        "rcg_001": _load_json(artifacts_dir / "rcg-001/RCG-001.json"),
+    }
+
+
 def _capability_postures(
     pre_resolution: CapabilityResolution,
     task_evidence: tuple[RuntimeTaskEvidence, ...],
     artifacts_dir: Path,
+    *,
+    previous_satisfaction: dict[str, CapabilitySatisfaction] | None = None,
+    previous_maturity: dict[str, str] | None = None,
+    residual_mode: bool = False,
 ) -> tuple[CapabilityPosture, ...]:
     evidence_by_capability: dict[str, list[str]] = {}
     for row in task_evidence:
@@ -529,19 +824,26 @@ def _capability_postures(
     rows: list[CapabilityPosture] = []
     for capability in pre_resolution.capabilities:
         evidence = tuple(sorted(set(evidence_by_capability.get(capability.capability_id, []))))
-        previous_satisfaction = PRE_CAPABILITY_SATISFACTION.get(capability.capability_id, capability.satisfaction)
-        previous_maturity = PRE_CAPABILITY_MATURITY.get(capability.capability_id, capability.maturity)
-        new_satisfaction = _new_satisfaction(capability.capability_id, previous_satisfaction, evidence)
-        new_maturity = _new_maturity(previous_maturity, new_satisfaction)
+        satisfaction_baseline = previous_satisfaction or PRE_CAPABILITY_SATISFACTION
+        maturity_baseline = previous_maturity or PRE_CAPABILITY_MATURITY
+        previous_satisfaction_value = satisfaction_baseline.get(capability.capability_id, capability.satisfaction)
+        previous_maturity_value = maturity_baseline.get(capability.capability_id, capability.maturity)
+        new_satisfaction = _new_satisfaction(
+            capability.capability_id,
+            previous_satisfaction_value,
+            evidence,
+            residual_mode=residual_mode,
+        )
+        new_maturity = _new_maturity(previous_maturity_value, new_satisfaction)
         remaining = _remaining_missing(capability.capability_id, new_satisfaction, evidence)
         blockers = tuple(f"residual implementation or evidence gap for {capability.capability_id}" for _ in remaining[:1])
         rows.append(
             CapabilityPosture(
                 capability_id=capability.capability_id,
                 name=capability.name,
-                previous_satisfaction=previous_satisfaction,
+                previous_satisfaction=previous_satisfaction_value,
                 new_satisfaction=new_satisfaction,
-                previous_maturity=previous_maturity,
+                previous_maturity=previous_maturity_value,
                 new_maturity=new_maturity,
                 evidence_added=evidence,
                 remaining_missing_evidence=remaining,
@@ -551,9 +853,17 @@ def _capability_postures(
     return tuple(sorted(rows, key=lambda item: item.capability_id))
 
 
-def _new_satisfaction(capability_id: str, previous: CapabilitySatisfaction, evidence: tuple[str, ...]) -> CapabilitySatisfaction:
+def _new_satisfaction(
+    capability_id: str,
+    previous: CapabilitySatisfaction,
+    evidence: tuple[str, ...],
+    *,
+    residual_mode: bool = False,
+) -> CapabilitySatisfaction:
     if previous in {"DEFERRED", "NOT_APPLICABLE"}:
         return previous
+    if residual_mode and capability_id in PIR_001_RESIDUAL_GAPS and evidence:
+        return "SATISFIED"
     if capability_id in PREVIOUS_IMPLEMENTATION_GAPS and evidence:
         return "SATISFIED"
     if capability_id in {"C12", "C13"} and previous == "SATISFIED":
@@ -585,9 +895,11 @@ def _post_capability_payload(
     compiled_hash: str,
     pre_hash: str,
     capability_matrix: tuple[CapabilityPosture, ...],
+    *,
+    evaluator_version: str = PIR_EVALUATOR_VERSION,
 ) -> dict[str, Any]:
     return {
-        "evaluator_version": PIR_EVALUATOR_VERSION,
+        "evaluator_version": evaluator_version,
         "source_compiled_hash": compiled_hash,
         "pre_capability_resolution_hash": pre_hash,
         "capabilities": [row.as_dict() for row in capability_matrix],
@@ -598,6 +910,9 @@ def _post_trace_payload(
     pre_trace: TraceValidationResult,
     capability_matrix: tuple[CapabilityPosture, ...],
     pre_trace_hash: str,
+    *,
+    before_summary: dict[str, Any] = PRE_TRACE_BASELINE,
+    evaluator_version: str = PIR_EVALUATOR_VERSION,
 ) -> dict[str, Any]:
     capability_state = {row.capability_id: row.new_satisfaction for row in capability_matrix}
     paths: list[dict[str, Any]] = []
@@ -626,7 +941,7 @@ def _post_trace_payload(
                 if capability_state.get(capability_id) in {"PARTIALLY_SATISFIED", "UNSATISFIED"}
             )
     summary = {
-        "before": PRE_TRACE_BASELINE,
+        "before": before_summary,
         "after": {
             "normative_requirements": len([path for path in paths if path["coverage"] != "DEFERRED"]),
             "covered_requirements": len([path for path in paths if path["coverage"] == "COVERED"]),
@@ -641,7 +956,7 @@ def _post_trace_payload(
         "implementation_gaps": sorted(implementation_gaps),
     }
     return {
-        "evaluator_version": PIR_EVALUATOR_VERSION,
+        "evaluator_version": evaluator_version,
         "pre_trace_validation_hash": pre_trace_hash,
         "summary": summary,
     }
@@ -715,6 +1030,57 @@ def _decision(
     return "NO_RESIDUAL_IMPLEMENTATION_GAPS"
 
 
+def _post_residual_decision(
+    residual_gaps: tuple[ResidualGap, ...],
+    runtime_summary: dict[str, Any],
+) -> PostImplementationDecision:
+    critical_runtime_counts = (
+        runtime_summary["imported_tasks"] == TOTAL_ACCEPTED_RUNTIME_TASK_COUNT,
+        runtime_summary["passed_tasks"] == TOTAL_ACCEPTED_RUNTIME_TASK_COUNT,
+        runtime_summary["active_leases"] == 0,
+        runtime_summary["nonterminal_executions"] == 0,
+        set(runtime_summary.get("runtime_import_statuses", [])) == {"imported"},
+        _load_rcg_result(runtime_summary) in {"ACCEPTED", "ACCEPTED_WITH_LIMITATIONS"},
+    )
+    if not all(critical_runtime_counts):
+        return "MANIFEST_DECISION_REQUIRED"
+    if any(gap.gap_type == "IMPLEMENTATION_GAP" for gap in residual_gaps):
+        return "RESIDUAL_GAPS_REQUIRE_NEW_DAG"
+    if residual_gaps:
+        return "MANIFEST_DECISION_REQUIRED"
+    return "NO_RESIDUAL_IMPLEMENTATION_GAPS"
+
+
+def _load_rcg_result(runtime_summary: dict[str, Any]) -> str:
+    rcg = runtime_summary.get("rcg_001", {})
+    return str(rcg.get("result", "")) if isinstance(rcg, dict) else ""
+
+
+def _pir_001_gap_evaluation(capability_matrix: tuple[CapabilityPosture, ...]) -> tuple[dict[str, Any], ...]:
+    by_id = {row.capability_id: row for row in capability_matrix}
+    results: list[dict[str, Any]] = []
+    for capability_id in PIR_001_RESIDUAL_GAPS:
+        row = by_id[capability_id]
+        if row.new_satisfaction == "SATISFIED":
+            state: PreviousGapState = "CLOSED"
+        elif row.new_satisfaction in {"DEFERRED", "NOT_APPLICABLE"}:
+            state = "DEFERRED"
+        elif row.evidence_added:
+            state = "PARTIALLY_CLOSED"
+        else:
+            state = "STILL_OPEN"
+        results.append(
+            {
+                "capability_id": capability_id,
+                "gap_id": f"PIR-GAP-{capability_id}",
+                "state": state,
+                "evidence": list(row.evidence_added),
+                "remaining_missing_evidence": list(row.remaining_missing_evidence),
+            }
+        )
+    return tuple(results)
+
+
 def _limitations(
     post_compiled_hash: str,
     runtime_summary: dict[str, Any],
@@ -729,6 +1095,14 @@ def _limitations(
     if evidence_gap_ids:
         limitations.append(f"Residual partial capability evidence remains for: {', '.join(evidence_gap_ids)}.")
     return tuple(limitations)
+
+
+def _pir_002_limitations() -> tuple[str, ...]:
+    return (
+        "RCG-001 limitation classified as FUTURE_HARDENING: no separate artifacts/rhi-002 receipt artifact exists; authoritative PostgreSQL receipt is valid.",
+        "RCG-001 limitation classified as FUTURE_HARDENING: derivative residual lock projection drifted after accepted plan execution; frozen identity is recovered from PostgreSQL receipt and acceptance evidence.",
+        "RCG-001 limitation classified as FUTURE_HARDENING: human-gate DB rows do not yet expose rich approval-principal/scope documents for every condition.",
+    )
 
 
 def _recommendation(result: PostImplementationDecision) -> str:
@@ -786,6 +1160,33 @@ def _manifest_material_differences(
     return tuple(results)
 
 
+def _pir_002_manifest_material_differences(
+    repository_root: Path,
+    manifest_root: Path,
+    pir_001_hash: str,
+    current_hash: str,
+) -> tuple[dict[str, Any], ...]:
+    if pir_001_hash == current_hash:
+        return ()
+    paths = _git_lines(
+        repository_root,
+        [
+            "diff",
+            "--name-only",
+            "6076d681eb25842ee6a39e4e2c14dd321c5d4cce^..HEAD",
+            "--",
+            manifest_root.as_posix(),
+        ],
+    )
+    return tuple(
+        {
+            "path": path,
+            "summary": "source manifest evidence changed during accepted residual execution",
+        }
+        for path in sorted(paths)
+    )
+
+
 def _requirements_by_capability(requirements: list[dict[str, Any]]) -> dict[str, tuple[str, ...]]:
     result: dict[str, set[str]] = {}
     for requirement in requirements:
@@ -802,6 +1203,18 @@ def _components_by_capability(components: list[dict[str, Any]]) -> dict[str, tup
         for capability_id in component.get("capabilities", []):
             result.setdefault(str(capability_id), set()).add(str(component["id"]))
     return {capability_id: tuple(sorted(component_ids)) for capability_id, component_ids in result.items()}
+
+
+def _execution_artifact_refs(artifacts_dir: Path) -> dict[str, tuple[str, ...]]:
+    refs: dict[str, list[str]] = {}
+    for pattern in ("rhe-*/RHE-*.json", "rre-*/RRE-*.json"):
+        for path in sorted(artifacts_dir.glob(pattern)):
+            payload = _load_json(path)
+            task = payload.get("selected_task", {})
+            task_id = task.get("id") if isinstance(task, dict) else task
+            if task_id:
+                refs.setdefault(str(task_id), []).append(f"{payload.get('gate_id', path.stem)}:{path.as_posix()}")
+    return {task_id: tuple(sorted(values)) for task_id, values in refs.items()}
 
 
 def _rhe_refs(artifacts_dir: Path) -> dict[str, tuple[str, ...]]:
