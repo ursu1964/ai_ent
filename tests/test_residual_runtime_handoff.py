@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import create_engine, event, func, select
@@ -23,12 +24,19 @@ from ai_ent.persistence.models import (
 )
 from ai_ent.persistence.repositories.bootstrap import BootstrapRunRepository
 from ai_ent.residual_runtime_handoff import (
-    RESIDUAL_PLAN_ID,
+    ResidualRuntimeHandoffArtifacts,
     ResidualRuntimePlanImporter,
     load_residual_runtime_handoff_artifacts,
 )
 from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, build_runtime_manifest_tasks
+from ai_ent.scheduler.guarded import GuardedPreflightResult
 from ai_ent.scheduler.readiness import TaskReadinessService
+from ai_ent.scheduler.recovery import RecoveryResult
+from tests.residual_artifact_fixtures import (
+    residual_feasibility_artifact_path,
+    write_test_pir_artifact,
+    write_test_rpg_artifact,
+)
 
 
 def session_factory() -> sessionmaker[Session]:
@@ -110,9 +118,42 @@ def seed_prior_plan_complete(session: Session, project_id: str = DEFAULT_RUNTIME
     BootstrapRunRepository().activate_postgresql_authority(session, project_id=project_id, run_id="run-test-authority")
 
 
-def test_imports_exact_residual_tasks_edges_and_gates() -> None:
+def load_test_artifacts(tmp_path: Path, monkeypatch: Any) -> ResidualRuntimeHandoffArtifacts:
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    rpg_artifact = write_test_rpg_artifact(tmp_path, pir_artifact)
+    artifacts = load_residual_runtime_handoff_artifacts(
+        pir_artifact=pir_artifact,
+        acceptance_artifact_path=rpg_artifact,
+        frozen_plan_artifact=tmp_path / "compiled" / "residual-implementation-plan.json",
+        accepted_feasibility_artifact=residual_feasibility_artifact_path(tmp_path),
+    )
+    monkeypatch.setattr("ai_ent.residual_runtime_handoff.RESIDUAL_PLAN_ID", artifacts.dry_run.lock.residual_plan_id)
+    return artifacts
+
+
+class CleanRecovery:
+    def recover_project(self, _: object, *, project_id: str) -> RecoveryResult:
+        return RecoveryResult(
+            interrupted_task_id=None,
+            execution_id=None,
+            detected_stage="BETWEEN_TASKS",
+            evidence=(f"clean:{project_id}",),
+            action="READY_TO_CONTINUE",
+            safe_to_continue=True,
+        )
+
+
+def patch_guarded_dry_run_environment(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "ai_ent.scheduler.guarded.repository_preflight",
+        lambda: GuardedPreflightResult(True, "test preflight passed with active interpreter"),
+    )
+    monkeypatch.setattr("ai_ent.scheduler.guarded.SchedulerRecoveryService", CleanRecovery)
+
+
+def test_imports_exact_residual_tasks_edges_and_gates(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -125,7 +166,7 @@ def test_imports_exact_residual_tasks_edges_and_gates() -> None:
         session.commit()
 
         assert result.status == "IMPORTED"
-        assert result.residual_plan_id == RESIDUAL_PLAN_ID
+        assert result.residual_plan_id == artifacts.dry_run.lock.residual_plan_id
         assert result.tasks_imported == 7
         assert result.dependency_edges_imported == 6
         assert result.human_gates_bound == 2
@@ -138,9 +179,9 @@ def test_imports_exact_residual_tasks_edges_and_gates() -> None:
         assert session.scalar(select(func.count()).select_from(RuntimeHumanGate).where(RuntimeHumanGate.id.like("GATE-RES-%"))) == 2
 
 
-def test_duplicate_residual_import_is_idempotent() -> None:
+def test_duplicate_residual_import_is_idempotent(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -163,9 +204,9 @@ def test_duplicate_residual_import_is_idempotent() -> None:
         assert session.scalar(select(func.count()).select_from(RuntimeHumanGate).where(RuntimeHumanGate.id.like("GATE-RES-%"))) == 2
 
 
-def test_residual_mismatch_causes_conflict() -> None:
+def test_residual_mismatch_causes_conflict(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -192,9 +233,9 @@ def test_residual_mismatch_causes_conflict() -> None:
         assert "residual task mismatch:RES-C05-EVIDENCE" in conflict.blockers
 
 
-def test_hash_mismatch_blocks_import() -> None:
+def test_hash_mismatch_blocks_import(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
     altered = replace(artifacts, dry_run=replace(artifacts.dry_run, residual_plan_hash="0" * 64))
 
     with factory() as session:
@@ -211,9 +252,9 @@ def test_hash_mismatch_blocks_import() -> None:
         assert len(session.scalars(select(Task).where(Task.id.like("RES-%"))).all()) == 0
 
 
-def test_gated_c08_tasks_remain_blocked_and_evidence_type_is_preserved() -> None:
+def test_gated_c08_tasks_remain_blocked_and_evidence_type_is_preserved(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -239,9 +280,9 @@ def test_gated_c08_tasks_remain_blocked_and_evidence_type_is_preserved() -> None
         assert json.loads(binding.implements_json)["task_type"] == "EVIDENCE_CLOSURE_TASK"
 
 
-def test_runtime_manifest_includes_residual_tasks_for_future_execution() -> None:
+def test_runtime_manifest_includes_residual_tasks_for_future_execution(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -258,9 +299,10 @@ def test_runtime_manifest_includes_residual_tasks_for_future_execution() -> None
     assert "Acceptance criteria:" in (manifest_tasks["RES-C05-EVIDENCE"].objective or "")
 
 
-def test_guarded_dry_run_has_no_execution_or_lease_side_effects() -> None:
+def test_guarded_dry_run_has_no_execution_or_lease_side_effects(tmp_path: Path, monkeypatch: Any) -> None:
     factory = session_factory()
-    artifacts = load_residual_runtime_handoff_artifacts()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
+    patch_guarded_dry_run_environment(monkeypatch)
 
     with factory() as session:
         seed_prior_plan_complete(session)
@@ -277,6 +319,31 @@ def test_guarded_dry_run_has_no_execution_or_lease_side_effects() -> None:
         assert result.guarded_dry_run["likely_next_task_id"] == "RES-C05-EVIDENCE"
         assert session.scalar(select(func.count()).select_from(Execution).where(Execution.task_id.like("RES-%"))) == 0
         assert session.scalar(select(func.count()).select_from(TaskLease).where(TaskLease.task_id.like("RES-%"))) == 0
+
+
+def test_guarded_dry_run_does_not_require_worktree_local_virtualenv(tmp_path: Path, monkeypatch: Any) -> None:
+    factory = session_factory()
+    artifacts = load_test_artifacts(tmp_path, monkeypatch)
+    isolated_worktree = tmp_path / "isolated-worktree"
+    isolated_worktree.mkdir()
+    assert not (isolated_worktree / "aient" / "bin" / "python").exists()
+    patch_guarded_dry_run_environment(monkeypatch)
+
+    with factory() as session:
+        seed_prior_plan_complete(session)
+        result = ResidualRuntimePlanImporter().import_residual_plan(
+            session,
+            artifacts,
+            require_clean_git=False,
+            require_codex_command=False,
+            include_guarded_dry_run=True,
+            repository_root=isolated_worktree,
+        )
+
+        assert result.ok
+        assert result.guarded_dry_run is not None
+        assert result.guarded_dry_run["likely_next_task_id"] == "RES-C05-EVIDENCE"
+        assert session.scalar(select(func.count()).select_from(Execution).where(Execution.task_id.like("RES-%"))) == 0
 
 
 def _hash(value: str) -> str:

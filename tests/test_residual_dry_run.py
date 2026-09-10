@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from ai_ent.residual_feasibility import (
     default_residual_feasibility_policy,
     evaluate_residual_plan_feasibility,
 )
+from tests.residual_artifact_fixtures import write_test_pir_artifact
 
 
 def environment(*, codex_configured: bool = True, docker_available: bool = True) -> EnvironmentProfile:
@@ -29,7 +31,7 @@ def environment(*, codex_configured: bool = True, docker_available: bool = True)
         docker_compose_available=True,
         codex_command_configured=codex_configured,
         codex_executable_available=True,
-        python_path=str(Path("aient/bin/python")),
+        python_path=sys.executable,
         python_available=True,
         ram_mb=8192,
         gpu_available=False,
@@ -38,8 +40,8 @@ def environment(*, codex_configured: bool = True, docker_available: bool = True)
     )
 
 
-def test_residual_dry_run_simulates_exact_plan_shape() -> None:
-    dry_run = dry_run_residual_plan(feasibility=None)
+def test_residual_dry_run_simulates_exact_plan_shape(tmp_path: Path) -> None:
+    dry_run = dry_run_residual_plan(feasibility=None, pir_artifact=write_test_pir_artifact(tmp_path))
 
     assert dry_run.dry_runner_version == RESIDUAL_DRY_RUNNER_VERSION
     assert dry_run.task_count == 7
@@ -53,10 +55,12 @@ def test_residual_dry_run_simulates_exact_plan_shape() -> None:
     assert len(dry_run.lock.human_gate_definitions) == 2
 
 
-def test_residual_dry_run_preserves_task_identity_and_fingerprints() -> None:
-    plan = generate_residual_implementation_plan()
+def test_residual_dry_run_preserves_task_identity_and_fingerprints(tmp_path: Path) -> None:
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
     dry_run = dry_run_residual_plan(
         plan=plan,
+        pir_artifact=pir_artifact,
         expected_residual_plan_hash=plan.residual_plan_hash,
     )
     preview_by_id = {preview.task_id: preview for preview in dry_run.import_preview}
@@ -68,8 +72,8 @@ def test_residual_dry_run_preserves_task_identity_and_fingerprints() -> None:
     assert preview_by_id["RES-C05-EVIDENCE"].residual_gap_refs == ("PIR-GAP-C05",)
 
 
-def test_residual_dry_run_keeps_evidence_tasks_as_evidence_closure() -> None:
-    dry_run = dry_run_residual_plan()
+def test_residual_dry_run_keeps_evidence_tasks_as_evidence_closure(tmp_path: Path) -> None:
+    dry_run = dry_run_residual_plan(pir_artifact=write_test_pir_artifact(tmp_path))
 
     assert {item["task_id"] for item in dry_run.evidence_semantics} == {
         "RES-C05-EVIDENCE",
@@ -80,9 +84,10 @@ def test_residual_dry_run_keeps_evidence_tasks_as_evidence_closure() -> None:
     assert all("do not rebuild existing runtime behavior" in item["behavior"] for item in dry_run.evidence_semantics)
 
 
-def test_c08_verification_cannot_run_before_implementation() -> None:
-    plan = generate_residual_implementation_plan()
-    dry_run = dry_run_residual_plan(plan=plan)
+def test_c08_verification_cannot_run_before_implementation(tmp_path: Path) -> None:
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
+    dry_run = dry_run_residual_plan(plan=plan, pir_artifact=pir_artifact)
     dependencies = {task.id: task.depends_on for task in plan.tasks}
 
     assert dry_run.c08_sequence == ("RES-C08-CONTRACT", "RES-C08-SERVICE", "RES-C08-VERIFICATION")
@@ -91,8 +96,8 @@ def test_c08_verification_cannot_run_before_implementation() -> None:
     assert dry_run.ok
 
 
-def test_gated_c08_task_cannot_bypass_approval() -> None:
-    dry_run = dry_run_residual_plan()
+def test_gated_c08_task_cannot_bypass_approval(tmp_path: Path) -> None:
+    dry_run = dry_run_residual_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     gated_batches = [batch for batch in dry_run.execution_batches if batch.required_human_gates]
 
     assert [batch.required_human_gates for batch in gated_batches] == [
@@ -103,8 +108,8 @@ def test_gated_c08_task_cannot_bypass_approval() -> None:
     assert gated_batches[1].task_ids == ("RES-C08-SERVICE",)
 
 
-def test_missing_codex_command_is_execution_prerequisite_not_error() -> None:
-    plan = generate_residual_implementation_plan()
+def test_missing_codex_command_is_execution_prerequisite_not_error(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(codex_configured=False),
@@ -120,7 +125,8 @@ def test_missing_codex_command_is_execution_prerequisite_not_error() -> None:
 
 
 def test_missing_technical_dependency_blocks_freeze(tmp_path: Path) -> None:
-    plan = generate_residual_implementation_plan()
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(docker_available=False),
@@ -134,6 +140,7 @@ def test_missing_technical_dependency_blocks_freeze(tmp_path: Path) -> None:
     try:
         freeze_residual_plan(
             output_dir=tmp_path / "compiled",
+            pir_artifact=pir_artifact,
             expected_residual_plan_hash="0" * 64,
         )
     except ValueError as exc:
@@ -142,17 +149,18 @@ def test_missing_technical_dependency_blocks_freeze(tmp_path: Path) -> None:
         raise AssertionError("freeze_residual_plan should reject ERROR findings")
 
 
-def test_expected_residual_plan_hash_mismatch_invalidates_plan() -> None:
-    plan = generate_residual_implementation_plan()
-    dry_run = dry_run_residual_plan(plan=plan, expected_residual_plan_hash="0" * 64)
+def test_expected_residual_plan_hash_mismatch_invalidates_plan(tmp_path: Path) -> None:
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
+    dry_run = dry_run_residual_plan(plan=plan, pir_artifact=pir_artifact, expected_residual_plan_hash="0" * 64)
 
     assert not dry_run.ok
     assert dry_run.frozen_plan_state == "INVALIDATED"
     assert any(finding.finding_id == "RDF-EXPECTED-RESIDUAL-PLAN-HASH" for finding in dry_run.findings)
 
 
-def test_task_fingerprint_change_changes_residual_dry_run_hash() -> None:
-    plan = generate_residual_implementation_plan()
+def test_task_fingerprint_change_changes_residual_dry_run_hash(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(plan, environment(), default_residual_feasibility_policy(plan))
     original = dry_run_evaluated_residual_plan(plan, evaluation)
     changed_task = replace(plan.tasks[0], fingerprint="changed")
@@ -168,13 +176,16 @@ def test_task_fingerprint_change_changes_residual_dry_run_hash() -> None:
 
 
 def test_residual_dry_run_and_freeze_are_byte_identical(tmp_path: Path) -> None:
-    plan = generate_residual_implementation_plan()
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
     first = freeze_residual_plan(
         output_dir=tmp_path / "compiled-a",
+        pir_artifact=pir_artifact,
         expected_residual_plan_hash=plan.residual_plan_hash,
     )
     second = freeze_residual_plan(
         output_dir=tmp_path / "compiled-b",
+        pir_artifact=pir_artifact,
         expected_residual_plan_hash=plan.residual_plan_hash,
     )
 
@@ -191,8 +202,8 @@ def test_residual_dry_run_and_freeze_are_byte_identical(tmp_path: Path) -> None:
     assert (tmp_path / "compiled-a" / "residual-plan-freeze.json").exists()
 
 
-def test_prior_plan_coexistence_and_recovery_are_recorded() -> None:
-    dry_run = dry_run_residual_plan()
+def test_prior_plan_coexistence_and_recovery_are_recorded(tmp_path: Path) -> None:
+    dry_run = dry_run_residual_plan(pir_artifact=write_test_pir_artifact(tmp_path))
 
     assert any("PLAN-1a75a2e3c5a7 v1" in item for item in dry_run.prior_plan_coexistence)
     assert {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from ai_ent.residual_feasibility import (
     evaluate_residual_plan_feasibility,
     write_residual_feasibility,
 )
+from tests.residual_artifact_fixtures import write_test_pir_artifact
 
 
 def environment(*, codex_configured: bool = True, ram_mb: int | None = 8192) -> EnvironmentProfile:
@@ -24,7 +26,7 @@ def environment(*, codex_configured: bool = True, ram_mb: int | None = 8192) -> 
         docker_compose_available=True,
         codex_command_configured=codex_configured,
         codex_executable_available=True,
-        python_path=str(Path("aient/bin/python")),
+        python_path=sys.executable,
         python_available=True,
         ram_mb=ram_mb,
         gpu_available=False,
@@ -33,8 +35,8 @@ def environment(*, codex_configured: bool = True, ram_mb: int | None = 8192) -> 
     )
 
 
-def test_all_seven_residual_tasks_are_evaluated() -> None:
-    plan = generate_residual_implementation_plan()
+def test_all_seven_residual_tasks_are_evaluated(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -45,8 +47,8 @@ def test_all_seven_residual_tasks_are_evaluated() -> None:
     assert evaluation.as_dict()["summary"]["total_tasks"] == 7
 
 
-def test_evidence_only_tasks_remain_evidence_only_when_source_proof_exists() -> None:
-    plan = generate_residual_implementation_plan()
+def test_evidence_only_tasks_remain_evidence_only_when_source_proof_exists(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -65,7 +67,7 @@ def test_evidence_only_tasks_remain_evidence_only_when_source_proof_exists() -> 
 
 
 def test_evidence_only_task_flags_inconsistency_when_source_proof_is_missing(tmp_path: Path) -> None:
-    plan = generate_residual_implementation_plan()
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -79,8 +81,8 @@ def test_evidence_only_task_flags_inconsistency_when_source_proof_is_missing(tmp
     assert any("evidence-only residual lacks source proof file" in blocker for blocker in result.blockers)
 
 
-def test_c08_missing_model_profile_blocks_and_propagates() -> None:
-    plan = generate_residual_implementation_plan()
+def test_c08_missing_model_profile_blocks_and_propagates(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     policy = default_residual_feasibility_policy(plan)
     policy = replace(policy, model_profiles=("ARCHITECTURE_REASONING", "CODING_STANDARD", "SECURITY_REVIEW"))
 
@@ -94,8 +96,8 @@ def test_c08_missing_model_profile_blocks_and_propagates() -> None:
     assert "BLOCKED_BY_DEPENDENCY:RES-C08-SERVICE" in verification.blockers
 
 
-def test_c08_missing_verification_profile_blocks() -> None:
-    plan = generate_residual_implementation_plan()
+def test_c08_missing_verification_profile_blocks(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     policy = default_residual_feasibility_policy(plan)
     policy = replace(policy, verification_profiles=("STANDARD_REGRESSION",))
 
@@ -106,8 +108,8 @@ def test_c08_missing_verification_profile_blocks() -> None:
     assert "verification profile FULL_REGRESSION is missing" in contract.blockers
 
 
-def test_human_gated_high_risk_tasks_remain_unapproved() -> None:
-    plan = generate_residual_implementation_plan()
+def test_human_gated_high_risk_tasks_remain_unapproved(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -121,8 +123,8 @@ def test_human_gated_high_risk_tasks_remain_unapproved() -> None:
     assert len(evaluation.human_gates) == 2
 
 
-def test_safe_task_marked_feasible_and_conditional_codex_is_reported() -> None:
-    plan = generate_residual_implementation_plan()
+def test_safe_task_marked_feasible_and_conditional_codex_is_reported(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     policy = default_residual_feasibility_policy(plan)
     configured = evaluate_residual_plan_feasibility(plan, environment(codex_configured=True), policy)
     conditional = evaluate_residual_plan_feasibility(plan, environment(codex_configured=False), policy)
@@ -135,8 +137,8 @@ def test_safe_task_marked_feasible_and_conditional_codex_is_reported() -> None:
     assert conditional_task.conditions == ("set AIENT_CODEX_COMMAND before residual execution",)
 
 
-def test_high_risk_task_cannot_bypass_policy() -> None:
-    plan = generate_residual_implementation_plan()
+def test_high_risk_task_cannot_bypass_policy(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     policy = default_residual_feasibility_policy(plan)
     policy = replace(policy, guarded_allowed_risks=("LOW", "MEDIUM"))
 
@@ -147,8 +149,8 @@ def test_high_risk_task_cannot_bypass_policy() -> None:
     assert high.policy_decision == "PROHIBITED"
 
 
-def test_concurrency_reduced_on_write_scope_conflict() -> None:
-    plan = generate_residual_implementation_plan()
+def test_concurrency_reduced_on_write_scope_conflict(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     evaluation = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -160,11 +162,12 @@ def test_concurrency_reduced_on_write_scope_conflict() -> None:
 
 
 def test_repeat_evaluation_byte_identical_and_material_environment_changes_hash(tmp_path: Path) -> None:
-    first = write_residual_feasibility(output_dir=tmp_path / "compiled", repository_root=Path.cwd())
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    first = write_residual_feasibility(output_dir=tmp_path / "compiled", repository_root=Path.cwd(), pir_artifact=pir_artifact)
     first_bytes = (tmp_path / "compiled" / "residual-feasibility-report.json").read_bytes()
-    second = write_residual_feasibility(output_dir=tmp_path / "compiled", repository_root=Path.cwd())
+    second = write_residual_feasibility(output_dir=tmp_path / "compiled", repository_root=Path.cwd(), pir_artifact=pir_artifact)
 
-    plan = generate_residual_implementation_plan()
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
     constrained = evaluate_residual_plan_feasibility(
         plan,
         environment(ram_mb=512),

@@ -8,10 +8,11 @@ from ai_ent.residual_dag import (
     generate_residual_implementation_plan,
     write_residual_implementation_plan,
 )
+from tests.residual_artifact_fixtures import write_test_pir_artifact
 
 
-def test_c08_implementation_gap_produces_bounded_implementation_tasks() -> None:
-    plan = generate_residual_implementation_plan()
+def test_c08_implementation_gap_produces_bounded_implementation_tasks(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
 
     c08_tasks = [task for task in plan.tasks if "C08" in task.capabilities]
 
@@ -24,8 +25,8 @@ def test_c08_implementation_gap_produces_bounded_implementation_tasks() -> None:
     assert not any(task.id == "RES-C08-EVIDENCE" for task in plan.tasks)
 
 
-def test_evidence_gaps_do_not_become_code_implementation_tasks() -> None:
-    plan = generate_residual_implementation_plan()
+def test_evidence_gaps_do_not_become_code_implementation_tasks(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
 
     evidence_tasks = {
         task.capabilities[0]: task
@@ -38,8 +39,8 @@ def test_evidence_gaps_do_not_become_code_implementation_tasks() -> None:
     assert all("Do not implement new runtime behavior" in task.objective for task in evidence_tasks.values())
 
 
-def test_all_pir_gaps_are_covered_and_no_orphan_tasks_exist() -> None:
-    plan = generate_residual_implementation_plan()
+def test_all_pir_gaps_are_covered_and_no_orphan_tasks_exist(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     gap_ids = {task.gap_ids[0] for task in plan.tasks}
 
     assert gap_ids == {"PIR-GAP-C05", "PIR-GAP-C06", "PIR-GAP-C07", "PIR-GAP-C08", "PIR-GAP-C09"}
@@ -47,8 +48,8 @@ def test_all_pir_gaps_are_covered_and_no_orphan_tasks_exist() -> None:
     assert not any(finding.finding_id.endswith("-ORPHAN") for finding in plan.findings)
 
 
-def test_closed_capability_work_is_not_regenerated() -> None:
-    plan = generate_residual_implementation_plan()
+def test_closed_capability_work_is_not_regenerated(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
 
     generated_capabilities = {capability for task in plan.tasks for capability in task.capabilities}
 
@@ -57,9 +58,10 @@ def test_closed_capability_work_is_not_regenerated() -> None:
 
 
 def test_dependency_graph_waves_and_gates_are_deterministic(tmp_path: Path) -> None:
-    first = write_residual_implementation_plan(output_dir=tmp_path / "compiled")
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    first = write_residual_implementation_plan(output_dir=tmp_path / "compiled", pir_artifact=pir_artifact)
     first_bytes = (tmp_path / "compiled" / "residual-implementation-plan.json").read_bytes()
-    second = write_residual_implementation_plan(output_dir=tmp_path / "compiled")
+    second = write_residual_implementation_plan(output_dir=tmp_path / "compiled", pir_artifact=pir_artifact)
 
     assert first.residual_plan_hash == second.residual_plan_hash
     assert (tmp_path / "compiled" / "residual-implementation-plan.json").read_bytes() == first_bytes
@@ -69,8 +71,8 @@ def test_dependency_graph_waves_and_gates_are_deterministic(tmp_path: Path) -> N
 
 
 def test_material_pir_gap_change_changes_plan_hash(tmp_path: Path) -> None:
-    source = Path("artifacts/pir-001/PIR-001.json")
     target = tmp_path / "PIR-001.json"
+    source = write_test_pir_artifact(tmp_path)
     payload = json.loads(source.read_text(encoding="utf-8"))
     target.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     original = generate_residual_implementation_plan(pir_artifact=target)
@@ -83,8 +85,8 @@ def test_material_pir_gap_change_changes_plan_hash(tmp_path: Path) -> None:
 
 
 def test_invalid_residual_reference_is_rejected(tmp_path: Path) -> None:
-    source = Path("artifacts/pir-001/PIR-001.json")
     target = tmp_path / "not-pir.json"
+    source = write_test_pir_artifact(tmp_path)
     payload = json.loads(source.read_text(encoding="utf-8"))
     payload["gate_id"] = "OTHER"
     target.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")

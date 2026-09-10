@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from ai_ent.residual_plan_acceptance import (
     accept_residual_plan,
     write_residual_plan_acceptance,
 )
+from tests.residual_artifact_fixtures import write_test_pir_artifact
 
 
 def environment(*, codex_configured: bool = False) -> EnvironmentProfile:
@@ -28,7 +30,7 @@ def environment(*, codex_configured: bool = False) -> EnvironmentProfile:
         docker_compose_available=True,
         codex_command_configured=codex_configured,
         codex_executable_available=True,
-        python_path=str(Path("aient/bin/python")),
+        python_path=sys.executable,
         python_available=True,
         ram_mb=8192,
         gpu_available=False,
@@ -37,8 +39,8 @@ def environment(*, codex_configured: bool = False) -> EnvironmentProfile:
     )
 
 
-def test_residual_plan_acceptance_accepts_with_prerequisites() -> None:
-    plan = generate_residual_implementation_plan()
+def test_residual_plan_acceptance_accepts_with_prerequisites(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     feasibility = evaluate_residual_plan_feasibility(
         plan,
         environment(codex_configured=False),
@@ -68,8 +70,8 @@ def test_residual_plan_acceptance_accepts_with_prerequisites() -> None:
     assert "AIENT_CODEX_COMMAND must be configured before runtime import/execution" in gate.execution_prerequisites
 
 
-def test_residual_plan_acceptance_accepts_without_prerequisites_when_codex_configured() -> None:
-    plan = generate_residual_implementation_plan()
+def test_residual_plan_acceptance_accepts_without_prerequisites_when_codex_configured(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     feasibility = evaluate_residual_plan_feasibility(
         plan,
         environment(codex_configured=True),
@@ -92,8 +94,8 @@ def test_residual_plan_acceptance_accepts_without_prerequisites_when_codex_confi
     assert gate.execution_prerequisites == ()
 
 
-def test_residual_plan_acceptance_rejects_hash_drift() -> None:
-    plan = generate_residual_implementation_plan()
+def test_residual_plan_acceptance_rejects_hash_drift(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     feasibility = evaluate_residual_plan_feasibility(
         plan,
         environment(),
@@ -112,8 +114,8 @@ def test_residual_plan_acceptance_rejects_hash_drift() -> None:
     assert gate.recommendation == "REMEDIATION_REQUIRED"
 
 
-def test_residual_plan_acceptance_rejects_fingerprint_mismatch() -> None:
-    plan = generate_residual_implementation_plan()
+def test_residual_plan_acceptance_rejects_fingerprint_mismatch(tmp_path: Path) -> None:
+    plan = generate_residual_implementation_plan(pir_artifact=write_test_pir_artifact(tmp_path))
     changed_task = replace(plan.tasks[0], fingerprint="changed")
     changed_plan = replace(plan, tasks=(changed_task, *plan.tasks[1:]))
     feasibility = evaluate_residual_plan_feasibility(
@@ -142,9 +144,11 @@ def test_residual_plan_acceptance_rejects_fingerprint_mismatch() -> None:
 
 
 def test_write_residual_plan_acceptance_artifacts(tmp_path: Path) -> None:
-    plan = generate_residual_implementation_plan()
+    pir_artifact = write_test_pir_artifact(tmp_path)
+    plan = generate_residual_implementation_plan(pir_artifact=pir_artifact)
     gate = write_residual_plan_acceptance(
         artifacts_dir=tmp_path / "rpg-001",
+        pir_artifact=pir_artifact,
         expected_residual_plan_hash=plan.residual_plan_hash,
     )
 
