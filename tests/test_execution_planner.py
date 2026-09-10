@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import pytest
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -66,7 +65,6 @@ def test_cmp_004_acc_002_nfr_001_planner_boundary_is_deterministic() -> None:
 
 def test_acc_002_invalid_manifest_blocks_before_dag_generation(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     target = tmp_path / "manifest"
     _copy_manifest(MANIFEST_ROOT, target)
@@ -82,10 +80,18 @@ def test_acc_002_invalid_manifest_blocks_before_dag_generation(
     def fail_if_dag_generation_starts(*_: object, **__: object) -> object:
         raise AssertionError("task DAG generation ran before manifest validation passed")
 
-    monkeypatch.setattr(project_manifest, "_generated_task_specs", fail_if_dag_generation_starts)
+    original = project_manifest._generated_task_specs
+    project_manifest._generated_task_specs = fail_if_dag_generation_starts  # type: ignore[method-assign]
 
-    with pytest.raises(ValueError, match="project manifest validation failed"):
-        ExecutionPlannerService().plan(target, environment=_environment())
+    try:
+        try:
+            ExecutionPlannerService().plan(target, environment=_environment())
+        except ValueError as exc:
+            assert "project manifest validation failed" in str(exc)
+        else:
+            raise AssertionError("expected invalid manifest to block planning")
+    finally:
+        project_manifest._generated_task_specs = original  # type: ignore[method-assign]
 
 
 def test_acc_001_data_002_fr_004_acc_003_imported_plan_builds_bounded_worker_package(
@@ -150,13 +156,18 @@ def test_acc_001_data_002_fr_004_acc_003_imported_plan_builds_bounded_worker_pac
 def test_acc_003_worker_package_requires_frozen_runtime_import() -> None:
     factory = session_factory()
 
-    with factory() as session, pytest.raises(ValueError, match="valid frozen plan"):
-        ExecutionPlannerService().build_worker_package(
-            session,
-            task_id="IMPL-C17-CMP-004",
-            execution_id="exec-1",
-            project_id=DEFAULT_RUNTIME_PROJECT_ID,
-        )
+    with factory() as session:
+        try:
+            ExecutionPlannerService().build_worker_package(
+                session,
+                task_id="IMPL-C17-CMP-004",
+                execution_id="exec-1",
+                project_id=DEFAULT_RUNTIME_PROJECT_ID,
+            )
+        except ValueError as exc:
+            assert "valid frozen plan" in str(exc)
+        else:
+            raise AssertionError("expected missing frozen runtime import to block package planning")
 
 
 def _environment(*, codex_configured: bool = True) -> EnvironmentProfile:
