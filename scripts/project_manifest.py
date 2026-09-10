@@ -12,6 +12,7 @@ from ai_ent.post_implementation import (
     write_post_implementation_review,
     write_post_residual_implementation_review,
 )
+from ai_ent.product_decisions import record_prd_dec_001
 from ai_ent.product_feasibility import write_product_feasibility
 from ai_ent.product_plan_acceptance import (
     EXPECTED_PRODUCTIZATION_PLAN_HASH,
@@ -659,6 +660,45 @@ def product_feasibility(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def record_product_stack_decision(args: argparse.Namespace) -> int:
+    result = record_prd_dec_001(
+        plan_path=Path(args.plan_path),
+        ppa_path=Path(args.ppa_path),
+        pfe_path=Path(args.pfe_path),
+        artifacts_dir=Path(args.artifacts_dir),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        decided_by=args.decided_by,
+        expected_plan_hash=args.expected_plan_hash,
+        expected_pfe_hash=args.expected_pfe_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "decision_id": result.decision_id,
+                "decision_status": result.decision_status,
+                "decided_at": result.decided_at,
+                "accepted_stack": result.accepted_stack,
+                "accepted_product_plan_lineage": result.accepted_product_plan_lineage,
+                "prd_dec_002_state": result.prd_dec_002_state,
+                "prd_dec_003_state": result.prd_dec_003_state,
+                "implementation_tasks_created": result.implementation_tasks_created,
+                "implementation_executions": result.implementation_executions,
+                "decision_hash": result.decision_hash,
+                "artifact": str(
+                    Path(args.artifacts_dir) / "product-decisions" / "PRD-DEC-001.json"
+                ),
+                "findings": list(result.validation_findings),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -1153,6 +1193,38 @@ def build_parser() -> argparse.ArgumentParser:
     pfe_alias_parser.add_argument("--output-dir", default=".build/compiled")
     pfe_alias_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
     pfe_alias_parser.set_defaults(func=product_feasibility)
+
+    prd_dec_parser = subparsers.add_parser("record-product-stack-decision")
+    prd_dec_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    prd_dec_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    prd_dec_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    prd_dec_parser.add_argument("--artifacts-dir", default="artifacts")
+    prd_dec_parser.add_argument("--output-dir", default=".build/compiled")
+    prd_dec_parser.add_argument("--decided-by", default="operator")
+    prd_dec_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    prd_dec_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    prd_dec_parser.set_defaults(func=record_product_stack_decision)
+
+    prd_dec_alias_parser = subparsers.add_parser("prd-dec-001")
+    prd_dec_alias_parser.add_argument(
+        "--plan-path", default=".build/compiled/productization-plan.json"
+    )
+    prd_dec_alias_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    prd_dec_alias_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    prd_dec_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    prd_dec_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    prd_dec_alias_parser.add_argument("--decided-by", default="operator")
+    prd_dec_alias_parser.add_argument(
+        "--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH
+    )
+    prd_dec_alias_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    prd_dec_alias_parser.set_defaults(func=record_product_stack_decision)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
