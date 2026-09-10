@@ -17,7 +17,14 @@ from ai_ent.generator_orchestrator import (
     GeneratorContract,
     GeneratorOrchestratorService,
 )
-from ai_ent.persistence.models import Base, Execution, RuntimeHumanGate, TaskLease
+from ai_ent.persistence.models import (
+    Base,
+    Execution,
+    RuntimeHumanGate,
+    Task,
+    TaskDependency,
+    TaskLease,
+)
 from ai_ent.project_manifest import EnvironmentProfile
 
 MANIFEST_ROOT = Path("manifest/project/ai-ent")
@@ -284,6 +291,7 @@ def test_c20_approved_runtime_orchestration_builds_bounded_worker_package(
         gate = session.get(RuntimeHumanGate, f"GATE-{C20_TASK_ID}")
         assert gate is not None
         gate.status = "approved"
+        _mark_direct_dependencies_passed(session, C20_TASK_ID)
         session.flush()
 
         result = GeneratorOrchestratorService(planner=service).coordinate_runtime_task(
@@ -406,3 +414,13 @@ def _environment(*, codex_configured: bool = True) -> EnvironmentProfile:
         external_network="available",
         configured_secret_names=(),
     )
+
+
+def _mark_direct_dependencies_passed(session: Session, task_id: str) -> None:
+    dependency_ids = session.scalars(
+        select(TaskDependency.depends_on_task_id).where(TaskDependency.task_id == task_id)
+    ).all()
+    for dependency_id in dependency_ids:
+        task = session.get(Task, dependency_id)
+        assert task is not None
+        task.status = "passed"

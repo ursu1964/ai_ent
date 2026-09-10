@@ -19,12 +19,18 @@ from ai_ent.project_memory import (
     PROJECT_MEMORY_CONTRACT_VERSION,
     PROJECT_MEMORY_SCHEMA_VERSION,
     ProjectMemoryService,
-    ProjectMemorySnapshot,
 )
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
     RuntimePlanImporter,
-    RuntimePlanStatus,
+)
+from ai_ent.runtime_kernel import (
+    C20_RUNTIME_KERNEL_REQUIREMENTS,
+    C20_RUNTIME_STOP_CONDITIONS,
+    RUNTIME_KERNEL_CONTRACT_VERSION,
+    RUNTIME_KERNEL_OUTPUT_SCHEMA_VERSION,
+    RuntimeKernelEvaluation,
+    RuntimeKernelService,
 )
 
 GENERATOR_ORCHESTRATOR_CONTRACT_VERSION = "c20.1"
@@ -33,35 +39,8 @@ WORKER_PACKAGE_INTERFACE_ID = "IF-004"
 EVIDENCE_RECORDING_INTERFACE_ID = "IF-005"
 NON_AUTHORITATIVE_OUTPUT_STATE = "NON_AUTHORITATIVE"
 C18_GENERATOR_REQUIREMENTS = ("FR-005", "INT-002", "SEC-002")
-C20_GENERATOR_REQUIREMENTS = (
-    "ACC-001",
-    "ACC-003",
-    "DATA-002",
-    "DATA-003",
-    "FR-003",
-    "FR-004",
-    "FR-005",
-    "FR-006",
-    "NFR-002",
-    "NFR-003",
-    "NFR-004",
-    "OPS-001",
-    "OPS-002",
-    "OPS-003",
-    "SEC-001",
-    "SEC-002",
-    "SEC-003",
-)
-C20_STOP_CONDITIONS = (
-    "no_ready_task",
-    "pending_human_gate",
-    "reconciliation_required",
-    "failure_limit",
-    "time_limit",
-    "task_limit",
-    "crash_recovery_before_resume",
-    "runtime_error",
-)
+C20_GENERATOR_REQUIREMENTS = C20_RUNTIME_KERNEL_REQUIREMENTS
+C20_STOP_CONDITIONS = C20_RUNTIME_STOP_CONDITIONS
 
 GeneratorAdapterKind = Literal["model", "tool", "service"]
 GeneratorAuthority = Literal[
@@ -250,16 +229,6 @@ class GeneratorRuntimeEvidence:
 
 
 @dataclass(frozen=True)
-class RuntimeTaskContext:
-    requirements: tuple[str, ...]
-    capabilities: tuple[str, ...]
-    human_gate_ids: tuple[str, ...]
-    human_gate_state: str
-    plan_id: str | None
-    plan_version: str | None
-
-
-@dataclass(frozen=True)
 class GeneratorOrchestrationResult:
     contract_version: str
     schema_version: str
@@ -370,6 +339,7 @@ class GeneratorOrchestratorService:
         *,
         planner: ExecutionPlannerService | None = None,
         runtime_importer: RuntimePlanImporter | None = None,
+        runtime_kernel: RuntimeKernelService | None = None,
         project_memory: ProjectMemoryService | None = None,
         validator: DeterministicValidatorService | None = None,
         generator_contracts: tuple[GeneratorContract, ...] | None = None,
@@ -380,6 +350,11 @@ class GeneratorOrchestratorService:
         self.runtime_importer = runtime_importer or RuntimePlanImporter()
         self.project_memory = project_memory or ProjectMemoryService()
         self.validator = validator or DeterministicValidatorService()
+        self.runtime_kernel = runtime_kernel or RuntimeKernelService(
+            runtime_importer=self.runtime_importer,
+            project_memory=self.project_memory,
+            validator=self.validator,
+        )
         contracts = generator_contracts or default_generator_contracts()
         self.generator_contracts = tuple(sorted(contracts, key=lambda item: item.generator_id))
         self.contract_version = contract_version
@@ -476,40 +451,20 @@ class GeneratorOrchestratorService:
         elif "C20" not in contract.capabilities:
             blockers.append(f"generator contract does not declare C20 capability:{generator_id}")
 
-        runtime_status = self.runtime_importer.status(session, project_id=project_id)
-        snapshot: ProjectMemorySnapshot | None = None
-        task_context = RuntimeTaskContext(
-            requirements=(),
-            capabilities=(),
-            human_gate_ids=(),
-            human_gate_state="none",
-            plan_id=runtime_status.plan_id,
-            plan_version=runtime_status.plan_version,
+        kernel_evaluation = self.runtime_kernel.evaluate_task(
+            session,
+            task_id=task_id,
+            execution_id=execution_id,
+            project_id=project_id,
+            manifest_root=manifest_root,
         )
-        if runtime_status.import_status != "imported":
-            blockers.append(f"runtime plan is not imported:{project_id}")
-        else:
-            snapshot = self.project_memory.snapshot(session, project_id=project_id)
-            task_context = _runtime_task_context(snapshot, task_id, runtime_status)
-            if not task_context.requirements:
-                blockers.append(f"runtime task binding not found:{task_id}")
-            elif set(C20_GENERATOR_REQUIREMENTS) - set(task_context.requirements):
-                missing = sorted(set(C20_GENERATOR_REQUIREMENTS) - set(task_context.requirements))
-                blockers.append(f"C20 requirement coverage missing:{task_id}:{','.join(missing)}")
-            if "C20" not in task_context.capabilities:
-                blockers.append(f"runtime task does not implement C20:{task_id}")
-            if task_context.human_gate_state != "approved":
-                blockers.append(f"human approval required:{task_id}:{task_context.human_gate_state}")
-
-        validation = self.validator.validate(manifest_root)
-        if not validation.ok:
-            blockers.append("deterministic validation failed")
+        blockers.extend(kernel_evaluation.blockers)
 
         package_plan: WorkerPackagePlan | None = None
         work_orders: tuple[GeneratorWorkOrder, ...] = ()
         evidence_records: tuple[GeneratorEvidenceRecord, ...] = ()
         worker_package_plans: tuple[WorkerPackagePlan, ...] = ()
-        if contract is not None and not blockers:
+        if contract is not None and kernel_evaluation.worker_package_permitted and not blockers:
             try:
                 package_plan = self.planner.build_worker_package(
                     session,
@@ -529,24 +484,19 @@ class GeneratorOrchestratorService:
             worker_package_plans = (package_plan,)
 
         runtime_evidence = ()
-        if contract is not None and snapshot is not None:
+        if contract is not None:
             runtime_evidence = (
                 _runtime_evidence(
                     orchestration_id=orchestration_id,
                     project_id=project_id,
                     task_id=task_id,
                     execution_id=execution_id,
-                    runtime_status=runtime_status,
-                    snapshot=snapshot,
-                    validation_hash=validation.report_hash,
-                    task_context=task_context,
+                    kernel_evaluation=kernel_evaluation,
                     package_plan=package_plan,
                     work_order=work_orders[0] if work_orders else None,
                 ),
             )
 
-        requirements = task_context.requirements or C20_GENERATOR_REQUIREMENTS
-        capabilities = task_context.capabilities or ("C20",)
         return GeneratorOrchestrationResult(
             contract_version=self.contract_version,
             schema_version=self.schema_version,
@@ -556,8 +506,8 @@ class GeneratorOrchestratorService:
             work_orders=work_orders,
             worker_package_plans=worker_package_plans,
             evidence_records=evidence_records,
-            requirements_covered=requirements,
-            capabilities_covered=capabilities,
+            requirements_covered=kernel_evaluation.requirements_covered,
+            capabilities_covered=kernel_evaluation.capabilities_covered,
             runtime_evidence=runtime_evidence,
             blockers=tuple(sorted(blockers)),
         )
@@ -721,71 +671,30 @@ def _evidence_record(work_order: GeneratorWorkOrder) -> GeneratorEvidenceRecord:
     )
 
 
-def _runtime_task_context(
-    snapshot: ProjectMemorySnapshot,
-    task_id: str,
-    runtime_status: RuntimePlanStatus,
-) -> RuntimeTaskContext:
-    task_binding = next(
-        (
-            entry
-            for entry in snapshot.entries
-            if entry.source == "runtime-task-binding" and entry.task_id == task_id
-        ),
-        None,
-    )
-    implements = task_binding.payload.get("implements", {}) if task_binding is not None else {}
-    gates = tuple(
-        entry
-        for entry in snapshot.entries
-        if entry.source == "runtime-human-gate" and entry.task_id == task_id
-    )
-    gate_ids = tuple(sorted(str(entry.payload["gate_id"]) for entry in gates))
-    gate_states = {str(entry.payload.get("status", "")) for entry in gates}
-    if not gates or gate_states == {"approved"}:
-        gate_state = "approved"
-    elif "rejected" in gate_states:
-        gate_state = "rejected"
-    else:
-        gate_state = "pending"
-    return RuntimeTaskContext(
-        requirements=_string_tuple(implements.get("requirements", ())),
-        capabilities=_string_tuple(implements.get("capabilities", ())),
-        human_gate_ids=gate_ids,
-        human_gate_state=gate_state,
-        plan_id=runtime_status.plan_id,
-        plan_version=runtime_status.plan_version,
-    )
-
-
 def _runtime_evidence(
     *,
     orchestration_id: str,
     project_id: str,
     task_id: str,
     execution_id: str,
-    runtime_status: RuntimePlanStatus,
-    snapshot: ProjectMemorySnapshot,
-    validation_hash: str,
-    task_context: RuntimeTaskContext,
+    kernel_evaluation: RuntimeKernelEvaluation,
     package_plan: WorkerPackagePlan | None,
     work_order: GeneratorWorkOrder | None,
 ) -> GeneratorRuntimeEvidence:
-    status_payload = runtime_status.as_dict()
     payload = {
         "orchestration_id": orchestration_id,
         "project_id": project_id,
         "task_id": task_id,
         "execution_id": execution_id,
-        "plan_id": task_context.plan_id,
-        "plan_version": task_context.plan_version,
-        "runtime_status_hash": hashlib.sha256(canonical_bytes(status_payload)).hexdigest(),
-        "project_memory_hash": snapshot.memory_hash,
-        "deterministic_validation_hash": validation_hash,
-        "requirements_covered": list(task_context.requirements),
-        "capabilities_covered": list(task_context.capabilities),
-        "human_gate_ids": list(task_context.human_gate_ids),
-        "human_gate_state": task_context.human_gate_state,
+        "plan_id": kernel_evaluation.plan_id,
+        "plan_version": kernel_evaluation.plan_version,
+        "runtime_status_hash": kernel_evaluation.runtime_status_hash,
+        "project_memory_hash": kernel_evaluation.project_memory_hash,
+        "deterministic_validation_hash": kernel_evaluation.deterministic_validation_hash,
+        "requirements_covered": list(kernel_evaluation.requirements_covered),
+        "capabilities_covered": list(kernel_evaluation.capabilities_covered),
+        "human_gate_ids": list(kernel_evaluation.task_context.human_gate_ids),
+        "human_gate_state": kernel_evaluation.task_context.human_gate_state,
         "worker_package_hash": package_plan.package_hash if package_plan is not None else None,
         "work_order_input_hash": work_order.input_hash if work_order is not None else None,
     }
@@ -796,16 +705,16 @@ def _runtime_evidence(
         project_id=project_id,
         task_id=task_id,
         execution_id=execution_id,
-        plan_id=task_context.plan_id or "",
-        plan_version=task_context.plan_version or "",
-        runtime_status_hash=str(payload["runtime_status_hash"]),
-        project_memory_hash=snapshot.memory_hash,
-        deterministic_validation_hash=validation_hash,
-        requirements_covered=task_context.requirements,
-        capabilities_covered=task_context.capabilities,
+        plan_id=kernel_evaluation.plan_id,
+        plan_version=kernel_evaluation.plan_version,
+        runtime_status_hash=kernel_evaluation.runtime_status_hash,
+        project_memory_hash=kernel_evaluation.project_memory_hash,
+        deterministic_validation_hash=kernel_evaluation.deterministic_validation_hash,
+        requirements_covered=kernel_evaluation.requirements_covered,
+        capabilities_covered=kernel_evaluation.capabilities_covered,
         service_boundaries=_c20_service_boundaries(),
-        human_gate_ids=task_context.human_gate_ids,
-        human_gate_state=task_context.human_gate_state,
+        human_gate_ids=kernel_evaluation.task_context.human_gate_ids,
+        human_gate_state=kernel_evaluation.task_context.human_gate_state,
         stop_conditions=C20_STOP_CONDITIONS,
         worker_package_hash=package_plan.package_hash if package_plan is not None else None,
         work_order_input_hash=work_order.input_hash if work_order is not None else None,
@@ -823,8 +732,8 @@ def _c20_service_boundaries() -> tuple[GeneratorBoundary, ...]:
         GeneratorBoundary(
             service="runtime-kernel",
             interface_id=WORKER_PACKAGE_INTERFACE_ID,
-            contract_version=GENERATOR_ORCHESTRATOR_CONTRACT_VERSION,
-            schema_version=GENERATOR_ORCHESTRATOR_OUTPUT_SCHEMA_VERSION,
+            contract_version=RUNTIME_KERNEL_CONTRACT_VERSION,
+            schema_version=RUNTIME_KERNEL_OUTPUT_SCHEMA_VERSION,
         ),
         GeneratorBoundary(
             service="project-memory",
@@ -845,14 +754,6 @@ def _c20_service_boundaries() -> tuple[GeneratorBoundary, ...]:
             schema_version="deterministic-validation-report-v0.1",
         ),
     )
-
-
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    if isinstance(value, list | tuple):
-        return tuple(sorted(str(item) for item in value))
-    return ()
 
 
 def _orchestration_id(generator_id: str, task_id: str, execution_id: str) -> str:
