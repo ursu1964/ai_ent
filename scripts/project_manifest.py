@@ -23,6 +23,7 @@ from ai_ent.project_manifest import (
     write_implementation_plan,
     write_trace_validation,
 )
+from ai_ent.residual_dag import write_residual_implementation_plan
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
     RuntimePlanImporter,
@@ -399,6 +400,42 @@ def post_implementation_review(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def generate_residual_dag(args: argparse.Namespace) -> int:
+    plan = write_residual_implementation_plan(
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+    )
+    summary = plan.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "residual_plan_hash": plan.residual_plan_hash,
+                "generator_version": plan.generator_version,
+                "post_compiled_hash": plan.post_compiled_hash,
+                "post_capability_hash": plan.post_capability_hash,
+                "post_trace_hash": plan.post_trace_hash,
+                "pir_residual_gap_hash": plan.pir_residual_gap_hash,
+                "total_residual_tasks": summary["total_residual_tasks"],
+                "implementation_tasks": summary["implementation_tasks"],
+                "evidence_closure_tasks": summary["evidence_closure_tasks"],
+                "verification_tasks": summary["verification_tasks"],
+                "dependency_edges": summary["dependency_edges"],
+                "waves": summary["waves"],
+                "critical_path_length": summary["critical_path_length"],
+                "maximum_parallel_width": summary["maximum_parallel_width"],
+                "human_gates": summary["human_gates"],
+                "risk_distribution": summary["risk_distribution"],
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if plan.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -492,6 +529,12 @@ def build_parser() -> argparse.ArgumentParser:
     pir_parser.add_argument("--plan-id", default="PLAN-1a75a2e3c5a7")
     pir_parser.add_argument("--plan-version", default="1")
     pir_parser.set_defaults(func=post_implementation_review)
+
+    residual_parser = subparsers.add_parser("generate-residual-dag")
+    residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_parser.add_argument("--output-dir", default=".build/compiled")
+    residual_parser.set_defaults(func=generate_residual_dag)
     return parser
 
 
