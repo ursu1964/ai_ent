@@ -74,6 +74,8 @@ class ProductRuntimeImportResult:
     verified_product_commits: int
     deployment_actions: int
     execution_package_compatibility: dict[str, Any]
+    decision_readiness_proof: dict[str, Any]
+    human_gate_readiness_proof: dict[str, Any]
     guarded_dry_run_result: dict[str, Any] | None
     likely_next_task: str | None
     prior_plan_preservation: dict[str, Any]
@@ -93,10 +95,12 @@ class ProductRuntimeImportResult:
             "decision_blocked_tasks": list(self.decision_blocked_tasks),
             "deployment_actions": self.deployment_actions,
             "dependency_edges_imported": self.dependency_edges_imported,
+            "decision_readiness_proof": self.decision_readiness_proof,
             "execution_package_compatibility": self.execution_package_compatibility,
             "gated_tasks": list(self.gated_tasks),
             "gates_approved": self.gates_approved,
             "guarded_dry_run_result": self.guarded_dry_run_result,
+            "human_gate_readiness_proof": self.human_gate_readiness_proof,
             "human_gates_imported": self.human_gates_imported,
             "idempotent_rerun_result": self.idempotent_rerun_result,
             "import_id": self.import_id,
@@ -488,6 +492,8 @@ class ProductRuntimePlanImporter:
         task_ids = _product_task_ids(session, project_id)
         buckets = _readiness_buckets(session, self.readiness, task_ids)
         guarded = _guarded_dry_run(session, project_id, buckets) if include_guarded_dry_run else None
+        decision_proof = _decision_readiness_proof(session, self.readiness, task_ids)
+        gate_proof = _human_gate_readiness_proof(session, self.readiness, import_id, task_ids)
         return ProductRuntimeImportResult(
             status=status,
             import_id=import_id,
@@ -509,6 +515,8 @@ class ProductRuntimePlanImporter:
             verified_product_commits=_verified_commit_count(session, task_ids),
             deployment_actions=0,
             execution_package_compatibility=_execution_package_compatibility(artifacts.import_preview),
+            decision_readiness_proof=decision_proof,
+            human_gate_readiness_proof=gate_proof,
             guarded_dry_run_result=guarded,
             likely_next_task=guarded["likely_next_task"] if guarded else _likely_next(buckets),
             prior_plan_preservation=_prior_plan_preservation(session, project_id),
@@ -544,6 +552,8 @@ class ProductRuntimePlanImporter:
             verified_product_commits=0,
             deployment_actions=0,
             execution_package_compatibility={"compatible": False, "issues": list(blockers)},
+            decision_readiness_proof={"ok": False, "proofs": [], "issues": list(blockers)},
+            human_gate_readiness_proof={"ok": False, "proofs": [], "issues": list(blockers)},
             guarded_dry_run_result=None,
             likely_next_task=None,
             prior_plan_preservation={"original_plan_complete": False, "residual_plan_complete": False},
@@ -580,6 +590,8 @@ class ProductRuntimePlanImporter:
             verified_product_commits=0,
             deployment_actions=0,
             execution_package_compatibility={"compatible": False, "issues": list(blockers)},
+            decision_readiness_proof={"ok": False, "proofs": [], "issues": list(blockers)},
+            human_gate_readiness_proof={"ok": False, "proofs": [], "issues": list(blockers)},
             guarded_dry_run_result=None,
             likely_next_task=None,
             prior_plan_preservation=_prior_plan_preservation(session, project_id),
@@ -835,6 +847,111 @@ def _readiness_buckets(
         else:
             buckets["WAITING"].append(task_id)
     return {key: tuple(sorted(value)) for key, value in buckets.items()}
+
+
+def _decision_readiness_proof(
+    session: Session,
+    readiness: TaskReadinessService,
+    task_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    expected = {
+        "PRD-DEC-002": ("PRD-TASK-019", "PRD-TASK-023", "PRD-TASK-025"),
+        "PRD-DEC-003": ("PRD-TASK-020", "PRD-TASK-023", "PRD-TASK-025"),
+    }
+    proofs: list[dict[str, Any]] = []
+    for decision_id, affected_tasks in expected.items():
+        for task_id in affected_tasks:
+            if task_id not in task_ids:
+                proofs.append(
+                    {
+                        "decision_id": decision_id,
+                        "task_id": task_id,
+                        "result": "FAIL",
+                        "readiness": "NOT_IMPORTED",
+                    }
+                )
+                continue
+            nested = session.begin_nested()
+            try:
+                _satisfy_direct_dependencies(session, task_id)
+                _approve_direct_task_gates(session, task_id)
+                task = session.get(Task, task_id)
+                if task is not None:
+                    task.status = "pending"
+                session.flush()
+                decision = readiness.evaluate_task(session, task_id)
+                proofs.append(
+                    {
+                        "decision_id": decision_id,
+                        "task_id": task_id,
+                        "result": "PASS" if decision.status == "DECISION_BLOCKED" else "FAIL",
+                        "readiness": decision.status,
+                        "reasons": list(decision.reasons),
+                    }
+                )
+            finally:
+                nested.rollback()
+    return {
+        "ok": all(proof["result"] == "PASS" for proof in proofs),
+        "synthetic_condition": "direct task dependencies passed and direct task gates approved in rolled-back savepoints",
+        "proofs": proofs,
+    }
+
+
+def _human_gate_readiness_proof(
+    session: Session,
+    readiness: TaskReadinessService,
+    import_id: str,
+    task_ids: tuple[str, ...],
+) -> dict[str, Any]:
+    gate_rows = session.execute(
+        select(RuntimeHumanGate.id, RuntimeHumanGate.task_id)
+        .where(RuntimeHumanGate.import_id == import_id, RuntimeHumanGate.status == "pending")
+        .order_by(RuntimeHumanGate.id)
+    ).all()
+    proofs: list[dict[str, Any]] = []
+    for gate_id, task_id in gate_rows:
+        if task_id not in task_ids:
+            proofs.append({"gate_id": gate_id, "task_id": task_id, "result": "FAIL", "readiness": "NOT_IMPORTED"})
+            continue
+        nested = session.begin_nested()
+        try:
+            _satisfy_direct_dependencies(session, task_id)
+            task = session.get(Task, task_id)
+            if task is not None:
+                task.status = "pending"
+            session.flush()
+            decision = readiness.evaluate_task(session, task_id)
+            proofs.append(
+                {
+                    "gate_id": gate_id,
+                    "task_id": task_id,
+                    "result": "PASS"
+                    if decision.status == "NOT_SCHEDULABLE" and "pending_human_gate" in decision.reasons
+                    else "FAIL",
+                    "readiness": decision.status,
+                    "reasons": list(decision.reasons),
+                }
+            )
+        finally:
+            nested.rollback()
+    return {
+        "ok": all(proof["result"] == "PASS" for proof in proofs),
+        "synthetic_condition": "direct task dependencies passed in rolled-back savepoints while gates remained pending",
+        "proofs": proofs,
+    }
+
+
+def _satisfy_direct_dependencies(session: Session, task_id: str) -> None:
+    for dependency in session.scalars(select(TaskDependency).where(TaskDependency.task_id == task_id)).all():
+        dependency_task = session.get(Task, dependency.depends_on_task_id)
+        if dependency_task is not None:
+            dependency_task.status = "passed"
+
+
+def _approve_direct_task_gates(session: Session, task_id: str) -> None:
+    for gate in session.scalars(select(RuntimeHumanGate).where(RuntimeHumanGate.task_id == task_id)).all():
+        gate.status = "approved"
 
 
 def _guarded_dry_run(session: Session, project_id: str, buckets: dict[str, tuple[str, ...]]) -> dict[str, Any]:
