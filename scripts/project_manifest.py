@@ -26,6 +26,12 @@ from ai_ent.product_plan_final_acceptance import (
     EXPECTED_PRODUCT_DRY_RUN_HASH,
     write_frozen_product_plan_acceptance,
 )
+from ai_ent.product_runtime_handoff import (
+    EXPECTED_PPG_ACCEPTANCE_HASH,
+    ProductRuntimePlanImporter,
+    load_product_runtime_handoff_artifacts,
+    write_product_runtime_handoff_evidence,
+)
 from ai_ent.productization_plan import write_productization_plan
 from ai_ent.project_manifest import (
     compile_project_manifest,
@@ -811,6 +817,37 @@ def product_plan_final_acceptance(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def import_product_plan(args: argparse.Namespace) -> int:
+    artifacts = load_product_runtime_handoff_artifacts(
+        product_plan_path=Path(args.plan_path),
+        import_preview_path=Path(args.import_preview_path),
+        lock_path=Path(args.lock_path),
+        ppg_path=Path(args.ppg_path),
+        pdf_path=Path(args.pdf_path),
+    )
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = ProductRuntimePlanImporter().import_product_plan(
+                session,
+                artifacts,
+                runtime_project_id=args.project,
+                repository_root=Path.cwd(),
+                require_codex_command=args.require_codex_command,
+                include_guarded_dry_run=args.guarded_dry_run,
+            )
+            write_product_runtime_handoff_evidence(
+                result,
+                artifacts_dir=Path(args.artifacts_dir),
+                repository_root=Path.cwd(),
+            )
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+            return 0 if result.ok else 1
+    finally:
+        database.dispose()
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -1441,6 +1478,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ppg_alias_parser.add_argument("--expected-pdf-hash", default=EXPECTED_PRODUCT_DRY_RUN_HASH)
     ppg_alias_parser.set_defaults(func=product_plan_final_acceptance)
+
+    phi_parser = subparsers.add_parser("import-product-plan")
+    phi_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    phi_parser.add_argument(
+        "--import-preview-path", default=".build/compiled/product-task-import-preview.json"
+    )
+    phi_parser.add_argument("--lock-path", default=".build/compiled/product-plan.lock")
+    phi_parser.add_argument("--ppg-path", default="artifacts/ppg-001/PPG-001.json")
+    phi_parser.add_argument("--pdf-path", default="artifacts/pdf-001/PDF-001.json")
+    phi_parser.add_argument("--artifacts-dir", default="artifacts")
+    phi_parser.add_argument("--env-file", default=".env")
+    phi_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    phi_parser.add_argument("--guarded-dry-run", action="store_true")
+    phi_parser.add_argument("--require-codex-command", action="store_true")
+    phi_parser.add_argument("--expected-ppg-acceptance-hash", default=EXPECTED_PPG_ACCEPTANCE_HASH)
+    phi_parser.set_defaults(func=import_product_plan)
+
+    phi_alias_parser = subparsers.add_parser("phi-001")
+    phi_alias_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    phi_alias_parser.add_argument(
+        "--import-preview-path", default=".build/compiled/product-task-import-preview.json"
+    )
+    phi_alias_parser.add_argument("--lock-path", default=".build/compiled/product-plan.lock")
+    phi_alias_parser.add_argument("--ppg-path", default="artifacts/ppg-001/PPG-001.json")
+    phi_alias_parser.add_argument("--pdf-path", default="artifacts/pdf-001/PDF-001.json")
+    phi_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    phi_alias_parser.add_argument("--env-file", default=".env")
+    phi_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    phi_alias_parser.add_argument("--guarded-dry-run", action="store_true")
+    phi_alias_parser.add_argument("--require-codex-command", action="store_true")
+    phi_alias_parser.add_argument("--expected-ppg-acceptance-hash", default=EXPECTED_PPG_ACCEPTANCE_HASH)
+    phi_alias_parser.set_defaults(func=import_product_plan)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")

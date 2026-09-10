@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ai_ent.persistence.models import RuntimeHumanGate, Task, TaskDependency, TaskLease
+from ai_ent.persistence.models import (
+    RuntimeHumanGate,
+    RuntimeTaskPlanBinding,
+    Task,
+    TaskDependency,
+    TaskLease,
+)
 from ai_ent.persistence.repositories.tasks import TaskRepository
 from ai_ent.scheduler.claiming import database_now
 
@@ -15,6 +22,7 @@ ReadinessStatus = Literal[
     "WAITING_DEPENDENCIES",
     "BLOCKED_DEPENDENCY",
     "NOT_SCHEDULABLE",
+    "DECISION_BLOCKED",
     "TERMINAL",
     "RUNNING",
     "ALREADY_LEASED",
@@ -48,6 +56,7 @@ class _ProjectGraph:
     active_leased_task_ids: frozenset[str] = frozenset()
     cycle_tasks: frozenset[str] = frozenset()
     pending_gate_task_ids: frozenset[str] = frozenset()
+    unresolved_decisions_by_task: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 class TaskReadinessService:
@@ -157,6 +166,15 @@ class TaskReadinessService:
                 waiting_dependencies=tuple(waiting),
             )
 
+        unresolved_decisions = graph.unresolved_decisions_by_task.get(task_id, ())
+        if unresolved_decisions:
+            return ReadinessDecision(
+                task_id=task_id,
+                status="DECISION_BLOCKED",
+                reasons=tuple(f"unresolved_decision:{decision_id}" for decision_id in unresolved_decisions),
+                dependencies=tuple(sorted(dependencies)),
+            )
+
         return ReadinessDecision(
             task_id=task_id,
             status="READY",
@@ -196,12 +214,14 @@ class TaskReadinessService:
                 .where(Task.project_id == project_id, RuntimeHumanGate.status == "pending")
             ).all()
         )
+        unresolved_decisions_by_task = _unresolved_decisions_by_task(session, project_id)
         return _ProjectGraph(
             tasks=tasks,
             dependencies=dependencies,
             active_leased_task_ids=frozenset(active_leased_task_ids),
             cycle_tasks=frozenset(_cycle_nodes(dependencies)),
             pending_gate_task_ids=frozenset(pending_gate_task_ids),
+            unresolved_decisions_by_task=unresolved_decisions_by_task,
         )
 
 
@@ -227,3 +247,32 @@ def _cycle_nodes(dependencies: dict[str, set[str]]) -> set[str]:
     for task_id in dependencies:
         visit(task_id, [task_id])
     return cycle_members
+
+
+def _unresolved_decisions_by_task(session: Session, project_id: str) -> dict[str, tuple[str, ...]]:
+    unresolved: dict[str, tuple[str, ...]] = {}
+    rows = session.execute(
+        select(RuntimeTaskPlanBinding.task_id, RuntimeTaskPlanBinding.acceptance_json)
+        .join(Task, RuntimeTaskPlanBinding.task_id == Task.id)
+        .where(Task.project_id == project_id)
+    )
+    for task_id, acceptance_json in rows:
+        try:
+            payload = json.loads(acceptance_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        required = payload.get("required_decisions", [])
+        states = payload.get("decision_states", {})
+        if not isinstance(required, list) or not isinstance(states, dict):
+            continue
+        decision_ids = []
+        for marker in required:
+            decision_id = str(marker).removeprefix("DECISION_REQUIRED:")
+            state = states.get(decision_id, {})
+            if isinstance(state, dict) and str(state.get("state", "")).startswith("UNRESOLVED_"):
+                decision_ids.append(decision_id)
+        if decision_ids:
+            unresolved[task_id] = tuple(sorted(set(decision_ids)))
+    return unresolved
