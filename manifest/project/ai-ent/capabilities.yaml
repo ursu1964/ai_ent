@@ -38,6 +38,10 @@ capabilities:
     source_refs: [R5]
     depends_on: [C02, C03]
     evidence_refs:
+      - BEAG-001:src/ai_ent/manifest_compiler.py
+      - BEAG-001:src/ai_ent/project_manifest.py
+      - BEAG-001:tests/test_manifest_compiler.py
+      - BEAG-001:tests/test_project_manifest.py
       - BEAG-001:pytest-regression-suite
   - id: C06
     name: Universal artifact generation framework

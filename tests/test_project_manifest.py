@@ -104,6 +104,19 @@ def test_compile_project_manifest_is_repeatable() -> None:
     assert first.compiled.source_metadata["source_file_count"] == 30
 
 
+def test_c05_evidence_gap_maps_to_existing_accepted_source_and_tests() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+    by_id = {str(capability["id"]): capability for capability in compiled.capabilities}
+
+    assert set(by_id["C05"]["evidence_refs"]) >= {
+        "BEAG-001:src/ai_ent/manifest_compiler.py",
+        "BEAG-001:src/ai_ent/project_manifest.py",
+        "BEAG-001:tests/test_manifest_compiler.py",
+        "BEAG-001:tests/test_project_manifest.py",
+        "BEAG-001:pytest-regression-suite",
+    }
+
+
 def test_compiled_project_retains_source_provenance() -> None:
     compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
 
