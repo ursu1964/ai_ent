@@ -117,6 +117,21 @@ def test_c05_evidence_gap_maps_to_existing_accepted_source_and_tests() -> None:
     }
 
 
+def test_c06_evidence_gap_maps_to_existing_source_tests_and_runtime_evidence() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+    by_id = {str(capability["id"]): capability for capability in compiled.capabilities}
+
+    assert set(by_id["C06"]["evidence_refs"]) >= {
+        "BEAG-001:src/ai_ent/generator_orchestrator.py",
+        "BEAG-001:src/ai_ent/deterministic_validator.py",
+        "BEAG-001:tests/test_generator_orchestrator.py",
+        "BEAG-001:tests/test_deterministic_validator.py",
+        "BEAG-001:scope-and-prohibited-path-checks",
+        "BEAG-001:guarded-codex-execution",
+        "BEAG-001:pytest-regression-suite",
+    }
+
+
 def test_compiled_project_retains_source_provenance() -> None:
     compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
 

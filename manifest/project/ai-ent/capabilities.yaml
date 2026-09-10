@@ -51,7 +51,13 @@ capabilities:
     source_refs: [R6]
     depends_on: [C05]
     evidence_refs:
+      - BEAG-001:src/ai_ent/generator_orchestrator.py
+      - BEAG-001:src/ai_ent/deterministic_validator.py
+      - BEAG-001:tests/test_generator_orchestrator.py
+      - BEAG-001:tests/test_deterministic_validator.py
       - BEAG-001:scope-and-prohibited-path-checks
+      - BEAG-001:guarded-codex-execution
+      - BEAG-001:pytest-regression-suite
   - id: C07
     name: Universal execution and runtime model
     status: REQUIRED
