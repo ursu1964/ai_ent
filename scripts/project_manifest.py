@@ -51,6 +51,7 @@ from ai_ent.runtime_handoff import (
     RuntimePlanImporter,
     load_runtime_handoff_artifacts,
 )
+from ai_ent.system_acceptance import write_system_acceptance
 
 
 def validate(args: argparse.Namespace) -> int:
@@ -459,6 +460,38 @@ def post_residual_implementation_review(args: argparse.Namespace) -> int:
                 )
             )
             return 0
+    finally:
+        database.dispose()
+
+
+def system_acceptance(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = write_system_acceptance(
+                session,
+                manifest_root=Path(args.manifest_root),
+                artifacts_dir=Path(args.artifacts_dir),
+                project_id=args.project,
+                repository_root=Path.cwd(),
+            )
+            print(
+                json.dumps(
+                    {
+                        "result": result.result,
+                        "recommendation": result.recommendation,
+                        "head": result.head,
+                        "acceptance_hash": result.acceptance_hash,
+                        "proof_count": len(result.proofs),
+                        "negative_test_count": len(result.negative_tests),
+                        "artifact_dir": str(Path(args.artifacts_dir) / "saag-001"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_LIMITATIONS"} else 1
     finally:
         database.dispose()
 
@@ -881,6 +914,20 @@ def build_parser() -> argparse.ArgumentParser:
     pir2_alias_parser.add_argument("--residual-plan-id", default=RESIDUAL_PLAN_ID)
     pir2_alias_parser.add_argument("--plan-version", default="1")
     pir2_alias_parser.set_defaults(func=post_residual_implementation_review)
+
+    saag_parser = subparsers.add_parser("system-acceptance")
+    saag_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    saag_parser.add_argument("--artifacts-dir", default="artifacts")
+    saag_parser.add_argument("--env-file", default=".env")
+    saag_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    saag_parser.set_defaults(func=system_acceptance)
+
+    saag_alias_parser = subparsers.add_parser("saag-001")
+    saag_alias_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    saag_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    saag_alias_parser.add_argument("--env-file", default=".env")
+    saag_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    saag_alias_parser.set_defaults(func=system_acceptance)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")

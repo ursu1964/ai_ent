@@ -109,6 +109,9 @@ def write_rcg_artifact(tmp_path: Path) -> None:
     path = tmp_path / "artifacts" / "rcg-001" / "RCG-001.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('{"result":"ACCEPTED_WITH_LIMITATIONS"}\n', encoding="utf-8")
+    beag = tmp_path / "artifacts" / "beag-001" / "BEAG-001.json"
+    beag.parent.mkdir(parents=True, exist_ok=True)
+    beag.write_text('{"result":"ACCEPTED"}\n', encoding="utf-8")
 
 
 def test_post_implementation_uses_runtime_evidence_to_close_frozen_plan_gaps(tmp_path: Path) -> None:
