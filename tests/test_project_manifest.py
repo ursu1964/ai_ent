@@ -132,6 +132,23 @@ def test_c06_evidence_gap_maps_to_existing_source_tests_and_runtime_evidence() -
     }
 
 
+def test_c07_evidence_gap_maps_to_runtime_source_tests_and_accepted_evidence() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+    by_id = {str(capability["id"]): capability for capability in compiled.capabilities}
+
+    assert set(by_id["C07"]["evidence_refs"]) >= {
+        "BEAG-001:src/ai_ent/runtime_handoff.py",
+        "BEAG-001:src/ai_ent/runtime_kernel.py",
+        "BEAG-001:src/ai_ent/scheduler/bounded.py",
+        "BEAG-001:tests/test_runtime_handoff.py",
+        "BEAG-001:tests/test_runtime_kernel.py",
+        "BEAG-001:tests/test_bounded_scheduler_runner.py",
+        "BEAG-001:guarded-autonomous-runner",
+        "BEAG-001:runtime-plan-import",
+        "BEAG-001:pytest-regression-suite",
+    }
+
+
 def test_compiled_project_retains_source_provenance() -> None:
     compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
 

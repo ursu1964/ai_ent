@@ -65,6 +65,16 @@ capabilities:
     classification: NORMATIVE
     source_refs: [R7, BEAG-001]
     depends_on: [C06]
+    evidence_refs:
+      - BEAG-001:src/ai_ent/runtime_handoff.py
+      - BEAG-001:src/ai_ent/runtime_kernel.py
+      - BEAG-001:src/ai_ent/scheduler/bounded.py
+      - BEAG-001:tests/test_runtime_handoff.py
+      - BEAG-001:tests/test_runtime_kernel.py
+      - BEAG-001:tests/test_bounded_scheduler_runner.py
+      - BEAG-001:guarded-autonomous-runner
+      - BEAG-001:runtime-plan-import
+      - BEAG-001:pytest-regression-suite
   - id: C08
     name: Governance evolution and intelligence framework
     status: REQUIRED

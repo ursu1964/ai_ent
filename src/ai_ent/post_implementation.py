@@ -509,6 +509,9 @@ def _capability_postures(
     if (artifacts_dir / "ipcg-001/IPCG-001.json").exists():
         for capability_id in ("C03", "C04", "C14", "C15", "C16", "C17", "C18", "C19", "C20"):
             evidence_by_capability.setdefault(capability_id, []).append("IPCG-001")
+    for capability in pre_resolution.capabilities:
+        if capability.capability_id == "C07":
+            evidence_by_capability.setdefault(capability.capability_id, []).extend(capability.evidence_refs)
 
     rows: list[CapabilityPosture] = []
     for capability in pre_resolution.capabilities:
