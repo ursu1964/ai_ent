@@ -320,11 +320,14 @@ def _policy_delta_blockers(
 
     boolean_authority_keys = {
         "approve_gate": "approve_gate",
+        "commit": "commit",
         "commit_boundary_bypass_authority": "bypass_commit_boundary",
         "bypass_commit_boundary": "bypass_commit_boundary",
         "bypass_verifier": "bypass_verifier",
         "gate_approval_authority": "approve_gate",
         "execute_runtime": "execute_runtime",
+        "mutate_manifest": "mutate_manifest",
+        "push": "push",
         "runtime_execution_authority": "execute_runtime",
         "schedule_execution": "schedule_execution",
         "self_schedule": "schedule_execution",
