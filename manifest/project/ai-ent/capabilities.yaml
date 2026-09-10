@@ -78,10 +78,21 @@ capabilities:
   - id: C08
     name: Governance evolution and intelligence framework
     status: REQUIRED
-    maturity: NOT_IMPLEMENTED
+    maturity: VALIDATED
     classification: NORMATIVE
-    source_refs: [R8]
+    source_refs: [R8, BEAG-001]
     depends_on: [C07]
+    evidence_refs:
+      - BEAG-001:src/ai_ent/governance_contract.py
+      - BEAG-001:src/ai_ent/governance_evolution.py
+      - BEAG-001:tests/test_governance_contract.py
+      - BEAG-001:tests/test_governance_evolution.py
+      - BEAG-001:tests/test_project_manifest.py
+      - BEAG-001:tests/test_post_implementation.py
+      - RPG-001:RES-C08-CONTRACT
+      - RPG-001:RES-C08-SERVICE
+      - RPG-001:RES-C08-VERIFICATION
+      - BEAG-001:pytest-regression-suite
   - id: C09
     name: Universal AI-Enterprise kernel
     status: REQUIRED

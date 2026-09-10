@@ -149,6 +149,26 @@ def test_c07_evidence_gap_maps_to_runtime_source_tests_and_accepted_evidence() -
     }
 
 
+def test_c08_capability_maps_to_governance_source_tests_and_task_provenance() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+    by_id = {str(capability["id"]): capability for capability in compiled.capabilities}
+
+    assert by_id["C08"]["maturity"] == "VALIDATED"
+    assert set(by_id["C08"]["source_refs"]) >= {"R8", "BEAG-001"}
+    assert set(by_id["C08"]["evidence_refs"]) >= {
+        "BEAG-001:src/ai_ent/governance_contract.py",
+        "BEAG-001:src/ai_ent/governance_evolution.py",
+        "BEAG-001:tests/test_governance_contract.py",
+        "BEAG-001:tests/test_governance_evolution.py",
+        "BEAG-001:tests/test_project_manifest.py",
+        "BEAG-001:tests/test_post_implementation.py",
+        "RPG-001:RES-C08-CONTRACT",
+        "RPG-001:RES-C08-SERVICE",
+        "RPG-001:RES-C08-VERIFICATION",
+        "BEAG-001:pytest-regression-suite",
+    }
+
+
 def test_c09_evidence_gap_maps_to_kernel_source_tests_and_accepted_evidence() -> None:
     compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
     by_id = {str(capability["id"]): capability for capability in compiled.capabilities}

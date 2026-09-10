@@ -44,7 +44,20 @@ PRE_TRACE_BASELINE = {
     "error_count": 0,
     "warning_count": 44,
 }
-PREVIOUS_IMPLEMENTATION_GAPS = ("C01", "C02", "C03", "C04", "C14", "C15", "C16", "C17", "C18", "C19", "C20")
+PREVIOUS_IMPLEMENTATION_GAPS = (
+    "C01",
+    "C02",
+    "C03",
+    "C04",
+    "C08",
+    "C14",
+    "C15",
+    "C16",
+    "C17",
+    "C18",
+    "C19",
+    "C20",
+)
 REQUIRED_RUNTIME_TASK_COUNT = 13
 PRE_CAPABILITY_SATISFACTION: dict[str, CapabilitySatisfaction] = {
     "C01": "UNSATISFIED",
@@ -510,7 +523,7 @@ def _capability_postures(
         for capability_id in ("C03", "C04", "C14", "C15", "C16", "C17", "C18", "C19", "C20"):
             evidence_by_capability.setdefault(capability_id, []).append("IPCG-001")
     for capability in pre_resolution.capabilities:
-        if capability.capability_id in {"C07", "C09"}:
+        if capability.capability_id in {"C07", "C08", "C09"}:
             evidence_by_capability.setdefault(capability.capability_id, []).extend(capability.evidence_refs)
 
     rows: list[CapabilityPosture] = []
@@ -547,8 +560,6 @@ def _new_satisfaction(capability_id: str, previous: CapabilitySatisfaction, evid
         return "SATISFIED"
     if capability_id in {"C05", "C06", "C07", "C09"} and evidence:
         return "PARTIALLY_SATISFIED"
-    if capability_id == "C08":
-        return "UNSATISFIED"
     if evidence and previous == "UNSATISFIED":
         return "PARTIALLY_SATISFIED"
     return previous

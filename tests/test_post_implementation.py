@@ -68,8 +68,10 @@ def test_post_implementation_uses_runtime_evidence_to_close_frozen_plan_gaps(tmp
     by_id = {row.capability_id: row for row in review.capability_matrix}
     assert by_id["C01"].new_satisfaction == "SATISFIED"
     assert by_id["C20"].new_satisfaction == "SATISFIED"
-    assert by_id["C08"].new_satisfaction == "UNSATISFIED"
-    assert review.result == "RESIDUAL_GAPS_REQUIRE_NEW_DAG"
+    assert by_id["C08"].new_satisfaction == "SATISFIED"
+    assert review.result == "MANIFEST_DECISION_REQUIRED"
+    assert not any(gap.gap_id == "PIR-GAP-C08" for gap in review.residual_gaps)
+    assert not any(gap.gap_type == "IMPLEMENTATION_GAP" for gap in review.residual_gaps)
 
 
 def test_failed_execution_attempt_is_historical_not_implementation_evidence(tmp_path: Path) -> None:
@@ -176,3 +178,46 @@ def test_pir_gap_c09_maps_to_kernel_source_tests_and_accepted_evidence(tmp_path:
         "BEAG-001:pytest-regression-suite",
     }
     assert review.evidence_authority["artifact_evidence_graph"] == "NON_AUTHORITATIVE provenance/index only"
+
+
+def test_pir_c08_gap_closes_with_manifest_evidence_without_authority_expansion(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    with factory() as session:
+        plan_id = import_runtime_plan(session, tmp_path)
+        mark_all_imported_tasks_passed(session)
+
+        review = evaluate_post_implementation(session, artifacts_dir=tmp_path / "artifacts", plan_id=plan_id)
+
+    by_id = {row.capability_id: row for row in review.capability_matrix}
+    c08 = by_id["C08"]
+
+    assert c08.previous_satisfaction == "UNSATISFIED"
+    assert c08.new_satisfaction == "SATISFIED"
+    assert c08.new_maturity == "VALIDATED"
+    assert c08.remaining_missing_evidence == ()
+    assert c08.blockers == ()
+    assert set(c08.evidence_added) >= {
+        "BEAG-001:src/ai_ent/governance_contract.py",
+        "BEAG-001:src/ai_ent/governance_evolution.py",
+        "BEAG-001:tests/test_governance_contract.py",
+        "BEAG-001:tests/test_governance_evolution.py",
+        "RPG-001:RES-C08-CONTRACT",
+        "RPG-001:RES-C08-SERVICE",
+        "RPG-001:RES-C08-VERIFICATION",
+        "BEAG-001:pytest-regression-suite",
+    }
+    assert "PIR-GAP-C08" not in {gap.gap_id for gap in review.residual_gaps}
+    assert {
+        row["state"]
+        for row in review.previous_gap_evaluation
+        if row["capability_id"] == "C08"
+    } == {"CLOSED"}
+    assert review.evidence_authority == {
+        "postgresql_runtime_records": "runtime authority",
+        "git_commits": "accepted source and commit authority",
+        "independent_verifier": "verification authority",
+        "human_gate_records": "approval authority",
+        "artifact_evidence_graph": "NON_AUTHORITATIVE provenance/index only",
+    }

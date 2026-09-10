@@ -169,6 +169,26 @@ def test_c08_service_rejects_authority_escalation_without_recommendations() -> N
     assert all(not boundary.granted for boundary in result.service_boundaries)
 
 
+def test_c08_service_boundary_authorities_are_deterministic_and_never_granted() -> None:
+    first = GovernanceEvolutionService().evaluate(_valid_request(), manifest_root=MANIFEST_ROOT)
+    second = GovernanceEvolutionService().evaluate(_valid_request(), manifest_root=MANIFEST_ROOT)
+
+    assert first.as_dict()["service_boundaries"] == second.as_dict()["service_boundaries"]
+    assert first.as_dict()["summary"] == second.as_dict()["summary"]
+    assert {
+        (boundary.boundary_id, boundary.authority, boundary.granted)
+        for boundary in first.service_boundaries
+    } == {
+        ("human-gate", "approve_gate", False),
+        ("deterministic-verifier", "bypass_verifier", False),
+        ("verified-commit", "bypass_commit_boundary", False),
+        ("runtime-completion", "execute_runtime", False),
+        ("runtime-scheduling", "schedule_execution", False),
+        ("manifest-policy", "weaken_policy", False),
+    }
+    assert first.evidence_records[0].output_authority_state == "NON_AUTHORITATIVE"
+
+
 def test_c08_service_does_not_mutate_runtime_completion_state(tmp_path: Path) -> None:
     planner = ExecutionPlannerService()
     plan = planner.plan(MANIFEST_ROOT, environment=_environment(codex_configured=False))
