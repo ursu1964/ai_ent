@@ -24,6 +24,10 @@ from ai_ent.project_manifest import (
     write_trace_validation,
 )
 from ai_ent.residual_dag import write_residual_implementation_plan
+from ai_ent.residual_feasibility import (
+    evaluate_residual_feasibility,
+    write_residual_feasibility,
+)
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
     RuntimePlanImporter,
@@ -436,6 +440,76 @@ def generate_residual_dag(args: argparse.Namespace) -> int:
     return 0 if plan.ok else 1
 
 
+def evaluate_residual_feasibility_command(args: argparse.Namespace) -> int:
+    evaluation = write_residual_feasibility(
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+    )
+    summary = evaluation.as_dict()["summary"]
+    print(
+        json.dumps(
+            {
+                "residual_feasibility_hash": evaluation.residual_feasibility_hash,
+                "evaluator_version": evaluation.evaluator_version,
+                "residual_plan_hash": evaluation.residual_plan_hash,
+                "plan_status": evaluation.plan_status,
+                "total_tasks": summary["total_tasks"],
+                "feasible": summary["feasible"],
+                "feasible_with_conditions": summary["feasible_with_conditions"],
+                "human_approval_required": summary["human_approval_required"],
+                "blocked": summary["blocked"],
+                "deferred": summary["deferred"],
+                "auto_allowed": summary["auto_allowed"],
+                "guarded_allowed": summary["guarded_allowed"],
+                "prohibited": summary["prohibited"],
+                "human_gates": summary["human_gates"],
+                "feasible_parallel_width": summary["feasible_parallel_width"],
+                "technical_blockers": summary["technical_blockers"],
+                "output_dir": args.output_dir,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if evaluation.ok else 1
+
+
+def residual_feasibility_summary(args: argparse.Namespace) -> int:
+    evaluation = evaluate_residual_feasibility(
+        repository_root=Path.cwd(),
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+    )
+    print(
+        json.dumps(
+            {
+                "residual_feasibility_hash": evaluation.residual_feasibility_hash,
+                "plan_status": evaluation.plan_status,
+                "summary": evaluation.as_dict()["summary"],
+                "technical_blockers": list(evaluation.technical_blockers),
+                "task_statuses": [
+                    {
+                        "task_id": result.task_id,
+                        "task_type": result.task_type,
+                        "status": result.feasibility_status,
+                        "policy_decision": result.policy_decision,
+                        "risk": result.risk,
+                        "human_gate_ids": list(result.human_gate_ids),
+                        "conditions": list(result.conditions),
+                        "blockers": list(result.blockers),
+                    }
+                    for result in evaluation.task_results
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if evaluation.ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -530,11 +604,32 @@ def build_parser() -> argparse.ArgumentParser:
     pir_parser.add_argument("--plan-version", default="1")
     pir_parser.set_defaults(func=post_implementation_review)
 
+    pir_alias_parser = subparsers.add_parser("post-implementation")
+    pir_alias_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    pir_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    pir_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    pir_alias_parser.add_argument("--env-file", default=".env")
+    pir_alias_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    pir_alias_parser.add_argument("--plan-id", default="PLAN-1a75a2e3c5a7")
+    pir_alias_parser.add_argument("--plan-version", default="1")
+    pir_alias_parser.set_defaults(func=post_implementation_review)
+
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
     residual_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
     residual_parser.add_argument("--output-dir", default=".build/compiled")
     residual_parser.set_defaults(func=generate_residual_dag)
+
+    residual_feasibility_parser = subparsers.add_parser("evaluate-residual-feasibility")
+    residual_feasibility_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_feasibility_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_feasibility_parser.add_argument("--output-dir", default=".build/compiled")
+    residual_feasibility_parser.set_defaults(func=evaluate_residual_feasibility_command)
+
+    residual_feasibility_summary_parser = subparsers.add_parser("residual-feasibility-summary")
+    residual_feasibility_summary_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    residual_feasibility_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    residual_feasibility_summary_parser.set_defaults(func=residual_feasibility_summary)
     return parser
 
 
