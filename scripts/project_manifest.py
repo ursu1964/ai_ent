@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ai_ent.persistence.config import load_database_settings
 from ai_ent.persistence.database import Database
+from ai_ent.post_implementation import write_post_implementation_review
 from ai_ent.project_manifest import (
     compile_project_manifest,
     dry_run_implementation_plan,
@@ -358,6 +359,46 @@ def runtime_plan_status(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def post_implementation_review(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            review = write_post_implementation_review(
+                session,
+                manifest_root=Path(args.manifest_root),
+                output_dir=Path(args.output_dir),
+                artifacts_dir=Path(args.artifacts_dir),
+                project_id=args.project,
+                plan_id=args.plan_id,
+                plan_version=args.plan_version,
+                repository_root=Path.cwd(),
+            )
+            print(
+                json.dumps(
+                    {
+                        "result": review.result,
+                        "recommendation": review.as_dict()["recommendation"],
+                        "head": review.head,
+                        "plan_id": review.plan_id,
+                        "plan_version": review.plan_version,
+                        "post_compiled_hash": review.post_compiled_hash,
+                        "post_capability_resolution_hash": review.post_capability_resolution_hash,
+                        "post_trace_validation_hash": review.post_trace_validation_hash,
+                        "residual_gap_hash": review.residual_gap_hash,
+                        "residual_gap_count": len(review.residual_gaps),
+                        "output_dir": args.output_dir,
+                        "artifact_dir": str(Path(args.artifacts_dir) / "pir-001"),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+    finally:
+        database.dispose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -441,6 +482,16 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
     status_parser.add_argument("--guarded-dry-run", action="store_true")
     status_parser.set_defaults(func=runtime_plan_status)
+
+    pir_parser = subparsers.add_parser("post-implementation-review")
+    pir_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    pir_parser.add_argument("--output-dir", default=".build/compiled")
+    pir_parser.add_argument("--artifacts-dir", default="artifacts")
+    pir_parser.add_argument("--env-file", default=".env")
+    pir_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    pir_parser.add_argument("--plan-id", default="PLAN-1a75a2e3c5a7")
+    pir_parser.add_argument("--plan-version", default="1")
+    pir_parser.set_defaults(func=post_implementation_review)
     return parser
 
 
