@@ -12,6 +12,10 @@ from ai_ent.post_implementation import (
     write_post_implementation_review,
     write_post_residual_implementation_review,
 )
+from ai_ent.product_plan_acceptance import (
+    EXPECTED_PRODUCTIZATION_PLAN_HASH,
+    write_product_plan_acceptance,
+)
 from ai_ent.productization_plan import write_productization_plan
 from ai_ent.project_manifest import (
     compile_project_manifest,
@@ -565,6 +569,39 @@ def productization_plan(args: argparse.Namespace) -> int:
     return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_LIMITATIONS"} else 1
 
 
+def product_plan_acceptance(args: argparse.Namespace) -> int:
+    result = write_product_plan_acceptance(
+        plan_path=Path(args.plan_path),
+        artifacts_dir=Path(args.artifacts_dir),
+        expected_plan_hash=args.expected_plan_hash,
+        repository_root=Path.cwd(),
+    )
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "baseline": result.baseline,
+                "evaluator_version": result.evaluator_version,
+                "productization_plan_hash": result.productization_plan_hash,
+                "acceptance_hash": result.acceptance_hash,
+                "tasks": result.plan_identity["task_count"],
+                "dependency_edges": result.plan_identity["dependency_edges"],
+                "waves": result.plan_identity["waves"],
+                "human_gates": result.plan_identity["human_gates"],
+                "theoretical_parallel_width": result.plan_identity["theoretical_parallel_width"],
+                "risk_distribution": result.plan_identity["risk_distribution"],
+                "unresolved_decisions": len(result.unresolved_human_decisions),
+                "current_blockers": list(result.current_blockers),
+                "artifact_dir": str(Path(args.artifacts_dir) / "ppa-001"),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_DECISIONS_REQUIRED"} else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -1023,6 +1060,18 @@ def build_parser() -> argparse.ArgumentParser:
     prd_alias_parser.add_argument("--artifacts-dir", default="artifacts")
     prd_alias_parser.add_argument("--output-dir", default=".build/compiled")
     prd_alias_parser.set_defaults(func=productization_plan)
+
+    ppa_parser = subparsers.add_parser("product-plan-acceptance")
+    ppa_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    ppa_parser.add_argument("--artifacts-dir", default="artifacts")
+    ppa_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    ppa_parser.set_defaults(func=product_plan_acceptance)
+
+    ppa_alias_parser = subparsers.add_parser("ppa-001")
+    ppa_alias_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    ppa_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    ppa_alias_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    ppa_alias_parser.set_defaults(func=product_plan_acceptance)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
