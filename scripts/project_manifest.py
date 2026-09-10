@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ai_ent.persistence.config import load_database_settings
 from ai_ent.persistence.database import Database
+from ai_ent.persistence.models import RuntimePlanImport, Task
 from ai_ent.post_implementation import write_post_implementation_review
 from ai_ent.project_manifest import (
     compile_project_manifest,
@@ -36,6 +37,11 @@ from ai_ent.residual_feasibility import (
 from ai_ent.residual_plan_acceptance import (
     accept_residual_plan,
     write_residual_plan_acceptance,
+)
+from ai_ent.residual_runtime_handoff import (
+    RESIDUAL_PLAN_ID,
+    ResidualRuntimePlanImporter,
+    load_residual_runtime_handoff_artifacts,
 )
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
@@ -654,6 +660,58 @@ def residual_acceptance_summary(args: argparse.Namespace) -> int:
     return 0 if gate.ok else 1
 
 
+def import_residual_plan(args: argparse.Namespace) -> int:
+    artifacts = load_residual_runtime_handoff_artifacts(
+        manifest_root=Path(args.manifest_root),
+        pir_artifact=Path(args.pir_artifact),
+        acceptance_artifact_path=Path(args.acceptance_artifact),
+    )
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = ResidualRuntimePlanImporter().import_residual_plan(
+                session,
+                artifacts,
+                runtime_project_id=args.project,
+                repository_root=Path.cwd(),
+                include_guarded_dry_run=args.guarded_dry_run,
+            )
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+            return 0 if result.ok else 1
+    finally:
+        database.dispose()
+
+
+def residual_runtime_plan_status(args: argparse.Namespace) -> int:
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            import_id = f"rhi-{args.plan_id.lower()}-v{args.plan_version}"
+            task_ids = [
+                task.id
+                for task in session.query(Task)
+                .filter_by(project_id=args.project)
+                .filter(Task.id.like("RES-%"))
+                .order_by(Task.id)
+                .all()
+            ]
+            result = {
+                "project_id": args.project,
+                "import_id": import_id,
+                "residual_plan_id": args.plan_id,
+                "plan_version": args.plan_version,
+                "residual_tasks": len(task_ids),
+                "task_ids": task_ids,
+                "receipt_exists": session.get(RuntimePlanImport, import_id) is not None,
+            }
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+    finally:
+        database.dispose()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="AI-Enterprise project manifest tools")
     subparsers = parser.add_subparsers(required=True)
@@ -808,6 +866,22 @@ def build_parser() -> argparse.ArgumentParser:
     residual_accept_summary_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
     residual_accept_summary_parser.add_argument("--expected-residual-plan-hash")
     residual_accept_summary_parser.set_defaults(func=residual_acceptance_summary)
+
+    import_residual_parser = subparsers.add_parser("import-residual-plan")
+    import_residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
+    import_residual_parser.add_argument("--pir-artifact", default="artifacts/pir-001/PIR-001.json")
+    import_residual_parser.add_argument("--acceptance-artifact", default="artifacts/rpg-001/RPG-001.json")
+    import_residual_parser.add_argument("--env-file", default=".env")
+    import_residual_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    import_residual_parser.add_argument("--guarded-dry-run", action="store_true")
+    import_residual_parser.set_defaults(func=import_residual_plan)
+
+    residual_status_parser = subparsers.add_parser("runtime-residual-plan-status")
+    residual_status_parser.add_argument("--env-file", default=".env")
+    residual_status_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    residual_status_parser.add_argument("--plan-id", default=RESIDUAL_PLAN_ID)
+    residual_status_parser.add_argument("--plan-version", default="1")
+    residual_status_parser.set_defaults(func=residual_runtime_plan_status)
     return parser
 
 

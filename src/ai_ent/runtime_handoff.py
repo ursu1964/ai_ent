@@ -149,7 +149,10 @@ def build_runtime_manifest_tasks(session: Session, project_id: str) -> dict[str,
     tasks = {
         task.id: task
         for task in session.scalars(
-            select(Task).where(Task.project_id == project_id, Task.id.like(f"{RUNTIME_IMPORT_PREFIX}%")).order_by(Task.id)
+            select(Task)
+            .join(RuntimeTaskPlanBinding, RuntimeTaskPlanBinding.task_id == Task.id)
+            .where(Task.project_id == project_id)
+            .order_by(Task.id)
         ).all()
     }
     if not tasks:
