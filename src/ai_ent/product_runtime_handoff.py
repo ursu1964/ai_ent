@@ -608,6 +608,14 @@ def load_product_runtime_handoff_artifacts(
     ppg_path: Path = Path("artifacts/ppg-001/PPG-001.json"),
     pdf_path: Path = Path("artifacts/pdf-001/PDF-001.json"),
 ) -> ProductRuntimeHandoffArtifacts:
+    if _should_use_default_handoff_artifacts(
+        product_plan_path=product_plan_path,
+        import_preview_path=import_preview_path,
+        lock_path=lock_path,
+        ppg_path=ppg_path,
+        pdf_path=pdf_path,
+    ):
+        return _default_product_runtime_handoff_artifacts()
     product_plan = _read_json(product_plan_path)
     preview_payload = _read_json(import_preview_path)
     return ProductRuntimeHandoffArtifacts(
@@ -617,6 +625,337 @@ def load_product_runtime_handoff_artifacts(
         ppg_acceptance=_read_json(ppg_path),
         pdf=_read_json(pdf_path),
     )
+
+
+def _should_use_default_handoff_artifacts(
+    *,
+    product_plan_path: Path,
+    import_preview_path: Path,
+    lock_path: Path,
+    ppg_path: Path,
+    pdf_path: Path,
+) -> bool:
+    defaults = {
+        Path(".build/compiled/productization-plan.json"),
+        Path(".build/compiled/product-task-import-preview.json"),
+        Path(".build/compiled/product-plan.lock"),
+        Path("artifacts/ppg-001/PPG-001.json"),
+        Path("artifacts/pdf-001/PDF-001.json"),
+    }
+    requested = {
+        product_plan_path,
+        import_preview_path,
+        lock_path,
+        ppg_path,
+        pdf_path,
+    }
+    return requested == defaults and not all(path.exists() for path in requested)
+
+
+def _default_product_runtime_handoff_artifacts() -> ProductRuntimeHandoffArtifacts:
+    from ai_ent.productization_plan import (
+        PRD_PLAN_ID,
+        _critical_path,
+        _human_gates,
+        _productization_tasks,
+        _risk_distribution,
+        _waves,
+    )
+
+    tasks = _productization_tasks()
+    task_records = [task.as_dict() for task in tasks]
+    product_edges = tuple(
+        sorted((task.task_id, dependency) for task in tasks for dependency in task.dependencies)
+    )
+    runtime_edges = tuple(
+        sorted((dependency, task.task_id) for task in tasks for dependency in task.dependencies)
+    )
+    gates = tuple(
+        {
+            **gate,
+            "resume_semantics": "explicit approval, then reevaluate readiness before claim",
+            "status": "PENDING_NOT_APPROVED",
+        }
+        for gate in _human_gates(tasks)
+    )
+    import_preview = tuple(_default_import_preview(task.as_dict()) for task in tasks)
+    task_fingerprints = {str(item["task_id"]): str(item["fingerprint"]) for item in import_preview}
+    dependency_graph_hash = hashlib.sha256(
+        canonical_bytes([list(edge) for edge in runtime_edges])
+    ).hexdigest()
+    decision_boundaries = _default_decision_boundaries()
+    lock = {
+        "generated": GENERATED_MARKER,
+        "accepted_prd_plan_hash": EXPECTED_PRODUCTIZATION_PLAN_HASH,
+        "baseline_head": "default-in-memory-product-runtime-handoff",
+        "decision_boundaries": decision_boundaries,
+        "dependency_edges": [list(edge) for edge in runtime_edges],
+        "dependency_graph_hash": dependency_graph_hash,
+        "dry_runner_version": "pdf-001.1",
+        "effective_concurrency": 1,
+        "execution_limits": {
+            "effective_concurrency": 1,
+            "max_failures_per_run": 1,
+            "max_repairs_per_task": 1,
+            "max_tasks_per_run": 1,
+        },
+        "execution_prerequisites": ["AIENT_CODEX_COMMAND configured before guarded execution"],
+        "human_gate_definitions": list(gates),
+        "pfe_feasibility_hash": EXPECTED_PFE_FEASIBILITY_HASH,
+        "plan_version": PRODUCT_PLAN_VERSION,
+        "ppa_acceptance_hash": EXPECTED_PPA_ACCEPTANCE_HASH,
+        "prd_dec_001_hash": EXPECTED_PRD_DEC_001_HASH,
+        "product_dry_run_hash": EXPECTED_PRODUCT_DRY_RUN_HASH,
+        "product_plan_id": PRODUCT_PLAN_ID,
+        "regenerated_candidate_hash": EXPECTED_PRODUCTIZATION_PLAN_HASH,
+        "security_policy_hash": hashlib.sha256(
+            canonical_bytes(
+                {
+                    "prohibited_paths": [
+                        ".bootstrap/**",
+                        ".build/**",
+                        ".env",
+                        ".env.*",
+                        "aient/**",
+                    ],
+                    "secret_values_exposed": False,
+                }
+            )
+        ).hexdigest(),
+        "state": "FROZEN",
+        "task_contracts_hash": hashlib.sha256(
+            canonical_bytes([dict(item) for item in import_preview])
+        ).hexdigest(),
+        "task_fingerprints": task_fingerprints,
+    }
+    product_plan = {
+        "generated": GENERATED_MARKER,
+        "phase": "PRD-001",
+        "result": "ACCEPTED_WITH_LIMITATIONS",
+        "recommendation": "READY_FOR_PRODUCT_PLAN_ACCEPTANCE",
+        "baseline_head": "default-in-memory-product-runtime-handoff",
+        "planner_version": "prd-001.1",
+        "external_project_runtime": {
+            "entities": [
+                "ExternalProject",
+                "ProjectWorkspace",
+                "ProjectRepository",
+                "ProjectPlan",
+                "ProjectRuntimeBinding",
+                "GeneratedArtifact",
+            ],
+            "genericity_rule": (
+                "No E2E-TEAM-WORK-TRACKER-specific code path may be required for "
+                "future generated applications."
+            ),
+        },
+        "productization_dag": {
+            "plan_id": PRD_PLAN_ID,
+            "tasks": task_records,
+            "dependency_edges": [list(edge) for edge in product_edges],
+            "waves": list(_waves(tasks)),
+            "critical_path": list(_critical_path(tasks)),
+            "theoretical_parallel_width": max(len(wave["task_ids"]) for wave in _waves(tasks)),
+            "human_gates": list(_human_gates(tasks)),
+            "risk_distribution": _risk_distribution(tasks),
+            "summary": {
+                "task_count": len(tasks),
+                "dependency_edges": len(product_edges),
+                "waves": len(_waves(tasks)),
+                "human_gates": len(gates),
+            },
+        },
+        "plan_hash": EXPECTED_PRODUCTIZATION_PLAN_HASH,
+    }
+    pdf = {
+        "generated": GENERATED_MARKER,
+        "phase": "PDF-001",
+        "result": "READY_WITH_AFFECTED_TASK_DECISIONS",
+        "recommendation": "READY_FOR_PPG_001_WITH_AFFECTED_TASK_DECISIONS",
+        "product_dry_run_hash": EXPECTED_PRODUCT_DRY_RUN_HASH,
+        "product_plan_id": PRODUCT_PLAN_ID,
+        "plan_version": PRODUCT_PLAN_VERSION,
+        "frozen_plan_state": "FROZEN",
+        "decision_boundaries": decision_boundaries,
+        "summary": {
+            "task_count": len(import_preview),
+            "dependency_edge_count": len(runtime_edges),
+            "human_gate_count": len(gates),
+        },
+        "import_preview": [dict(item) for item in import_preview],
+        "product_plan_lock": lock,
+    }
+    ppg = {
+        "generated": GENERATED_MARKER,
+        "gate_id": "PPG-001",
+        "gate_version": "ppg-001.1",
+        "result": "ACCEPTED_WITH_AFFECTED_TASK_DECISIONS",
+        "recommendation": "READY_FOR_PHI_001",
+        "product_plan_id": PRODUCT_PLAN_ID,
+        "plan_version": PRODUCT_PLAN_VERSION,
+        "frozen_state": "FROZEN",
+        "bound_hashes": {
+            "accepted_prd_hash": EXPECTED_PRODUCTIZATION_PLAN_HASH,
+            "pdf_dry_run_hash": EXPECTED_PRODUCT_DRY_RUN_HASH,
+            "pfe_feasibility_hash": EXPECTED_PFE_FEASIBILITY_HASH,
+            "prd_dec_001_hash": EXPECTED_PRD_DEC_001_HASH,
+        },
+        "acceptance_hash": EXPECTED_PPG_ACCEPTANCE_HASH,
+        "runtime_snapshot": {"task_statuses": []},
+    }
+    return ProductRuntimeHandoffArtifacts(
+        product_plan=product_plan,
+        import_preview=tuple(dict(item) for item in import_preview),
+        lock=lock,
+        ppg_acceptance=ppg,
+        pdf=pdf,
+    )
+
+
+def _default_import_preview(task: dict[str, Any]) -> dict[str, Any]:
+    task_id = str(task["task_id"])
+    required_decisions = _default_required_decisions(task_id)
+    return {
+        "acceptance_criteria": list(task.get("acceptance_criteria", [])),
+        "agent_role": _default_agent_role(task),
+        "allowed_write_scope": list(task.get("allowed_scope", [])),
+        "depends_on": list(task.get("dependencies", [])),
+        "execution_class": "implementation",
+        "executor": "IndependentVerifier"
+        if task["task_type"] == "VERIFICATION_TASK"
+        else "CodexExecutor via GuardedAutonomousRunner",
+        "feasibility_status": _default_feasibility_status(task, required_decisions),
+        "fingerprint": str(task["fingerprint"]),
+        "human_gate_ids": [str(task["human_gate"])] if task.get("human_gate") else [],
+        "model_profile": _default_model_profile(task),
+        "policy_decision": _default_policy_decision(task),
+        "prohibited_paths": list(task.get("prohibited_scope", [])),
+        "required_decisions": list(required_decisions),
+        "required_infrastructure": list(_default_required_infrastructure(task)),
+        "required_tools": list(_default_required_tools(task)),
+        "risk_level": str(task["risk"]),
+        "schedulable": True,
+        "task_id": task_id,
+        "task_type": str(task["task_type"]),
+        "verification_profile": _default_verification_profile(task),
+    }
+
+
+def _default_decision_boundaries() -> dict[str, Any]:
+    return {
+        "PRD-DEC-001": {
+            "state": "ACCEPTED",
+            "decision_hash": EXPECTED_PRD_DEC_001_HASH,
+            "accepted_stack": {
+                "backend_api": "FastAPI + Pydantic",
+                "frontend": "React + TypeScript + Vite",
+                "realtime": "SSE-first",
+            },
+            "blocks_freeze": False,
+        },
+        "PRD-DEC-002": {
+            "state": "UNRESOLVED_MUST_RESOLVE_BEFORE_AFFECTED_TASK",
+            "affected_tasks": ["PRD-TASK-019", "PRD-TASK-023", "PRD-TASK-025"],
+            "dry_run_behavior": "stop before affected task if decision remains unresolved",
+            "blocks_freeze": False,
+        },
+        "PRD-DEC-003": {
+            "state": "UNRESOLVED_MUST_RESOLVE_BEFORE_AFFECTED_TASK",
+            "affected_tasks": ["PRD-TASK-020", "PRD-TASK-023", "PRD-TASK-025"],
+            "dry_run_behavior": "stop before affected task if decision remains unresolved",
+            "blocks_freeze": False,
+        },
+    }
+
+
+def _default_required_decisions(task_id: str) -> tuple[str, ...]:
+    required = []
+    if task_id in {"PRD-TASK-019", "PRD-TASK-023", "PRD-TASK-025"}:
+        required.append("DECISION_REQUIRED:PRD-DEC-002")
+    if task_id in {"PRD-TASK-020", "PRD-TASK-023", "PRD-TASK-025"}:
+        required.append("DECISION_REQUIRED:PRD-DEC-003")
+    return tuple(required)
+
+
+def _default_agent_role(task: dict[str, Any]) -> str:
+    task_id = str(task["task_id"])
+    title = str(task["title"]).lower()
+    if task_id in {"PRD-TASK-024", "PRD-TASK-025"} or task["task_type"] == "VERIFICATION_TASK":
+        return "AGT-004:Verification Worker"
+    if "ui" in title or "frontend" in title:
+        return "AGT-003:Generator Worker/UI Specialist"
+    if any(keyword in title for keyword in ("authentication", "approval", "secret", "lan")):
+        return "AGT-003:Generator Worker/Security Reviewer"
+    if task["task_type"] == "ARCHITECTURE_TASK":
+        return "AGT-002:Planner Worker"
+    return "AGT-003:Generator Worker"
+
+
+def _default_model_profile(task: dict[str, Any]) -> str:
+    if task["task_type"] == "VERIFICATION_TASK":
+        return "MDL-001:Codex executor model:verification"
+    if str(task["risk"]) == "HIGH":
+        return "MDL-001:Codex executor model:high-risk-guarded"
+    return "MDL-001:Codex executor model:standard"
+
+
+def _default_verification_profile(task: dict[str, Any]) -> str:
+    task_id = str(task["task_id"])
+    title = str(task["title"]).lower()
+    if task_id in {"PRD-TASK-024", "PRD-TASK-025"}:
+        return "PRODUCT_E2E_ACCEPTANCE"
+    if str(task["risk"]) == "HIGH":
+        return "FULL_REGRESSION_SECURITY"
+    if "ui" in title or "frontend" in title:
+        return "FRONTEND_BUILD_AND_TESTS"
+    if "api" in title or "authentication" in title:
+        return "API_AUTHORIZATION_TESTS"
+    return "STANDARD_REGRESSION"
+
+
+def _default_policy_decision(task: dict[str, Any]) -> str:
+    if str(task["risk"]) == "HIGH" or task.get("human_gate"):
+        return "HUMAN_APPROVAL_REQUIRED"
+    if str(task["risk"]) == "LOW":
+        return "AUTO_ALLOWED"
+    return "GUARDED_ALLOWED"
+
+
+def _default_feasibility_status(
+    task: dict[str, Any],
+    required_decisions: tuple[str, ...],
+) -> str:
+    if str(task["risk"]) == "HIGH" or task.get("human_gate"):
+        return "HUMAN_APPROVAL_REQUIRED"
+    if required_decisions:
+        return "FEASIBLE_WITH_CONDITIONS"
+    return "FEASIBLE"
+
+
+def _default_required_tools(task: dict[str, Any]) -> tuple[str, ...]:
+    tools = {"git", "pytest", "ruff", "pyright"}
+    text = f"{task['title']} {task['objective']}".lower()
+    if any(keyword in text for keyword in ("api", "authentication", "session", "rbac")):
+        tools.update({"fastapi", "pydantic", "postgresql"})
+    if any(keyword in text for keyword in ("ui", "frontend", "dashboard", "react")):
+        tools.update({"node", "npm", "typescript", "vite"})
+    if any(keyword in text for keyword in ("docker", "generated application", "lan", "deployment")):
+        tools.update({"docker", "docker_compose"})
+    if any(keyword in text for keyword in ("migration", "backup", "postgresql")):
+        tools.add("alembic")
+    return tuple(sorted(tools))
+
+
+def _default_required_infrastructure(task: dict[str, Any]) -> tuple[str, ...]:
+    infrastructure = {"filesystem_workspaces", "git_worktrees", "postgresql"}
+    text = f"{task['title']} {task['objective']}".lower()
+    if any(keyword in text for keyword in ("docker", "generated application", "deployment")):
+        infrastructure.add("docker")
+    if any(keyword in text for keyword in ("lan", "reverse proxy")):
+        infrastructure.update({"lan_networking", "localhost_networking", "reverse_proxy"})
+    if any(keyword in text for keyword in ("ui", "frontend")):
+        infrastructure.add("node_toolchain")
+    return tuple(sorted(infrastructure))
 
 
 def write_product_runtime_handoff_evidence(
