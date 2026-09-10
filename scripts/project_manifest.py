@@ -12,6 +12,7 @@ from ai_ent.post_implementation import (
     write_post_implementation_review,
     write_post_residual_implementation_review,
 )
+from ai_ent.productization_plan import write_productization_plan
 from ai_ent.project_manifest import (
     compile_project_manifest,
     dry_run_implementation_plan,
@@ -534,6 +535,36 @@ def first_application_creation_proof(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def productization_plan(args: argparse.Namespace) -> int:
+    result = write_productization_plan(
+        artifacts_dir=Path(args.artifacts_dir),
+        output_dir=Path(args.output_dir),
+        repository_root=Path.cwd(),
+    )
+    dag = result.as_dict()["productization_dag"]
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "baseline_head": result.baseline_head,
+                "planner_version": result.planner_version,
+                "plan_hash": result.plan_hash,
+                "task_count": dag["summary"]["task_count"],
+                "dependency_edges": dag["summary"]["dependency_edges"],
+                "waves": dag["summary"]["waves"],
+                "human_gates": dag["summary"]["human_gates"],
+                "risk_distribution": dag["risk_distribution"],
+                "artifact_dir": str(Path(args.artifacts_dir) / "prd-001"),
+                "output": str(Path(args.output_dir) / "productization-plan.json"),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.result in {"ACCEPTED", "ACCEPTED_WITH_LIMITATIONS"} else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -982,6 +1013,16 @@ def build_parser() -> argparse.ArgumentParser:
     e2e_alias_parser.add_argument("--target-workspace", default="/home/user/projects/e2e-team-work-tracker")
     e2e_alias_parser.add_argument("--skip-docker", action="store_true")
     e2e_alias_parser.set_defaults(func=first_application_creation_proof)
+
+    prd_parser = subparsers.add_parser("productization-plan")
+    prd_parser.add_argument("--artifacts-dir", default="artifacts")
+    prd_parser.add_argument("--output-dir", default=".build/compiled")
+    prd_parser.set_defaults(func=productization_plan)
+
+    prd_alias_parser = subparsers.add_parser("prd-001")
+    prd_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    prd_alias_parser.add_argument("--output-dir", default=".build/compiled")
+    prd_alias_parser.set_defaults(func=productization_plan)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
