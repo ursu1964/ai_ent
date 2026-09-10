@@ -30,6 +30,18 @@ def write_accepted_evidence(root: Path) -> None:
                     {
                         "classification": "FUTURE_HARDENING",
                         "description": "human-gate DB rows need richer approval scope documents",
+                    },
+                    {
+                        "classification": "FUTURE_HARDENING",
+                        "description": "separate runtime import receipt artifacts should be queryable by product operators",
+                    },
+                    {
+                        "classification": "FUTURE_HARDENING",
+                        "description": "residual lock projection consistency needs product-facing diagnostics",
+                    },
+                    {
+                        "classification": "FUTURE_HARDENING",
+                        "description": "approval principal records should include scoped authorization evidence",
                     }
                 ],
             },
@@ -52,6 +64,18 @@ def write_accepted_evidence(root: Path) -> None:
                     {
                         "classification": "FUTURE_HARDENING",
                         "description": "target-app E2E harness should become reusable",
+                    },
+                    {
+                        "classification": "PRODUCTIZATION_REQUIRED",
+                        "description": "external-project importer must support arbitrary project identities",
+                    },
+                    {
+                        "classification": "PRODUCTIZATION_REQUIRED",
+                        "description": "generated application operation logs must be scoped by project",
+                    },
+                    {
+                        "classification": "FUTURE_HARDENING",
+                        "description": "application workspace archive flow should preserve provenance",
                     }
                 ],
             },

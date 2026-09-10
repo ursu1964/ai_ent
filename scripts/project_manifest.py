@@ -22,6 +22,10 @@ from ai_ent.product_plan_acceptance import (
     EXPECTED_PRODUCTIZATION_PLAN_HASH,
     write_product_plan_acceptance,
 )
+from ai_ent.product_plan_final_acceptance import (
+    EXPECTED_PRODUCT_DRY_RUN_HASH,
+    write_frozen_product_plan_acceptance,
+)
 from ai_ent.productization_plan import write_productization_plan
 from ai_ent.project_manifest import (
     compile_project_manifest,
@@ -761,6 +765,52 @@ def product_dry_run(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def product_plan_final_acceptance(args: argparse.Namespace) -> int:
+    result = write_frozen_product_plan_acceptance(
+        plan_path=Path(args.plan_path),
+        ppa_path=Path(args.ppa_path),
+        pfe_path=Path(args.pfe_path),
+        decision_path=Path(args.decision_path),
+        pdf_path=Path(args.pdf_path),
+        lock_path=Path(args.lock_path),
+        import_preview_path=Path(args.import_preview_path),
+        artifacts_dir=Path(args.artifacts_dir),
+        repository_root=Path.cwd(),
+        env_file=Path(args.env_file),
+        expected_product_plan_hash=args.expected_plan_hash,
+        expected_ppa_hash=args.expected_ppa_acceptance_hash,
+        expected_pfe_hash=args.expected_pfe_hash,
+        expected_decision_hash=args.expected_decision_hash,
+        expected_pdf_hash=args.expected_pdf_hash,
+    )
+    print(
+        json.dumps(
+            {
+                "result": result.result,
+                "recommendation": result.recommendation,
+                "baseline_commit": result.baseline_commit,
+                "product_plan_id": result.product_plan_id,
+                "plan_version": result.plan_version,
+                "frozen_state": result.frozen_state,
+                "acceptance_hash": result.acceptance_hash,
+                "bound_hashes": result.bound_hashes,
+                "counts": result.counts,
+                "risk_distribution": result.risk_distribution,
+                "policy_distribution": result.policy_distribution,
+                "prd_dec_002_state": result.decision_states["PRD-DEC-002"]["state"],
+                "prd_dec_003_state": result.decision_states["PRD-DEC-003"]["state"],
+                "blockers": list(result.blockers),
+                "limitations": list(result.limitations),
+                "runtime_snapshot": result.runtime_snapshot,
+                "artifact_dir": str(Path(args.artifacts_dir) / "ppg-001"),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0 if result.ok else 1
+
+
 def generate_residual_dag(args: argparse.Namespace) -> int:
     plan = write_residual_implementation_plan(
         manifest_root=Path(args.manifest_root),
@@ -1333,6 +1383,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-decision-hash", default=EXPECTED_PRD_DEC_001_HASH
     )
     pdf_alias_parser.set_defaults(func=product_dry_run)
+
+    ppg_parser = subparsers.add_parser("product-plan-final-acceptance")
+    ppg_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    ppg_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    ppg_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    ppg_parser.add_argument(
+        "--decision-path", default="artifacts/product-decisions/PRD-DEC-001.json"
+    )
+    ppg_parser.add_argument("--pdf-path", default="artifacts/pdf-001/PDF-001.json")
+    ppg_parser.add_argument("--lock-path", default=".build/compiled/product-plan.lock")
+    ppg_parser.add_argument(
+        "--import-preview-path", default=".build/compiled/product-task-import-preview.json"
+    )
+    ppg_parser.add_argument("--artifacts-dir", default="artifacts")
+    ppg_parser.add_argument("--env-file", default=".env")
+    ppg_parser.add_argument("--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH)
+    ppg_parser.add_argument(
+        "--expected-ppa-acceptance-hash",
+        default="cf97940d5848f8c651232e23b733325f4dd274aa7a45078abab0039d80e638e9",
+    )
+    ppg_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    ppg_parser.add_argument("--expected-decision-hash", default=EXPECTED_PRD_DEC_001_HASH)
+    ppg_parser.add_argument("--expected-pdf-hash", default=EXPECTED_PRODUCT_DRY_RUN_HASH)
+    ppg_parser.set_defaults(func=product_plan_final_acceptance)
+
+    ppg_alias_parser = subparsers.add_parser("ppg-001")
+    ppg_alias_parser.add_argument("--plan-path", default=".build/compiled/productization-plan.json")
+    ppg_alias_parser.add_argument("--ppa-path", default="artifacts/ppa-001/PPA-001.json")
+    ppg_alias_parser.add_argument("--pfe-path", default="artifacts/pfe-001/PFE-001.json")
+    ppg_alias_parser.add_argument(
+        "--decision-path", default="artifacts/product-decisions/PRD-DEC-001.json"
+    )
+    ppg_alias_parser.add_argument("--pdf-path", default="artifacts/pdf-001/PDF-001.json")
+    ppg_alias_parser.add_argument("--lock-path", default=".build/compiled/product-plan.lock")
+    ppg_alias_parser.add_argument(
+        "--import-preview-path", default=".build/compiled/product-task-import-preview.json"
+    )
+    ppg_alias_parser.add_argument("--artifacts-dir", default="artifacts")
+    ppg_alias_parser.add_argument("--env-file", default=".env")
+    ppg_alias_parser.add_argument(
+        "--expected-plan-hash", default=EXPECTED_PRODUCTIZATION_PLAN_HASH
+    )
+    ppg_alias_parser.add_argument(
+        "--expected-ppa-acceptance-hash",
+        default="cf97940d5848f8c651232e23b733325f4dd274aa7a45078abab0039d80e638e9",
+    )
+    ppg_alias_parser.add_argument(
+        "--expected-pfe-hash",
+        default="25cbfa87927d3486e096364c76c532459f75081d2819b0dd2961dfdcbc4855f9",
+    )
+    ppg_alias_parser.add_argument(
+        "--expected-decision-hash", default=EXPECTED_PRD_DEC_001_HASH
+    )
+    ppg_alias_parser.add_argument("--expected-pdf-hash", default=EXPECTED_PRODUCT_DRY_RUN_HASH)
+    ppg_alias_parser.set_defaults(func=product_plan_final_acceptance)
 
     residual_parser = subparsers.add_parser("generate-residual-dag")
     residual_parser.add_argument("--manifest-root", default="manifest/project/ai-ent")
