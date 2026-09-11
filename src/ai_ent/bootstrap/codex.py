@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ai_ent.bootstrap.git import PROHIBITED_PATHS, changed_files
@@ -13,6 +14,7 @@ from ai_ent.bootstrap.models import BootstrapTask, ExecutionPackage, ExecutionRe
 from ai_ent.bootstrap.paths import ROOT, VENV_PYTHON
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+CODEX_NON_INTERACTIVE_ARGS = ("exec", "--sandbox", "workspace-write", "--ignore-rules", "-")
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,36 @@ class CodexConfig:
         timeout = int(os.environ.get("AIENT_CODEX_TIMEOUT_SECONDS", "900"))
         command = tuple(shlex.split(raw_command)) if raw_command else ()
         return cls(command=command, default_timeout_seconds=timeout)
+
+    @classmethod
+    def for_scheduler_from_env(cls) -> CodexConfig:
+        return cls.from_env().for_scheduler_execution()
+
+    def for_scheduler_execution(self) -> CodexConfig:
+        return replace(self, command=_scheduler_command(self.command))
+
+    def scheduler_configuration_error(self) -> str | None:
+        if not self.command:
+            return "codex_not_configured:set AIENT_CODEX_COMMAND"
+        executable = self.command[0]
+        if _executable_missing(executable):
+            return f"codex_executable_not_found:{executable}"
+        if _executable_not_executable(executable):
+            return f"codex_executable_not_executable:{executable}"
+        if not _is_codex_executable(executable):
+            return None
+        if len(self.command) == 1:
+            return "codex_interactive_command:use codex exec"
+        if self.command[1] != "exec":
+            return f"codex_unsupported_scheduler_mode:{self.command[1]}"
+        sandbox = _sandbox_value(self.command)
+        if sandbox != "workspace-write":
+            return "codex_invalid_sandbox:use workspace-write"
+        if "--ignore-rules" not in self.command:
+            return "codex_missing_ignore_rules"
+        if "-" not in self.command[2:]:
+            return "codex_missing_stdin_prompt:-"
+        return None
 
 
 def build_execution_package(
@@ -72,7 +104,7 @@ def build_execution_package(
 
 class CodexExecutor:
     def __init__(self, config: CodexConfig | None = None, runner: Runner = subprocess.run) -> None:
-        self.config = config or CodexConfig.from_env()
+        self.config = config or CodexConfig.for_scheduler_from_env()
         self.runner = runner
 
     def execute(self, task: BootstrapTask) -> ExecutionResult:
@@ -85,12 +117,13 @@ class CodexExecutor:
         return self.execute_package(package)
 
     def execute_package(self, package: ExecutionPackage) -> ExecutionResult:
-        if not self.config.command:
+        configuration_error = self.config.scheduler_configuration_error()
+        if configuration_error is not None:
             return ExecutionResult(
                 ok=False,
-                message="CodexExecutor is NOT_CONFIGURED: set AIENT_CODEX_COMMAND",
+                message=f"CodexExecutor configuration invalid: {configuration_error}",
                 execution_id=package.execution_id,
-                terminal_state="not_configured",
+                terminal_state="not_configured" if not self.config.command else "failure",
             )
         if not package.worktree_path.exists() or not package.worktree_path.is_dir():
             return ExecutionResult(
@@ -121,6 +154,14 @@ class CodexExecutor:
                 stderr=_text(exc.stderr),
                 terminal_state="timeout",
             )
+        except OSError as exc:
+            return ExecutionResult(
+                ok=False,
+                message=f"CodexExecutor launch failed: {_text(str(exc))}",
+                execution_id=package.execution_id,
+                stderr=_text(str(exc)),
+                terminal_state="failure",
+            )
 
         return ExecutionResult(
             ok=completed.returncode == 0,
@@ -147,6 +188,65 @@ class CodexExecutor:
             }
         )
         return env
+
+
+def _scheduler_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    if not command:
+        return ()
+    executable = command[0]
+    if not _is_codex_executable(executable):
+        return command
+    if len(command) == 1:
+        return (executable, *CODEX_NON_INTERACTIVE_ARGS)
+    if command[1] != "exec":
+        return command
+    args = list(command[2:])
+    if _sandbox_value(command) is None:
+        args[0:0] = ["--sandbox", "workspace-write"]
+    if "--ignore-rules" not in args:
+        _insert_before_stdin_marker(args, "--ignore-rules")
+    if "-" not in args:
+        args.append("-")
+    return (executable, "exec", *args)
+
+
+def _is_codex_executable(executable: str) -> bool:
+    return Path(executable).name in {"codex", "codex.exe"}
+
+
+def _sandbox_value(command: tuple[str, ...]) -> str | None:
+    args = command[2:] if len(command) > 1 and command[1] == "exec" else command[1:]
+    for index, value in enumerate(args):
+        if value == "--sandbox" and index + 1 < len(args):
+            return args[index + 1]
+        if value.startswith("--sandbox="):
+            return value.split("=", 1)[1]
+        if value == "-s" and index + 1 < len(args):
+            return args[index + 1]
+    return None
+
+
+def _insert_before_stdin_marker(args: list[str], value: str) -> None:
+    try:
+        index = args.index("-")
+    except ValueError:
+        args.append(value)
+        return
+    args.insert(index, value)
+
+
+def _executable_missing(executable: str) -> bool:
+    path = Path(executable)
+    if path.parent != Path("."):
+        return not path.exists()
+    return shutil.which(executable) is None
+
+
+def _executable_not_executable(executable: str) -> bool:
+    path = Path(executable)
+    if path.parent != Path("."):
+        return path.exists() and not os.access(path, os.X_OK)
+    return False
 
 
 def _text(value: str | bytes | None) -> str:

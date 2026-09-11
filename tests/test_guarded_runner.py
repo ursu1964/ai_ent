@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from ai_ent.bootstrap.codex import CodexConfig
@@ -113,7 +115,7 @@ def make_runner(
         bounded_runner=bounded,  # type: ignore[arg-type]
         recovery=recovery or FakeRecovery(clean_recovery()),  # type: ignore[arg-type]
         readiness=readiness or FakeReadiness(),  # type: ignore[arg-type]
-        codex_config=codex_config or CodexConfig(command=("codex",), default_timeout_seconds=30),
+        codex_config=codex_config or CodexConfig(command=(sys.executable,), default_timeout_seconds=30),
         preflight=preflight,
         authority_check=authority,
         run_id_factory=lambda: "guarded-1",
@@ -170,6 +172,25 @@ def test_codex_not_configured_stops_safely_without_scheduling() -> None:
     assert result.stop_reason == "BLOCKED"
     assert result.human_action_required
     assert result.blockers == ("codex_not_configured:set AIENT_CODEX_COMMAND",)
+    assert bounded.calls == 0
+
+
+def test_invalid_codex_scheduler_command_stops_before_scheduling(tmp_path: Path) -> None:
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(
+        bounded=bounded,
+        readiness=FakeReadiness(("TASK-A",)),
+        codex_config=CodexConfig(command=(str(codex), "resume"), default_timeout_seconds=30),
+    )
+
+    result = runner.run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.stop_reason == "BLOCKED"
+    assert result.human_action_required
+    assert result.blockers == ("codex_unsupported_scheduler_mode:resume",)
     assert bounded.calls == 0
 
 

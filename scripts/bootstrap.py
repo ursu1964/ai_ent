@@ -215,7 +215,7 @@ def guarded_run(args: argparse.Namespace) -> int:
 
 
 def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedAutonomousRunner:
-    codex_config = CodexConfig.from_env()
+    codex_config = CodexConfig.for_scheduler_from_env()
     timeout_policy = ExecutionTimeoutPolicy.for_codex_default(codex_config.default_timeout_seconds)
     if session is not None and config.project_id == DEFAULT_RUNTIME_PROJECT_ID:
         manifest_tasks = build_runtime_manifest_tasks(session, config.project_id)

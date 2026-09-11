@@ -51,7 +51,7 @@ def writer_command(filename: str, marker: str) -> tuple[str, ...]:
 def guarded_runner(*, bounded_runner: object) -> GuardedAutonomousRunner:
     return GuardedAutonomousRunner(
         bounded_runner=bounded_runner,  # type: ignore[arg-type]
-        codex_config=CodexConfig(command=("configured",), default_timeout_seconds=30),
+        codex_config=CodexConfig(command=(sys.executable,), default_timeout_seconds=30),
         preflight=ok_preflight,
         authority_check=ok_authority,
     )

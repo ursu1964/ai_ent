@@ -209,6 +209,35 @@ def test_not_configured_is_persisted_without_worktree(tmp_path: Path) -> None:
         assert persisted.terminal_state == "not_configured"
 
 
+def test_invalid_codex_configuration_is_persisted_without_worktree(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    task = manifest_task()
+    factory = session_factory()
+    with factory() as session:
+        scheduled = seed_claim(session, task, repo)
+        runner = ClaimedExecutionRunner(
+            config=CodexConfig(command=(str(codex), "resume")),
+            repository_path=repo,
+            worktree_root=tmp_path / "worktrees",
+        )
+
+        package = require_package(scheduled)
+        execution = require_execution(scheduled)
+        result = runner.run_claimed(session, package=package, owner_id="worker-1")
+
+        assert result.status == "NOT_CONFIGURED"
+        assert result.reason == "codex_unsupported_scheduler_mode:resume"
+        assert result.worktree_path is None
+        persisted = session.get(Execution, execution.id)
+        assert persisted is not None
+        assert persisted.status == "failed"
+        assert persisted.terminal_state == "failure"
+        assert persisted.error_classification == "codex_configuration_invalid"
+
+
 def test_non_zero_exit_and_timeout_are_persisted(tmp_path: Path) -> None:
     repo = make_repo(tmp_path)
     factory = session_factory()

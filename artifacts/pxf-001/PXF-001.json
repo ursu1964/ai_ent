@@ -1,0 +1,218 @@
+{
+  "id": "PXF-001",
+  "title": "Scheduler Codex Non-Interactive Invocation Remediation",
+  "result": "IMPLEMENTED_AND_VERIFIED",
+  "remediation_commit": "reported_after_commit_creation",
+  "branch": "task/PXF-001/execution-codex-noninteractive-remediation",
+  "base_commit": "467010c7ed6e0ad5fd99f11ba1f4d640a698e8bd",
+  "runtime_product_execution": "stopped",
+  "product_tasks_executed": false,
+  "prd_task_003_requeued": false,
+  "gates_approved": false,
+  "decisions_resolved": false,
+  "frozen_product_plan_modified": false,
+  "incident": {
+    "review": "PXR-001",
+    "result": "EXECUTOR_REMEDIATION_REQUIRED",
+    "root_cause": "CODEX_INVOCATION_DEFECT",
+    "attempt": 7,
+    "execution_id": "execution-7ad10ab0b4d2413ba37fa5c6f5fb1ca2",
+    "previous_invocation": [
+      "codex"
+    ],
+    "failure": "Bare interactive Codex CLI was launched from a non-interactive scheduler subprocess."
+  },
+  "remediation": {
+    "corrected_invocation_contract": [
+      "codex",
+      "exec",
+      "--sandbox",
+      "workspace-write",
+      "--ignore-rules",
+      "-"
+    ],
+    "command_resolution_design": [
+      "CodexConfig.from_env parses AIENT_CODEX_COMMAND with shlex into argv.",
+      "CodexConfig.for_scheduler_from_env and for_scheduler_execution normalize scheduler Codex executables into non-interactive codex exec argv.",
+      "CodexExecutor defaults to scheduler-safe config when no explicit config is injected.",
+      "GuardedAutonomousRunner, ClaimedExecutionRunner, scripts/bootstrap.py guarded-run, and bootstrap proof use the scheduler-safe resolver.",
+      "Explicit non-Codex test commands are preserved as argv and are not shell-interpolated."
+    ],
+    "configuration_validation": [
+      "Empty command is rejected as codex_not_configured:set AIENT_CODEX_COMMAND.",
+      "Missing executable is rejected before subprocess launch.",
+      "Explicit non-executable path is rejected before subprocess launch.",
+      "Bare Codex argv reaching CodexExecutor is rejected as codex_interactive_command:use codex exec.",
+      "Codex modes other than exec are rejected for scheduler execution.",
+      "Scheduler Codex exec requires workspace-write sandbox, --ignore-rules, and stdin marker '-'."
+    ],
+    "argv_stdin_cwd_timeout": {
+      "argv_form": true,
+      "shell_string_interpolation": false,
+      "stdin": "package.instructions passed through subprocess.run(input=..., text=True)",
+      "cwd": "package.worktree_path",
+      "timeout": "package.timeout_seconds",
+      "stdout": "captured in ExecutionResult.stdout",
+      "stderr": "captured in ExecutionResult.stderr"
+    },
+    "exit_handling": {
+      "process_launch_failure": "reported as terminal_state=failure without raising out of executor",
+      "binary_missing_or_invalid_config": "deterministic pre-subprocess configuration failure",
+      "nonzero_exit": "terminal_state=failure and exit_code captured",
+      "timeout": "terminal_state=timeout and timeout result captured",
+      "success": "terminal_state=success and changed files detected"
+    },
+    "stdout_stderr_decision": {
+      "decision": "FUTURE_HARDENING",
+      "reason": "ExecutionResult already captures bounded subprocess streams in memory, but PostgreSQL executions have no stdout/stderr evidence fields. Persisting redacted diagnostics would expand the evidence schema beyond this narrow executor invocation remediation."
+    }
+  },
+  "binary_smoke_proof": {
+    "command": "/home/user/.local/bin/codex exec --help",
+    "result": "PASS",
+    "non_interactive_help_observed": true,
+    "stdin_marker_help_observed": true,
+    "implementation_work_launched": false
+  },
+  "package_loader_regression_proof": {
+    "result": "PASS",
+    "task_id": "PRD-TASK-003",
+    "project_id": "PRJ-AI-ENT",
+    "package_construction": "PASS",
+    "runtime_binding_loader": "PASS",
+    "bootstrap_fallback_regression": false,
+    "fingerprint": "a488123b9f661a3bb36ad8a2cb6013cec831acde8cd9eb3e6a7ebdb3267de6f6",
+    "timeout_seconds": 1800,
+    "plan_id": "PRODUCT-PLAN-7b0342fb7fd5",
+    "plan_version": "1",
+    "verification_commands": [
+      "/home/user/projects/ai_ent/aient/bin/python -m pytest -q",
+      "/home/user/projects/ai_ent/aient/bin/python -m ruff check .",
+      "/home/user/projects/ai_ent/aient/bin/python -m pyright"
+    ]
+  },
+  "prior_remediation_matrix": {
+    "workspace_lifecycle_convergence": "PASS",
+    "api_secret_redaction": "PASS",
+    "scheduler_failure_persistence": "PASS",
+    "timeout_policy": "PASS",
+    "acceptance_hash_determinism": "PASS",
+    "git_hook_boundary": "PASS",
+    "ruff_import_ordering": "PASS",
+    "verification_command_ordering": "PASS",
+    "mandatory_verification_commands_reuse": "PASS",
+    "runtime_bound_package_loading": "PASS"
+  },
+  "targeted_verification": {
+    "executor_invocation_tests": {
+      "command": "./aient/bin/python -m pytest -q tests/test_codex_executor.py tests/test_guarded_runner.py tests/test_claimed_execution_runner.py",
+      "result": "PASS",
+      "summary": "32 passed"
+    },
+    "scheduler_package_failure_runtime_tests": {
+      "command": "./aient/bin/python -m pytest -q tests/test_codex_executor.py tests/test_claimed_execution_runner.py tests/test_guarded_runner.py tests/test_scheduler_iteration.py tests/test_bounded_scheduler_runner.py tests/test_scheduler_recovery.py tests/test_runtime_handoff.py tests/test_external_project.py tests/test_codex_package.py tests/test_e2e_application_proof.py tests/test_product_api.py",
+      "result": "PASS",
+      "summary": "140 passed"
+    },
+    "postgres_guarded_regression_tests": {
+      "command": "./aient/bin/python -m pytest -q tests/integration/test_guarded_runner_postgres.py::test_postgres_guarded_max_tasks_one_leaves_next_ready tests/integration/test_guarded_runner_postgres.py::test_postgres_guarded_failure_stops_before_dependent_task",
+      "result": "PASS",
+      "summary": "2 passed"
+    }
+  },
+  "full_verification": {
+    "preflight": {
+      "command": "./aient/bin/python scripts/preflight.py",
+      "result": "PASS"
+    },
+    "pytest": {
+      "command": "./aient/bin/python -m pytest -q",
+      "result": "PASS",
+      "summary": "524 passed, 6 skipped"
+    },
+    "ruff": {
+      "command": "./aient/bin/python -m ruff check .",
+      "result": "PASS"
+    },
+    "pyright": {
+      "command": "./aient/bin/python -m pyright",
+      "result": "PASS",
+      "summary": "0 errors, 0 warnings, 0 informations"
+    },
+    "alembic": {
+      "command": "./aient/bin/python -m alembic current",
+      "result": "PASS",
+      "current": "0020 (head)"
+    }
+  },
+  "runtime_integrity": {
+    "postgresql_authority": "active",
+    "prd_task_003_status": "blocked",
+    "attempts": [
+      {
+        "attempt": 1,
+        "status": "timeout",
+        "classification": "executor_timeout"
+      },
+      {
+        "attempt": 2,
+        "status": "failed",
+        "classification": "verification_failed"
+      },
+      {
+        "attempt": 3,
+        "status": "failed",
+        "classification": "verification_failed"
+      },
+      {
+        "attempt": 4,
+        "status": "failed",
+        "classification": "verification_failed"
+      },
+      {
+        "attempt": 5,
+        "status": "failed",
+        "classification": "verification_failed"
+      },
+      {
+        "attempt": 6,
+        "status": "failed",
+        "classification": "package_construction_failed"
+      },
+      {
+        "attempt": 7,
+        "status": "failed",
+        "classification": "executor_failed"
+      }
+    ],
+    "next_authoritative_attempt_after_requeue": 8,
+    "product_ready_tasks": [],
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "gate": "GATE-PRD-EXTERNAL-RUNTIME",
+    "gate_status": "approved",
+    "pending_gates": 7,
+    "prd_dec_002": "unresolved",
+    "prd_dec_003": "unresolved",
+    "recovery": "READY_TO_CONTINUE / BETWEEN_TASKS"
+  },
+  "frozen_identity": {
+    "task_id": "PRD-TASK-003",
+    "fingerprint": "a488123b9f661a3bb36ad8a2cb6013cec831acde8cd9eb3e6a7ebdb3267de6f6",
+    "plan_id": "PRODUCT-PLAN-7b0342fb7fd5",
+    "plan_version": "1",
+    "gate": "GATE-PRD-EXTERNAL-RUNTIME",
+    "gate_status": "approved",
+    "risk": "HIGH",
+    "timeout_seconds": 1800,
+    "claimed_lease_seconds": 1860,
+    "plan_drift": false,
+    "frozen_artifact_hashes": {
+      ".build/compiled/productization-plan.json": "893c4b40891197f8c14259e1408509c06d32464de75ecaf4b70e77ad31850c2c",
+      "artifacts/prd-001/PRD-001.json": "893c4b40891197f8c14259e1408509c06d32464de75ecaf4b70e77ad31850c2c",
+      ".build/compiled/product-plan-freeze.json": "c1097067c296caebc8327e3215cfc74f29b11b971ae26516a45dad9f32506655",
+      ".build/compiled/product-task-contracts.json": "d36b0969d3017f55fd2d9ff37dad26046e5cff7bd92d0dd2b742abed694796b5"
+    }
+  },
+  "recommendation": "Proceed to PXV-001 independent executor revalidation, then PRQ-010 and PRE-017 attempt 8 only if PXV-001 accepts this remediation."
+}

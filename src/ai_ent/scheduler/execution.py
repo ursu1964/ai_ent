@@ -57,7 +57,7 @@ class ClaimedExecutionRunner:
         worktree_root: Path | None = None,
         lease_grace: timedelta = timedelta(minutes=1),
     ) -> None:
-        self.config = config or CodexConfig.from_env()
+        self.config = (config or CodexConfig.for_scheduler_from_env()).for_scheduler_execution()
         self.executor = executor or CodexExecutor(config=self.config)
         self.executions = executions or ExecutionRepository()
         self.leases = leases or LeaseRepository()
@@ -93,13 +93,17 @@ class ClaimedExecutionRunner:
                 package=package,
                 reason="lease_not_owned_or_expired",
             )
-        if not self.config.command:
+        configuration_error = self.config.scheduler_configuration_error()
+        if configuration_error is not None:
+            error_classification = (
+                "codex_not_configured" if not self.config.command else "codex_configuration_invalid"
+            )
             self.executions.update_lifecycle(
                 session,
                 execution.id,
                 status="failed",
-                terminal_state="not_configured",
-                error_classification="codex_not_configured",
+                terminal_state="not_configured" if not self.config.command else "failure",
+                error_classification=error_classification,
                 finished_at=database_now(session),
             )
             return ClaimedExecutionResult(
@@ -107,7 +111,7 @@ class ClaimedExecutionRunner:
                 execution=execution,
                 lease=lease,
                 package=package,
-                reason="codex_not_configured",
+                reason=configuration_error,
             )
 
         renewal = self.claiming.renew(

@@ -102,7 +102,7 @@ class GuardedAutonomousRunner:
         self.bounded_runner = bounded_runner or BoundedSchedulerRunner()
         self.recovery = recovery or SchedulerRecoveryService()
         self.readiness = readiness or TaskReadinessService()
-        self.codex_config = codex_config or CodexConfig.from_env()
+        self.codex_config = (codex_config or CodexConfig.for_scheduler_from_env()).for_scheduler_execution()
         self.preflight = preflight or repository_preflight
         self.authority_check = authority_check or require_postgresql_authority
         self.run_id_factory = run_id_factory or (lambda: f"guarded-{uuid.uuid4().hex}")
@@ -168,7 +168,8 @@ class GuardedAutonomousRunner:
                 ),
             )
 
-        if not self.codex_config.command:
+        configuration_error = self.codex_config.scheduler_configuration_error()
+        if configuration_error is not None:
             return self._record_summary(
                 session,
                 self._result(
@@ -180,7 +181,7 @@ class GuardedAutonomousRunner:
                     remaining_ready_tasks=ready_tasks,
                     likely_next_task_id=ready_tasks[0] if ready_tasks else None,
                     human_action_required=True,
-                    blockers=("codex_not_configured:set AIENT_CODEX_COMMAND",),
+                    blockers=(configuration_error,),
                 ),
             )
 

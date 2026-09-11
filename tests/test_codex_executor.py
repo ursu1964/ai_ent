@@ -3,9 +3,15 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
-from ai_ent.bootstrap.codex import CodexConfig, CodexExecutor, build_execution_package
+from ai_ent.bootstrap.codex import (
+    CODEX_NON_INTERACTIVE_ARGS,
+    CodexConfig,
+    CodexExecutor,
+    build_execution_package,
+)
 from ai_ent.bootstrap.executors import Executor, get_executor
 from ai_ent.bootstrap.models import BootstrapTask
 
@@ -84,7 +90,112 @@ def test_missing_codex_configuration_is_deterministic() -> None:
 
     assert not result.ok
     assert result.terminal_state == "not_configured"
-    assert "NOT_CONFIGURED" in result.message
+    assert "codex_not_configured:set AIENT_CODEX_COMMAND" in result.message
+
+
+def test_scheduler_env_bare_codex_resolves_to_non_interactive_argv(monkeypatch) -> None:
+    monkeypatch.setenv("AIENT_CODEX_COMMAND", "codex")
+
+    config = CodexConfig.for_scheduler_from_env()
+
+    assert config.command == ("codex", *CODEX_NON_INTERACTIVE_ARGS)
+
+
+def test_scheduler_env_preserves_executable_path_with_spaces(tmp_path: Path, monkeypatch) -> None:
+    tool_dir = tmp_path / "tool dir"
+    tool_dir.mkdir()
+    codex = tool_dir / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    monkeypatch.setenv("AIENT_CODEX_COMMAND", f"'{codex}'")
+
+    config = CodexConfig.for_scheduler_from_env()
+
+    assert config.command == (str(codex), *CODEX_NON_INTERACTIVE_ARGS)
+
+
+def test_scheduler_codex_exec_command_adds_required_noninteractive_arguments(monkeypatch) -> None:
+    monkeypatch.setenv("AIENT_CODEX_COMMAND", "codex exec")
+
+    config = CodexConfig.for_scheduler_from_env()
+
+    assert config.command == ("codex", "exec", "--sandbox", "workspace-write", "--ignore-rules", "-")
+
+
+def test_scheduler_codex_exec_keeps_options_before_stdin_marker(monkeypatch) -> None:
+    monkeypatch.setenv("AIENT_CODEX_COMMAND", "codex exec --sandbox workspace-write -")
+
+    config = CodexConfig.for_scheduler_from_env()
+
+    assert config.command == ("codex", "exec", "--sandbox", "workspace-write", "--ignore-rules", "-")
+
+
+def test_invalid_codex_scheduler_modes_are_rejected(tmp_path: Path) -> None:
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    config = CodexConfig(command=(str(codex), "resume"))
+
+    assert config.scheduler_configuration_error() == f"codex_unsupported_scheduler_mode:{config.command[1]}"
+
+
+def test_codex_executor_rejects_bare_codex_without_subprocess(tmp_path: Path) -> None:
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    task = make_task()
+    package = build_execution_package(task, repository_path=tmp_path, worktree_path=tmp_path)
+
+    def forbidden_runner(*_: Any, **__: Any) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("interactive codex command should not launch")
+
+    result = CodexExecutor(config=CodexConfig(command=(str(codex),)), runner=forbidden_runner).execute_package(package)
+
+    assert not result.ok
+    assert result.terminal_state == "failure"
+    assert "codex_interactive_command:use codex exec" in result.message
+
+
+def test_codex_executor_passes_argv_stdin_cwd_and_timeout(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    codex = tmp_path / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    codex.chmod(0o755)
+    task = make_task()
+    package = build_execution_package(task, repository_path=repo, worktree_path=repo, timeout_seconds=42)
+    captured: dict[str, Any] = {}
+    command = (str(codex), "exec", "--sandbox", "workspace-write", "--ignore-rules", "-")
+
+    def runner(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["args"] = args
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n", stderr="")
+
+    result = CodexExecutor(config=CodexConfig(command=command), runner=runner).execute_package(package)
+
+    assert result.ok
+    assert captured["args"] == list(command)
+    assert captured["cwd"] == repo
+    assert captured["input"] == package.instructions
+    assert captured["timeout"] == 42
+    assert captured["stdout"] == subprocess.PIPE
+    assert captured["stderr"] == subprocess.PIPE
+
+
+def test_process_launch_failure_is_reported(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    task = make_task()
+    package = build_execution_package(task, repository_path=repo, worktree_path=repo)
+    command = (sys.executable, "-c", "raise SystemExit(0)")
+
+    def runner(*_: Any, **__: Any) -> subprocess.CompletedProcess[str]:
+        raise OSError("permission denied")
+
+    result = CodexExecutor(config=CodexConfig(command=command), runner=runner).execute_package(package)
+
+    assert not result.ok
+    assert result.terminal_state == "failure"
+    assert "permission denied" in result.stderr
 
 
 def test_invalid_worktree_rejected(tmp_path: Path) -> None:

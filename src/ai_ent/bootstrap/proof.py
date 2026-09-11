@@ -25,7 +25,7 @@ class ProofResult:
 def run_codex_proof() -> ProofResult:
     tasks = load_tasks()
     task = tasks["TASK-0013"]
-    config = CodexConfig.from_env()
+    config = CodexConfig.for_scheduler_from_env()
     if not config.command:
         return ProofResult(
             execution=ExecutionResult(
