@@ -409,7 +409,7 @@ def import_external_frozen_plan(args: argparse.Namespace) -> int:
     database = Database(settings)
     try:
         with database.session() as session:
-            result = ExternalProjectRuntimeImporter().import_frozen_plan(
+            receipt = ExternalProjectRuntimeImporter().import_runtime_binding(
                 session,
                 frozen_plan,
                 runtime_project_id=args.project,
@@ -417,8 +417,8 @@ def import_external_frozen_plan(args: argparse.Namespace) -> int:
                 require_clean_git=args.require_clean_git,
                 require_codex_command=args.require_codex_command,
             )
-            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
-            return 0 if result.ok else 1
+            print(json.dumps(receipt.as_dict(), indent=2, sort_keys=True))
+            return 0 if receipt.ok else 1
     finally:
         database.dispose()
 

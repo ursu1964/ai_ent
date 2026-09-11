@@ -1719,14 +1719,37 @@ def _hash(payload: Any) -> str:
 def _redact_url(value: str | None) -> str | None:
     if value is None:
         return None
+    redacted = value
     if "@" not in value:
-        return value
-    scheme, separator, rest = value.partition("://")
+        return _redact_url_query_or_fragment(redacted)
+    scheme, separator, rest = redacted.partition("://")
     if separator:
         _, _, host = rest.rpartition("@")
-        return f"{scheme}://<redacted>@{host}"
-    _, _, host = value.rpartition("@")
-    return f"<redacted>@{host}"
+        redacted = f"{scheme}://<redacted>@{host}"
+    else:
+        _, _, host = redacted.rpartition("@")
+        redacted = f"<redacted>@{host}"
+    return _redact_url_query_or_fragment(redacted)
+
+
+def _redact_url_query_or_fragment(value: str) -> str:
+    base, query_separator, query_and_fragment = value.partition("?")
+    if query_separator:
+        query, fragment_separator, fragment = query_and_fragment.partition("#")
+        if _text_has_secret_marker(query):
+            query = "<redacted>"
+        if fragment_separator and _text_has_secret_marker(fragment):
+            fragment = "<redacted>"
+        return f"{base}?{query}{fragment_separator}{fragment}"
+    base, fragment_separator, fragment = value.partition("#")
+    if fragment_separator and _text_has_secret_marker(fragment):
+        return f"{base}#<redacted>"
+    return value
+
+
+def _text_has_secret_marker(value: str) -> bool:
+    normalized = value.lower().replace("-", "_")
+    return any(marker in normalized for marker in SECRET_FIELD_MARKERS)
 
 
 def _redact_mapping(value: dict[str, Any]) -> dict[str, Any]:

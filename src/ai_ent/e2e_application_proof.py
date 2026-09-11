@@ -294,6 +294,7 @@ def _semantic_runtime_import(runtime_import: dict[str, Any]) -> dict[str, Any]:
             for command in payload["mandatory_verification_commands"]
         ]
     payload.pop("frozen_plan_hash", None)
+    payload.pop("receipt_hash", None)
     return payload
 
 
@@ -795,39 +796,14 @@ def _import_target_runtime_plan(
 ) -> dict[str, Any]:
     frozen_plan = _target_external_frozen_plan(target_workspace, target_plan)
     importer = ExternalProjectRuntimeImporter()
-    result = importer.import_frozen_plan(
+    receipt = importer.import_runtime_binding(
         session,
         frozen_plan,
         require_clean_git=False,
         require_codex_command=False,
         repository_root=target_workspace,
     )
-    return {
-        "ok": result.ok,
-        "status": result.status,
-        "import_id": result.import_id,
-        "importer_version": importer.importer_version,
-        "project_id": result.project_id,
-        "plan_id": result.plan_id,
-        "plan_version": result.plan_version,
-        "tasks_imported": result.tasks_imported,
-        "dependency_edges_imported": result.dependency_edges_imported,
-        "human_gates_bound": result.human_gates_bound,
-        "runtime_ready_tasks": list(result.runtime_ready_tasks),
-        "gated_not_ready_tasks": list(result.gated_not_ready_tasks),
-        "blockers": list(result.blockers),
-        "control_plane_authority": frozen_plan.project.runtime_binding.control_plane_authority,
-        "grants_control_plane_authority": (
-            frozen_plan.project.runtime_binding.grants_control_plane_authority
-        ),
-        "verifier_bypass_authority": frozen_plan.project.runtime_binding.verifier_bypass_authority,
-        "implicit_human_gate_approval": (
-            frozen_plan.project.runtime_binding.implicit_human_gate_approval
-        ),
-        "mandatory_verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
-        "independent_verification_required": frozen_plan.project.plan.independent_verification_required,
-        "frozen_plan_hash": frozen_plan.frozen_plan_hash,
-    }
+    return receipt.as_dict()
 
 
 def _target_external_frozen_plan(

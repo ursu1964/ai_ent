@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from ai_ent.external_project import MANDATORY_VERIFICATION_COMMANDS
+from ai_ent.external_project import CONTROL_PLANE_AUTHORITY, MANDATORY_VERIFICATION_COMMANDS
 from ai_ent.persistence.models import (
     Base,
     Execution,
@@ -363,6 +363,88 @@ def test_external_runtime_importer_preserves_explicit_approved_gate_state(
         assert readiness.status == "READY"
 
 
+def test_external_runtime_importer_returns_deterministic_binding_receipt(
+    tmp_path: Path,
+) -> None:
+    first_factory = session_factory()
+    second_factory = session_factory()
+    frozen = frozen_plan_project(tmp_path)
+
+    with first_factory() as session:
+        first = ExternalProjectRuntimeImporter().import_runtime_binding(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+    with second_factory() as session:
+        second = ExternalProjectRuntimeImporter().import_runtime_binding(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+
+    payload = first.as_dict()
+    assert payload == second.as_dict()
+    assert payload["record_kind"] == "external_project_runtime_binding_receipt"
+    assert payload["status"] == "IMPORTED"
+    assert payload["runtime_binding"]["binding_id"] == "BIND-EXT-RUNTIME"
+    assert payload["workspace_binding"]["workspace_id"] == "WS-EXT-RUNTIME"
+    assert payload["repository_binding"]["control_plane_write_authority"] is False
+    assert payload["human_gate_bindings"] == [
+        {
+            "gate_id": "GATE-EXT-TASK-002",
+            "required_before": "execution",
+            "state": "pending",
+            "task_id": "EXT-TASK-002",
+        }
+    ]
+    assert payload["control_plane_authority"] == "existing_ai_enterprise_control_plane"
+    assert payload["grants_control_plane_authority"] is False
+    assert payload["verifier_bypass_authority"] is False
+    assert payload["implicit_human_gate_approval"] is False
+    assert payload["independent_verification_required"] is True
+    assert payload["mandatory_verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+
+
+def test_external_import_persists_runtime_binding_metadata_for_package_context(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(tmp_path, remote_url="https://git.example/runtime-app.git")
+
+    with factory() as session:
+        result = ExternalProjectRuntimeImporter().import_runtime_binding(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        binding = session.get(RuntimeTaskPlanBinding, "EXT-TASK-001")
+
+        assert result.ok
+        assert binding is not None
+        acceptance = json.loads(binding.acceptance_json)
+        runtime_binding = acceptance["runtime_binding"]
+        assert runtime_binding["binding_id"] == "BIND-EXT-RUNTIME"
+        assert runtime_binding["project_id"] == frozen.project.project_id
+        assert runtime_binding["workspace_root"] == frozen.project.workspace.root_path
+        assert runtime_binding["repository"]["remote_url"] == (
+            "https://git.example/runtime-app.git"
+        )
+        assert runtime_binding["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+        assert runtime_binding["grants_control_plane_authority"] is False
+        assert runtime_binding["verifier_bypass_authority"] is False
+        assert runtime_binding["implicit_human_gate_approval"] is False
+        assert runtime_binding["mandatory_verification_commands"] == list(
+            MANDATORY_VERIFICATION_COMMANDS
+        )
+
+
 def test_external_runtime_handoff_artifacts_are_deterministic(
     tmp_path: Path,
 ) -> None:
@@ -396,5 +478,30 @@ def test_external_frozen_plan_import_blocks_without_leaking_secret_remote(
 
     rendered = "\n".join(result.blockers)
     assert result.status == "BLOCKED"
+    assert "https://git.example/runtime-app.git?<redacted>" in rendered
+    assert "SUPERSECRET" not in rendered
+
+
+def test_external_runtime_binding_receipt_blocks_without_leaking_secret_remote(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(
+        tmp_path,
+        remote_url="https://git.example/runtime-app.git?token=SUPERSECRET",
+    )
+
+    with factory() as session:
+        receipt = ExternalProjectRuntimeImporter().import_runtime_binding(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+
+    rendered = json.dumps(receipt.as_dict(), sort_keys=True)
+    assert receipt.ok is False
+    assert receipt.as_dict()["status"] == "BLOCKED"
     assert "https://git.example/runtime-app.git?<redacted>" in rendered
     assert "SUPERSECRET" not in rendered

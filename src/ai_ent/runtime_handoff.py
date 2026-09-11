@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
 from ai_ent.bootstrap.paths import VENV_PYTHON
 from ai_ent.external_project import (
+    MANDATORY_VERIFICATION_COMMANDS,
     ExternalProjectFrozenPlan,
     ExternalProjectRuntimeTask,
     validate_external_project_frozen_plan,
@@ -59,6 +60,9 @@ from ai_ent.scheduler.readiness import TaskReadinessService
 RUNTIME_HANDOFF_IMPORTER_VERSION = "rhi-001.1"
 EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION = "erhi-001.1"
 EXTERNAL_PROJECT_RUNTIME_IMPORTER_VERSION = "epri-001.1"
+EXTERNAL_PROJECT_RUNTIME_RECEIPT_SCHEMA_VERSION = (
+    "external-project-runtime-import-receipt-v0.1"
+)
 RUNTIME_IMPORT_PREFIX = "IMPL-"
 DEFAULT_RUNTIME_PROJECT_ID = "PRJ-AI-ENT"
 STANDARD_RUNTIME_VERIFICATION_COMMANDS = (
@@ -117,6 +121,65 @@ class RuntimePlanImportResult:
             "executions_after_import": self.executions_after_import,
             "active_leases_after_import": self.active_leases_after_import,
             "blockers": list(self.blockers),
+        }
+
+
+@dataclass(frozen=True)
+class ExternalProjectRuntimeBindingReceipt:
+    frozen_plan: ExternalProjectFrozenPlan
+    result: RuntimePlanImportResult
+    importer_version: str
+    schema_version: str = EXTERNAL_PROJECT_RUNTIME_RECEIPT_SCHEMA_VERSION
+
+    @property
+    def ok(self) -> bool:
+        return self.result.ok
+
+    @property
+    def receipt_hash(self) -> str:
+        return hashlib.sha256(canonical_bytes(self._payload())).hexdigest()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self._payload(), "receipt_hash": self.receipt_hash}
+
+    def _payload(self) -> dict[str, Any]:
+        project = self.frozen_plan.project
+        validation = validate_external_project_frozen_plan(self.frozen_plan)
+        return {
+            "record_kind": "external_project_runtime_binding_receipt",
+            "schema_version": self.schema_version,
+            "importer_version": self.importer_version,
+            "ok": self.result.ok,
+            "status": self.result.status,
+            "import_id": self.result.import_id,
+            "project_id": self.result.project_id,
+            "plan_id": self.result.plan_id,
+            "plan_version": self.result.plan_version,
+            "tasks_imported": self.result.tasks_imported,
+            "dependency_edges_imported": self.result.dependency_edges_imported,
+            "human_gates_bound": self.result.human_gates_bound,
+            "effective_concurrency": self.result.effective_concurrency,
+            "fingerprints_validated": self.result.fingerprints_validated,
+            "runtime_ready_tasks": list(self.result.runtime_ready_tasks),
+            "gated_not_ready_tasks": list(self.result.gated_not_ready_tasks),
+            "executions_after_import": self.result.executions_after_import,
+            "active_leases_after_import": self.result.active_leases_after_import,
+            "blockers": list(self.result.blockers),
+            "frozen_plan_hash": self.frozen_plan.frozen_plan_hash,
+            "project_model_hash": project.model_hash,
+            "runtime_binding": project.runtime_binding.as_dict(),
+            "workspace_binding": project.workspace.as_dict(),
+            "repository_binding": project.repository.as_dict(),
+            "human_gate_bindings": _external_project_human_gate_bindings(self.frozen_plan),
+            "control_plane_authority": project.runtime_binding.control_plane_authority,
+            "grants_control_plane_authority": (
+                project.runtime_binding.grants_control_plane_authority
+            ),
+            "verifier_bypass_authority": project.runtime_binding.verifier_bypass_authority,
+            "implicit_human_gate_approval": project.runtime_binding.implicit_human_gate_approval,
+            "independent_verification_required": project.plan.independent_verification_required,
+            "mandatory_verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+            "validation": validation.as_dict(),
         }
 
 
@@ -708,6 +771,30 @@ class ExternalProjectRuntimeImporter:
             repository_root=repository_root,
         )
 
+    def import_runtime_binding(
+        self,
+        session: Session,
+        frozen_plan: ExternalProjectFrozenPlan,
+        *,
+        runtime_project_id: str | None = None,
+        require_clean_git: bool = True,
+        require_codex_command: bool = True,
+        repository_root: Path = Path("."),
+    ) -> ExternalProjectRuntimeBindingReceipt:
+        result = self.import_frozen_plan(
+            session,
+            frozen_plan,
+            runtime_project_id=runtime_project_id,
+            require_clean_git=require_clean_git,
+            require_codex_command=require_codex_command,
+            repository_root=repository_root,
+        )
+        return external_project_runtime_import_receipt(
+            frozen_plan,
+            result,
+            importer_version=self.importer_version,
+        )
+
     def status(
         self,
         session: Session,
@@ -785,6 +872,19 @@ def external_project_runtime_handoff_artifacts(
     )
 
 
+def external_project_runtime_import_receipt(
+    frozen_plan: ExternalProjectFrozenPlan,
+    result: RuntimePlanImportResult,
+    *,
+    importer_version: str = EXTERNAL_PROJECT_RUNTIME_IMPORTER_VERSION,
+) -> ExternalProjectRuntimeBindingReceipt:
+    return ExternalProjectRuntimeBindingReceipt(
+        frozen_plan=frozen_plan,
+        result=result,
+        importer_version=importer_version,
+    )
+
+
 def _import_id(plan_id: str, plan_version: str) -> str:
     return f"rhi-{plan_id.lower()}-v{plan_version}"
 
@@ -815,7 +915,7 @@ def _runtime_bound_verification_commands(
 def _runtime_acceptance_payload(task: GeneratedImplementationTask) -> dict[str, Any]:
     verification = task.verification
     commands = verification.get("commands")
-    return {
+    payload: dict[str, Any] = {
         "acceptance_criteria": list(verification.get("acceptance_criteria", ())),
         "verification_commands": (
             list(commands)
@@ -823,6 +923,10 @@ def _runtime_acceptance_payload(task: GeneratedImplementationTask) -> dict[str, 
             else list(_runtime_verification_commands(str(verification.get("profile", ""))))
         ),
     }
+    runtime_binding = verification.get("runtime_binding")
+    if isinstance(runtime_binding, dict):
+        payload["runtime_binding"] = runtime_binding
+    return payload
 
 
 def _runtime_acceptance_text(task: GeneratedImplementationTask) -> str:
@@ -899,7 +1003,7 @@ def _external_project_implementation_plan(
     project = frozen_plan.project
     task_by_id = {task.id: task for task in frozen_plan.tasks}
     tasks = tuple(
-        _external_project_generated_task(task)
+        _external_project_generated_task(frozen_plan, task)
         for task in sorted(frozen_plan.tasks, key=lambda item: item.id)
     )
     waves = _topological_waves(task_by_id)
@@ -969,6 +1073,7 @@ def _external_project_implementation_plan(
 
 
 def _external_project_generated_task(
+    frozen_plan: ExternalProjectFrozenPlan,
     task: ExternalProjectRuntimeTask,
 ) -> GeneratedImplementationTask:
     return GeneratedImplementationTask(
@@ -995,6 +1100,7 @@ def _external_project_generated_task(
             "profile": task.verification_profile,
             "commands": list(task.verification_commands),
             "acceptance_criteria": list(task.acceptance_criteria),
+            "runtime_binding": _external_project_task_runtime_binding(frozen_plan, task),
         },
         risk={"level": task.risk_level, "reason": task.risk_reason},
         provenance=dict(task.provenance),
@@ -1003,6 +1109,62 @@ def _external_project_generated_task(
         feature_id="EXT-FEATURE",
         component_id=task.component_ids[0] if task.component_ids else None,
     )
+
+
+def _external_project_task_runtime_binding(
+    frozen_plan: ExternalProjectFrozenPlan,
+    task: ExternalProjectRuntimeTask,
+) -> dict[str, Any]:
+    project = frozen_plan.project
+    return {
+        "binding_id": project.runtime_binding.binding_id,
+        "project_id": project.project_id,
+        "workspace_id": project.workspace.workspace_id,
+        "repository_id": project.repository.repository_id,
+        "plan_id": project.plan.plan_id,
+        "plan_version": project.plan.version,
+        "task_id": task.id,
+        "workspace_root": project.workspace.root_path,
+        "allowed_roots": list(project.workspace.allowed_roots),
+        "prohibited_paths": list(project.workspace.prohibited_paths),
+        "repository": project.repository.as_dict(),
+        "control_plane_authority": project.runtime_binding.control_plane_authority,
+        "grants_control_plane_authority": project.runtime_binding.grants_control_plane_authority,
+        "verifier_bypass_authority": project.runtime_binding.verifier_bypass_authority,
+        "implicit_human_gate_approval": project.runtime_binding.implicit_human_gate_approval,
+        "independent_verification_required": project.plan.independent_verification_required,
+        "pending_human_gates": list(project.runtime_binding.pending_human_gates),
+        "approved_human_gates": list(project.runtime_binding.approved_human_gates),
+        "mandatory_verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+    }
+
+
+def _external_project_human_gate_bindings(
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> list[dict[str, Any]]:
+    approved = set(frozen_plan.project.runtime_binding.approved_human_gates)
+    pending = set(frozen_plan.project.runtime_binding.pending_human_gates)
+    bindings: list[dict[str, Any]] = []
+    for gate in sorted(
+        frozen_plan.human_gate_definitions,
+        key=lambda item: str(item.get("id", "")),
+    ):
+        gate_id = str(gate.get("id", ""))
+        if gate_id in approved:
+            state = "approved"
+        elif gate_id in pending:
+            state = "pending"
+        else:
+            state = "unbound"
+        bindings.append(
+            {
+                "gate_id": gate_id,
+                "task_id": str(gate.get("task_id", "")),
+                "state": state,
+                "required_before": str(gate.get("required_before", "execution")),
+            }
+        )
+    return bindings
 
 
 def _external_project_feasibility(
