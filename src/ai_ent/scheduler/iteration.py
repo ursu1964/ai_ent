@@ -97,10 +97,23 @@ class ExecutionPackageFactory:
         )
         self.manifest_tasks = manifest_tasks
 
-    def build(self, persisted_task: Task, *, execution_id: str) -> ExecutionPackage:
-        manifest_tasks = self.manifest_tasks or load_tasks()
+    def build(
+        self,
+        persisted_task: Task,
+        *,
+        execution_id: str,
+        session: Session | None = None,
+        project_id: str | None = None,
+    ) -> ExecutionPackage:
+        manifest_tasks = self._manifest_tasks_for(
+            persisted_task,
+            session=session,
+            project_id=project_id,
+        )
         manifest_task = manifest_tasks.get(persisted_task.id)
         if manifest_task is None:
+            if persisted_task.runtime_plan_binding is not None:
+                raise ValueError(f"runtime task is not imported from a valid frozen plan: {persisted_task.id}")
             raise ValueError(f"manifest task not found: {persisted_task.id}")
         if persisted_task.title != manifest_task.title:
             raise ValueError(f"manifest/db task mismatch: {persisted_task.id}")
@@ -119,6 +132,23 @@ class ExecutionPackageFactory:
                 else CodexConfig.from_env().default_timeout_seconds
             ),
         )
+
+    def _manifest_tasks_for(
+        self,
+        persisted_task: Task,
+        *,
+        session: Session | None,
+        project_id: str | None,
+    ) -> dict[str, BootstrapTask]:
+        if self.manifest_tasks is not None:
+            return self.manifest_tasks
+        if persisted_task.runtime_plan_binding is not None:
+            if session is None:
+                raise ValueError(f"runtime manifest task loader requires a database session: {persisted_task.id}")
+            from ai_ent.runtime_handoff import build_runtime_manifest_tasks
+
+            return build_runtime_manifest_tasks(session, project_id or persisted_task.project_id)
+        return load_tasks()
 
 
 def _requires_high_complexity_timeout(binding: RuntimeTaskPlanBinding) -> bool:
@@ -177,7 +207,12 @@ class SchedulerIterationService:
             )
 
         try:
-            package = self.package_factory.build(task, execution_id=claim.execution.id)
+            package = self.package_factory.build(
+                task,
+                execution_id=claim.execution.id,
+                session=session,
+                project_id=project_id,
+            )
         except ValueError as exc:
             self.claiming.release(session, lease_id=claim.lease.id, owner_id=self.owner_id)
             self.executions.update_lifecycle(

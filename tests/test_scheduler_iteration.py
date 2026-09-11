@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -18,6 +20,7 @@ from ai_ent.persistence.models import (
     TaskLease,
 )
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
+from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
 from ai_ent.scheduler.claiming import ClaimResult
 from ai_ent.scheduler.iteration import (
     ExecutionPackageFactory,
@@ -69,6 +72,7 @@ def seed_task(
     status: str = "pending",
     schedulable: bool = True,
     execution_class: str = "implementation",
+    fingerprint: str | None = None,
 ) -> Task:
     return TaskRepository().create(
         session,
@@ -78,6 +82,7 @@ def seed_task(
         status=status,  # type: ignore[arg-type]
         schedulable=schedulable,
         execution_class=execution_class,  # type: ignore[arg-type]
+        fingerprint=fingerprint,
     )
 
 
@@ -94,12 +99,18 @@ def service_for(*tasks: BootstrapTask) -> SchedulerIterationService:
     )
 
 
-def seed_runtime_plan_import(session: Session, project_id: str = "project-1") -> RuntimePlanImport:
+def seed_runtime_plan_import(
+    session: Session,
+    project_id: str = "project-1",
+    *,
+    import_id: str | None = None,
+    plan_id: str | None = None,
+) -> RuntimePlanImport:
     plan_import = RuntimePlanImport(
-        id=f"import-{project_id}",
+        id=import_id or f"import-{project_id}",
         project_id=project_id,
         plan_project_id=project_id,
-        plan_id=f"PLAN-{project_id}",
+        plan_id=plan_id or f"PLAN-{project_id}",
         plan_version="1",
         status="imported",
         compiled_project_hash="0" * 64,
@@ -126,26 +137,31 @@ def seed_runtime_binding(
     task: Task,
     plan_import: RuntimePlanImport,
     *,
+    fingerprint: str | None = None,
     risk_level: str = "MEDIUM",
+    agent_role: str = "test-agent",
     model_profile: str = "STANDARD",
+    executor: str = "codex",
     verification_profile: str = "STANDARD_REGRESSION",
+    write_scope: dict[str, object] | None = None,
+    acceptance: dict[str, object] | None = None,
 ) -> RuntimeTaskPlanBinding:
     binding = RuntimeTaskPlanBinding(
         task_id=task.id,
         import_id=plan_import.id,
         plan_id=plan_import.plan_id,
         plan_version=plan_import.plan_version,
-        fingerprint=f"fingerprint-{task.id}",
+        fingerprint=fingerprint or task.fingerprint or f"fingerprint-{task.id}",
         risk_level=risk_level,
-        agent_role="test-agent",
+        agent_role=agent_role,
         model_profile=model_profile,
-        executor="codex",
+        executor=executor,
         verification_profile=verification_profile,
         feasibility_status="FEASIBLE",
         policy_decision="AUTO_ALLOWED",
         implements_json="{}",
-        write_scope_json="{}",
-        acceptance_json="{}",
+        write_scope_json=json.dumps(write_scope or {}),
+        acceptance_json=json.dumps(acceptance or {}),
     )
     session.add(binding)
     session.flush()
@@ -272,6 +288,229 @@ def test_execution_package_factory_uses_profile_timeout_from_runtime_binding() -
         assert result.status == "PACKAGE_READY"
         assert result.package is not None
         assert result.package.timeout_seconds == 1800
+
+
+def test_scheduler_iteration_loads_runtime_bound_product_task_without_bootstrap_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = session_factory()
+    commands = (
+        "/repo/aient/bin/python -m pytest -q",
+        "/repo/aient/bin/python -m ruff check .",
+        "/repo/aient/bin/python -m pyright",
+        "/repo/aient/bin/python -m pytest tests/custom.py -q",
+        "/repo/aient/bin/python -m pytest tests/custom.py -q",
+    )
+
+    def fail_if_bootstrap_loader_is_used() -> dict[str, BootstrapTask]:
+        raise AssertionError("runtime-bound package construction must not call bootstrap load_tasks")
+
+    monkeypatch.setattr("ai_ent.scheduler.iteration.load_tasks", fail_if_bootstrap_loader_is_used)
+    service = SchedulerIterationService(
+        package_factory=ExecutionPackageFactory(
+            repository_path=Path("/repo"),
+            timeout_policy=ExecutionTimeoutPolicy.for_codex_default(900),
+        ),
+        owner_id="worker-1",
+        lease_duration=timedelta(hours=1),
+    )
+    with factory() as session:
+        seed_project(session, DEFAULT_RUNTIME_PROJECT_ID)
+        task = seed_task(
+            session,
+            "PRD-TASK-003",
+            project_id=DEFAULT_RUNTIME_PROJECT_ID,
+            title="Reusable external-project runtime importer",
+            fingerprint="p" * 64,
+        )
+        plan_import = seed_runtime_plan_import(
+            session,
+            DEFAULT_RUNTIME_PROJECT_ID,
+            import_id="import-product",
+            plan_id="PRODUCT-PLAN-test",
+        )
+        seed_runtime_binding(
+            session,
+            task,
+            plan_import,
+            risk_level="HIGH",
+            model_profile="MDL-001:Codex executor model:high-risk-guarded",
+            verification_profile="FULL_REGRESSION_SECURITY",
+            write_scope={"allowed": ["src/ai_ent/**"], "prohibited": [".env", ".build/**"]},
+            acceptance={
+                "acceptance_criteria": ["runtime package can be built"],
+                "verification_commands": list(commands),
+            },
+        )
+
+        result = service.run_once(session, project_id=DEFAULT_RUNTIME_PROJECT_ID)
+
+        assert result.status == "PACKAGE_READY"
+        assert result.package is not None
+        assert result.package.task_id == "PRD-TASK-003"
+        assert result.package.timeout_seconds == 1800
+        assert result.package.allowed_paths == ("src/ai_ent/**",)
+        assert result.package.prohibited_paths == (".env", ".build/**")
+        assert result.package.instructions.count(commands[-1]) == 2
+        command_offsets = [result.package.instructions.index(command) for command in commands[:-1]]
+        command_offsets.append(result.package.instructions.rindex(commands[-1]))
+        assert command_offsets == sorted(command_offsets)
+
+
+def test_runtime_bound_package_factory_rejects_without_session() -> None:
+    task = Task(
+        id="PRD-TASK-003",
+        project_id=DEFAULT_RUNTIME_PROJECT_ID,
+        title="Runtime bound task",
+        fingerprint="p" * 64,
+    )
+    task.runtime_plan_binding = RuntimeTaskPlanBinding(
+        task_id=task.id,
+        import_id="import-product",
+        plan_id="PRODUCT-PLAN-test",
+        plan_version="1",
+        fingerprint=task.fingerprint or "",
+        risk_level="HIGH",
+        agent_role="agent",
+        model_profile="MDL-001:Codex executor model:high-risk-guarded",
+        executor="codex",
+        verification_profile="FULL_REGRESSION_SECURITY",
+        feasibility_status="FEASIBLE",
+        policy_decision="HUMAN_APPROVAL_REQUIRED",
+        implements_json="{}",
+        write_scope_json="{}",
+        acceptance_json="{}",
+    )
+
+    try:
+        ExecutionPackageFactory().build(task, execution_id="execution-1")
+    except ValueError as exc:
+        assert "runtime manifest task loader requires a database session" in str(exc)
+    else:
+        raise AssertionError("expected runtime-bound package construction to require a session")
+
+
+def test_runtime_bound_package_factory_rejects_unknown_runtime_task_without_bootstrap_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = session_factory()
+    stale_bootstrap = manifest_task("PRD-TASK-UNKNOWN", title="Unknown runtime task")
+    monkeypatch.setattr("ai_ent.scheduler.iteration.load_tasks", lambda: {stale_bootstrap.id: stale_bootstrap})
+
+    with factory() as session:
+        seed_project(session, DEFAULT_RUNTIME_PROJECT_ID)
+        task = seed_task(
+            session,
+            stale_bootstrap.id,
+            project_id=DEFAULT_RUNTIME_PROJECT_ID,
+            title=stale_bootstrap.title,
+            fingerprint="a" * 64,
+        )
+        plan_import = seed_runtime_plan_import(
+            session,
+            DEFAULT_RUNTIME_PROJECT_ID,
+            import_id="import-unknown-runtime",
+            plan_id="PLAN-UNKNOWN",
+        )
+        seed_runtime_binding(session, task, plan_import, fingerprint="b" * 64)
+
+        try:
+            ExecutionPackageFactory(manifest_tasks=None).build(
+                task,
+                execution_id="execution-unknown",
+                session=session,
+                project_id=DEFAULT_RUNTIME_PROJECT_ID,
+            )
+        except ValueError as exc:
+            assert "runtime task is not imported from a valid frozen plan" in str(exc)
+        else:
+            raise AssertionError("expected invalid runtime binding to be rejected")
+
+
+def test_runtime_package_factory_supports_imported_impl_res_and_prd_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = session_factory()
+    commands = ("pytest", "ruff", "pyright", "custom")
+    monkeypatch.setattr(
+        "ai_ent.scheduler.iteration.load_tasks",
+        lambda: {
+            "PRD-TASK-003": manifest_task("PRD-TASK-003", title="Stale bootstrap collision"),
+        },
+    )
+
+    with factory() as session:
+        seed_project(session, DEFAULT_RUNTIME_PROJECT_ID)
+        task_ids = (
+            ("IMPL-C01-CMP-001", "PLAN-original", "LOW"),
+            ("RES-C05-EVIDENCE", "RESIDUAL-PLAN-test", "MEDIUM"),
+            ("PRD-TASK-003", "PRODUCT-PLAN-test", "HIGH"),
+        )
+        for index, (task_id, plan_id, risk) in enumerate(task_ids):
+            fingerprint = f"{index}" * 64
+            task = seed_task(
+                session,
+                task_id,
+                project_id=DEFAULT_RUNTIME_PROJECT_ID,
+                title=f"Runtime {task_id}",
+                fingerprint=fingerprint,
+            )
+            plan_import = seed_runtime_plan_import(
+                session,
+                DEFAULT_RUNTIME_PROJECT_ID,
+                import_id=f"import-{index}",
+                plan_id=plan_id,
+            )
+            seed_runtime_binding(
+                session,
+                task,
+                plan_import,
+                risk_level=risk,
+                write_scope={"allowed": [f"src/{task_id}/**"], "prohibited": [".env"]},
+                acceptance={"verification_commands": list(commands)},
+            )
+
+        package_factory = ExecutionPackageFactory(
+            repository_path=Path("/repo"),
+            timeout_policy=ExecutionTimeoutPolicy.for_standard_timeout(1800),
+        )
+        for task_id, _, _ in task_ids:
+            persisted = session.get(Task, task_id)
+            assert persisted is not None
+
+            package = package_factory.build(
+                persisted,
+                execution_id=f"execution-{task_id}",
+                session=session,
+                project_id=DEFAULT_RUNTIME_PROJECT_ID,
+            )
+
+            assert package.task_id == task_id
+            assert package.timeout_seconds == 1800
+            assert package.allowed_paths == (f"src/{task_id}/**",)
+            command_offsets = [package.instructions.index(command) for command in commands]
+            assert command_offsets == sorted(command_offsets)
+
+
+def test_bootstrap_only_package_factory_still_uses_explicit_bootstrap_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = session_factory()
+    bootstrap_task = manifest_task("TASK-A")
+    monkeypatch.setattr("ai_ent.scheduler.iteration.load_tasks", lambda: {bootstrap_task.id: bootstrap_task})
+
+    with factory() as session:
+        seed_project(session, "bootstrap")
+        task = seed_task(session, "TASK-A", project_id="bootstrap", title=bootstrap_task.title)
+
+        package = ExecutionPackageFactory(repository_path=Path("/repo"), timeout_seconds=30).build(
+            task,
+            execution_id="execution-bootstrap",
+        )
+
+    assert package.task_id == "TASK-A"
+    assert package.timeout_seconds == 30
+    assert package.allowed_paths == bootstrap_task.allowed_paths
 
 
 def test_deterministic_selection_and_run_once_processes_one_task() -> None:
