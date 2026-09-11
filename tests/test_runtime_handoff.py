@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ai_ent.external_project import MANDATORY_VERIFICATION_COMMANDS
 from ai_ent.persistence.models import (
     Base,
     Execution,
@@ -26,6 +28,7 @@ from ai_ent.runtime_handoff import (
     external_project_runtime_handoff_artifacts,
     load_runtime_handoff_artifacts,
 )
+from ai_ent.scheduler.iteration import ExecutionPackageFactory
 from ai_ent.scheduler.readiness import TaskReadinessService
 from tests.test_external_project import frozen_plan_project
 
@@ -245,6 +248,81 @@ def test_external_frozen_plan_imports_generic_task_ids_and_pending_gate(
         )
         assert gate is not None
         assert gate.status == "pending"
+
+
+def test_external_frozen_plan_import_preserves_bound_verification_commands(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(tmp_path)
+    custom_command = "python -m pytest tests/test_runtime_contract.py -q"
+    first_task = replace(
+        frozen.tasks[0],
+        verification_commands=(*MANDATORY_VERIFICATION_COMMANDS, custom_command),
+    )
+    bounded = replace(frozen, tasks=(first_task, frozen.tasks[1]))
+
+    with factory() as session:
+        result = RuntimePlanImporter().import_external_frozen_plan(
+            session,
+            bounded,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        manifest_tasks = build_runtime_manifest_tasks(session, frozen.project.project_id)
+        binding = session.get(RuntimeTaskPlanBinding, first_task.id)
+
+        assert result.status == "IMPORTED"
+        assert manifest_tasks[first_task.id].verification.commands == (
+            *MANDATORY_VERIFICATION_COMMANDS,
+            custom_command,
+        )
+        assert binding is not None
+        assert "verification_commands" in binding.acceptance_json
+
+
+def test_external_frozen_plan_command_sequence_is_not_normalized(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(tmp_path)
+    custom_command = "python -m pytest tests/test_runtime_contract.py -q"
+    duplicate_custom_command = "python -m pytest tests/test_runtime_contract.py -q"
+    exact_commands = (
+        *MANDATORY_VERIFICATION_COMMANDS,
+        custom_command,
+        duplicate_custom_command,
+    )
+    first_task = replace(frozen.tasks[0], verification_commands=exact_commands)
+    bounded = replace(frozen, tasks=(first_task, frozen.tasks[1]))
+
+    with factory() as session:
+        result = RuntimePlanImporter().import_external_frozen_plan(
+            session,
+            bounded,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        binding = session.get(RuntimeTaskPlanBinding, first_task.id)
+        manifest_tasks = build_runtime_manifest_tasks(session, frozen.project.project_id)
+        persisted_task = session.get(Task, first_task.id)
+        assert persisted_task is not None
+
+        package = ExecutionPackageFactory(
+            repository_path=tmp_path,
+            manifest_tasks=manifest_tasks,
+        ).build(persisted_task, execution_id="execution-order-proof")
+
+        assert result.status == "IMPORTED"
+        assert binding is not None
+        assert json.loads(binding.acceptance_json)["verification_commands"] == list(exact_commands)
+        assert manifest_tasks[first_task.id].verification.commands == exact_commands
+        assert package.instructions.count(duplicate_custom_command) == 2
+        command_offsets = [package.instructions.index(command) for command in exact_commands[:-1]]
+        command_offsets.append(package.instructions.rindex(duplicate_custom_command))
+        assert command_offsets == sorted(command_offsets)
 
 
 def test_external_runtime_importer_preserves_explicit_approved_gate_state(

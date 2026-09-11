@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from ai_ent.e2e_application_proof import write_first_application_creation_proof
+from ai_ent.external_project import load_external_project_frozen_plan
 from ai_ent.persistence.config import load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.models import RuntimePlanImport, Task
@@ -70,6 +71,7 @@ from ai_ent.residual_runtime_handoff import (
 )
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
+    ExternalProjectRuntimeImporter,
     RuntimePlanImporter,
     load_runtime_handoff_artifacts,
 )
@@ -394,6 +396,26 @@ def import_frozen_plan(args: argparse.Namespace) -> int:
                 artifacts,
                 runtime_project_id=args.project,
                 repository_root=Path.cwd(),
+            )
+            print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
+            return 0 if result.ok else 1
+    finally:
+        database.dispose()
+
+
+def import_external_frozen_plan(args: argparse.Namespace) -> int:
+    frozen_plan = load_external_project_frozen_plan(Path(args.plan_path))
+    settings = load_database_settings(Path(args.env_file))
+    database = Database(settings)
+    try:
+        with database.session() as session:
+            result = ExternalProjectRuntimeImporter().import_frozen_plan(
+                session,
+                frozen_plan,
+                runtime_project_id=args.project,
+                repository_root=Path(args.repository_root),
+                require_clean_git=args.require_clean_git,
+                require_codex_command=args.require_codex_command,
             )
             print(json.dumps(result.as_dict(), indent=2, sort_keys=True))
             return 0 if result.ok else 1
@@ -1222,6 +1244,23 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--env-file", default=".env")
     import_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
     import_parser.set_defaults(func=import_frozen_plan)
+
+    external_import_parser = subparsers.add_parser("import-external-frozen-plan")
+    external_import_parser.add_argument("--plan-path", required=True)
+    external_import_parser.add_argument("--env-file", default=".env")
+    external_import_parser.add_argument("--project")
+    external_import_parser.add_argument("--repository-root", default=".")
+    external_import_parser.add_argument(
+        "--require-clean-git",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    external_import_parser.add_argument(
+        "--require-codex-command",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    external_import_parser.set_defaults(func=import_external_frozen_plan)
 
     status_parser = subparsers.add_parser("runtime-plan-status")
     status_parser.add_argument("--env-file", default=".env")

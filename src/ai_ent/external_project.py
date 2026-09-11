@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from ai_ent.project_manifest import canonical_bytes
 
@@ -773,6 +773,343 @@ def external_project_frozen_plan_record(
     }
 
 
+def load_external_project_frozen_plan(path: Path) -> ExternalProjectFrozenPlan:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return external_project_frozen_plan_from_dict(
+        _require_mapping(payload, "external frozen plan file")
+    )
+
+
+def external_project_frozen_plan_from_dict(
+    payload: Mapping[str, Any],
+) -> ExternalProjectFrozenPlan:
+    raw_plan = payload.get("frozen_plan", payload)
+    plan_payload = _require_mapping(raw_plan, "external frozen plan")
+    project = _external_project_from_dict(
+        _require_mapping(plan_payload.get("project"), "external project")
+    )
+    tasks = tuple(
+        _external_project_runtime_task_from_dict(item)
+        for item in _require_mapping_sequence(plan_payload.get("tasks"), "runtime tasks")
+    )
+    human_gate_definitions = tuple(
+        dict(_require_mapping(item, "human gate definition"))
+        for item in _optional_mapping_sequence(
+            plan_payload.get("human_gate_definitions", ()),
+            "human gate definitions",
+        )
+    )
+    return ExternalProjectFrozenPlan(
+        project=project,
+        tasks=tasks,
+        human_gate_definitions=human_gate_definitions,
+        effective_concurrency=_optional_int(
+            plan_payload,
+            "effective_concurrency",
+            default=1,
+        ),
+    )
+
+
+def _external_project_from_dict(payload: Mapping[str, Any]) -> ExternalProject:
+    workspace = _project_workspace_from_dict(
+        _require_mapping(payload.get("workspace"), "project workspace")
+    )
+    repository = _project_repository_from_dict(
+        _require_mapping(payload.get("repository"), "project repository")
+    )
+    plan = _project_plan_from_dict(_require_mapping(payload.get("plan"), "project plan"))
+    runtime_binding = _project_runtime_binding_from_dict(
+        _require_mapping(payload.get("runtime_binding"), "project runtime binding")
+    )
+    artifacts = tuple(
+        _generated_artifact_from_dict(item)
+        for item in _optional_mapping_sequence(payload.get("artifacts", ()), "generated artifacts")
+    )
+    return ExternalProject(
+        project_id=_required_str(payload, "project_id"),
+        name=_required_str(payload, "name"),
+        lifecycle_state=cast(
+            ExternalProjectLifecycleState,
+            _required_str(payload, "lifecycle_state"),
+        ),
+        workspace=workspace,
+        repository=repository,
+        plan=plan,
+        runtime_binding=runtime_binding,
+        artifacts=artifacts,
+        schema_version=_optional_str(
+            payload,
+            "schema_version",
+            default=EXTERNAL_PROJECT_MODEL_SCHEMA_VERSION,
+        ),
+        contract_version=_optional_str(
+            payload,
+            "contract_version",
+            default=EXTERNAL_PROJECT_MODEL_CONTRACT_VERSION,
+        ),
+    )
+
+
+def _project_workspace_from_dict(payload: Mapping[str, Any]) -> ProjectWorkspace:
+    return ProjectWorkspace(
+        workspace_id=_required_str(payload, "workspace_id"),
+        root_path=_required_str(payload, "root_path"),
+        state=cast(WorkspaceState, _optional_str(payload, "state", default="DECLARED")),
+        owner_project_id=_optional_nullable_str(payload, "owner_project_id"),
+        allowed_roots=_optional_str_tuple(payload, "allowed_roots"),
+        prohibited_paths=_optional_str_tuple(
+            payload,
+            "prohibited_paths",
+            default=DEFAULT_PROHIBITED_PATHS,
+        ),
+    )
+
+
+def _project_repository_from_dict(payload: Mapping[str, Any]) -> ProjectRepository:
+    return ProjectRepository(
+        repository_id=_required_str(payload, "repository_id"),
+        workspace_id=_required_str(payload, "workspace_id"),
+        remote_url=_optional_nullable_str(payload, "remote_url"),
+        default_branch=_optional_str(payload, "default_branch", default="main"),
+        state=cast(RepositoryState, _optional_str(payload, "state", default="DECLARED")),
+        commit_policy=_optional_str(payload, "commit_policy", default="verified_commits_only"),
+        control_plane_write_authority=_optional_bool(
+            payload,
+            "control_plane_write_authority",
+            default=False,
+        ),
+        push_requires_human_gate=_optional_bool(
+            payload,
+            "push_requires_human_gate",
+            default=True,
+        ),
+    )
+
+
+def _project_plan_from_dict(payload: Mapping[str, Any]) -> ProjectPlan:
+    return ProjectPlan(
+        plan_id=_required_str(payload, "plan_id"),
+        version=_required_str(payload, "version"),
+        state=cast(PlanState, _optional_str(payload, "state", default="DRAFT")),
+        task_ids=_optional_str_tuple(payload, "task_ids"),
+        plan_hash=_optional_nullable_str(payload, "plan_hash"),
+        required_human_gates=_optional_str_tuple(payload, "required_human_gates"),
+        verification_commands=_optional_str_tuple(
+            payload,
+            "verification_commands",
+            default=MANDATORY_VERIFICATION_COMMANDS,
+        ),
+        independent_verification_required=_optional_bool(
+            payload,
+            "independent_verification_required",
+            default=True,
+        ),
+        control_plane_authority=_optional_str(
+            payload,
+            "control_plane_authority",
+            default=CONTROL_PLANE_AUTHORITY,
+        ),
+    )
+
+
+def _project_runtime_binding_from_dict(payload: Mapping[str, Any]) -> ProjectRuntimeBinding:
+    return ProjectRuntimeBinding(
+        binding_id=_required_str(payload, "binding_id"),
+        project_id=_required_str(payload, "project_id"),
+        workspace_id=_required_str(payload, "workspace_id"),
+        repository_id=_required_str(payload, "repository_id"),
+        plan_id=_required_str(payload, "plan_id"),
+        plan_version=_required_str(payload, "plan_version"),
+        state=cast(
+            BindingState,
+            _optional_str(payload, "state", default="PENDING_GATES"),
+        ),
+        pending_human_gates=_optional_str_tuple(payload, "pending_human_gates"),
+        approved_human_gates=_optional_str_tuple(payload, "approved_human_gates"),
+        verification_commands=_optional_str_tuple(
+            payload,
+            "verification_commands",
+            default=MANDATORY_VERIFICATION_COMMANDS,
+        ),
+        control_plane_authority=_optional_str(
+            payload,
+            "control_plane_authority",
+            default=CONTROL_PLANE_AUTHORITY,
+        ),
+        grants_control_plane_authority=_optional_bool(
+            payload,
+            "grants_control_plane_authority",
+            default=False,
+        ),
+        verifier_bypass_authority=_optional_bool(
+            payload,
+            "verifier_bypass_authority",
+            default=False,
+        ),
+        implicit_human_gate_approval=_optional_bool(
+            payload,
+            "implicit_human_gate_approval",
+            default=False,
+        ),
+    )
+
+
+def _generated_artifact_from_dict(payload: Mapping[str, Any]) -> GeneratedArtifact:
+    metadata = payload.get("metadata")
+    return GeneratedArtifact(
+        artifact_id=_required_str(payload, "artifact_id"),
+        project_id=_required_str(payload, "project_id"),
+        workspace_id=_required_str(payload, "workspace_id"),
+        kind=cast(ArtifactKind, _required_str(payload, "kind")),
+        relative_path=_required_str(payload, "relative_path"),
+        content_hash=_required_str(payload, "content_hash"),
+        producer=_optional_str(payload, "producer", default="external_project_runtime"),
+        authority_state=cast(
+            ArtifactAuthorityState,
+            _optional_str(
+                payload,
+                "authority_state",
+                default="NON_AUTHORITATIVE",
+            ),
+        ),
+        contains_secret=_optional_bool(payload, "contains_secret", default=False),
+        metadata=(
+            dict(_require_mapping(metadata, "artifact metadata"))
+            if metadata is not None
+            else None
+        ),
+    )
+
+
+def _external_project_runtime_task_from_dict(
+    payload: Mapping[str, Any],
+) -> ExternalProjectRuntimeTask:
+    implements = _require_mapping(payload.get("implements"), "runtime task implements")
+    write_scope = _require_mapping(payload.get("write_scope"), "runtime task write scope")
+    execution = _require_mapping(payload.get("execution"), "runtime task execution")
+    verification = _require_mapping(payload.get("verification"), "runtime task verification")
+    risk = _require_mapping(payload.get("risk"), "runtime task risk")
+    return ExternalProjectRuntimeTask(
+        id=_required_str(payload, "id"),
+        title=_required_str(payload, "title"),
+        objective=_required_str(payload, "objective"),
+        requirement_ids=_required_nested_str_tuple(implements, "requirements"),
+        capability_ids=_required_nested_str_tuple(implements, "capabilities"),
+        component_ids=_optional_str_tuple(implements, "components"),
+        interface_ids=_optional_str_tuple(implements, "interfaces"),
+        depends_on=_optional_str_tuple(payload, "depends_on"),
+        allowed_paths=_required_nested_str_tuple(write_scope, "allowed"),
+        prohibited_paths=_optional_str_tuple(
+            write_scope,
+            "prohibited",
+            default=DEFAULT_PROHIBITED_PATHS,
+        ),
+        agent_role=_optional_str(
+            execution,
+            "agent_role",
+            default="external-project-implementation",
+        ),
+        model_profile=_optional_str(execution, "model_profile", default="STANDARD_CODING"),
+        executor=_optional_str(execution, "executor", default="codex"),
+        verification_profile=_optional_str(
+            verification,
+            "profile",
+            default="STANDARD_REGRESSION",
+        ),
+        verification_commands=_optional_str_tuple(
+            verification,
+            "commands",
+            default=MANDATORY_VERIFICATION_COMMANDS,
+        ),
+        acceptance_criteria=_optional_str_tuple(verification, "acceptance_criteria"),
+        risk_level=_optional_str(risk, "level", default="LOW"),
+        risk_reason=_optional_str(
+            risk,
+            "reason",
+            default="bounded external-project runtime task",
+        ),
+        provenance=dict(
+            _require_mapping(payload.get("provenance", {}), "runtime task provenance")
+        ),
+        fingerprint=_optional_nullable_str(payload, "fingerprint"),
+    )
+
+
+def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ExternalProjectServiceError(f"{context} must be an object")
+    return value
+
+
+def _require_mapping_sequence(value: Any, context: str) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, list | tuple):
+        raise ExternalProjectServiceError(f"{context} must be a list")
+    return tuple(_require_mapping(item, context) for item in value)
+
+
+def _optional_mapping_sequence(value: Any, context: str) -> tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    return _require_mapping_sequence(value, context)
+
+
+def _required_str(payload: Mapping[str, Any], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise ExternalProjectServiceError(f"{key} must be a non-empty string")
+    return value
+
+
+def _optional_str(payload: Mapping[str, Any], key: str, *, default: str) -> str:
+    value = payload.get(key, default)
+    if not isinstance(value, str) or not value:
+        raise ExternalProjectServiceError(f"{key} must be a non-empty string")
+    return value
+
+
+def _optional_nullable_str(payload: Mapping[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ExternalProjectServiceError(f"{key} must be a string")
+    return value
+
+
+def _required_nested_str_tuple(payload: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise ExternalProjectServiceError(f"{key} must be a list of strings")
+    return tuple(str(item) for item in value)
+
+
+def _optional_str_tuple(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    default: tuple[str, ...] = (),
+) -> tuple[str, ...]:
+    value = payload.get(key, default)
+    if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
+        raise ExternalProjectServiceError(f"{key} must be a list of strings")
+    return tuple(str(item) for item in value)
+
+
+def _optional_bool(payload: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    value = payload.get(key, default)
+    if not isinstance(value, bool):
+        raise ExternalProjectServiceError(f"{key} must be a boolean")
+    return value
+
+
+def _optional_int(payload: Mapping[str, Any], key: str, *, default: int) -> int:
+    value = payload.get(key, default)
+    if not isinstance(value, int):
+        raise ExternalProjectServiceError(f"{key} must be an integer")
+    return value
+
+
 def _require_service_safe_project(project: ExternalProject) -> None:
     validation = validate_external_project(project)
     if not validation.ok:
@@ -849,6 +1186,16 @@ def _validate_external_project_task_bindings(
                 message=f"runtime task missing mandatory verification command: {task.id}",
                 findings=findings,
             )
+        for index, command in enumerate(task.verification_commands, start=1):
+            if _command_has_secret_material(command):
+                _append_frozen(
+                    finding_id=f"EFP-TASK-VERIFY-SECRET-{_slug(task.id)}-{index}",
+                    message=(
+                        "runtime task verification command contains secret material: "
+                        f"{task.id}"
+                    ),
+                    findings=findings,
+                )
         if task.executor != "codex":
             _append_frozen(
                 finding_id=f"EFP-TASK-EXECUTOR-{_slug(task.id)}",
@@ -1088,6 +1435,14 @@ def _remote_url_has_secret_material(url: str) -> bool:
     return any(marker in normalized for marker in SECRET_FIELD_MARKERS)
 
 
+def _command_has_secret_material(command: str) -> bool:
+    normalized = command.lower().replace("-", "_")
+    return any(
+        f"{marker}=" in normalized or f"{marker} " in normalized
+        for marker in SECRET_FIELD_MARKERS
+    )
+
+
 def _redact_remote_url_for_error(url: str) -> str:
     redacted = _redact_url(url)
     if redacted is None:
@@ -1263,6 +1618,20 @@ def _validate_verification(
             message=f"runtime binding missing mandatory verification command: {command}",
             findings=findings,
         )
+    for index, command in enumerate(project.plan.verification_commands, start=1):
+        if _command_has_secret_material(command):
+            _append(
+                finding_id=f"EPM-VERIFY-PLAN-SECRET-{index}",
+                message="plan verification command contains secret material",
+                findings=findings,
+            )
+    for index, command in enumerate(project.runtime_binding.verification_commands, start=1):
+        if _command_has_secret_material(command):
+            _append(
+                finding_id=f"EPM-VERIFY-BINDING-SECRET-{index}",
+                message="runtime binding verification command contains secret material",
+                findings=findings,
+            )
 
 
 def _validate_artifacts(

@@ -23,8 +23,10 @@ from ai_ent.external_project import (
     ProjectRepository,
     ProjectRuntimeBinding,
     ProjectWorkspace,
+    external_project_frozen_plan_from_dict,
     external_project_frozen_plan_record,
     external_project_model_record,
+    load_external_project_frozen_plan,
     validate_external_project,
     validate_external_project_frozen_plan,
 )
@@ -639,6 +641,22 @@ def test_external_frozen_plan_record_is_deterministic_and_import_ready(
     ]
 
 
+def test_external_frozen_plan_record_loads_as_generic_runtime_contract(
+    tmp_path: Path,
+) -> None:
+    frozen = frozen_plan_project(tmp_path)
+    record = external_project_frozen_plan_record(frozen)
+    path = tmp_path / "external-frozen-plan.json"
+    path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+    loaded_from_record = external_project_frozen_plan_from_dict(record)
+    loaded_from_file = load_external_project_frozen_plan(path)
+
+    assert loaded_from_record.as_dict() == frozen.as_dict()
+    assert loaded_from_file.as_dict() == frozen.as_dict()
+    assert validate_external_project_frozen_plan(loaded_from_file).ok
+
+
 def test_external_frozen_plan_validation_rejects_missing_explicit_gate(
     tmp_path: Path,
 ) -> None:
@@ -660,6 +678,39 @@ def test_external_frozen_plan_validation_rejects_missing_explicit_gate(
     assert "human gate is not explicitly bound: GATE-EXT-TASK-002" in {
         finding.message for finding in validation.findings
     }
+
+
+def test_external_frozen_plan_validation_rejects_secret_verification_command_without_leak(
+    tmp_path: Path,
+) -> None:
+    frozen = frozen_plan_project(tmp_path)
+    secret_command = "python -m pytest --token=SUPERSECRET"
+    task = replace(
+        frozen.tasks[0],
+        verification_commands=(*MANDATORY_VERIFICATION_COMMANDS, secret_command),
+    )
+    blocked = replace(
+        frozen,
+        project=replace(
+            frozen.project,
+            plan=replace(
+                frozen.project.plan,
+                verification_commands=(*MANDATORY_VERIFICATION_COMMANDS, secret_command),
+            ),
+            runtime_binding=replace(
+                frozen.project.runtime_binding,
+                verification_commands=(*MANDATORY_VERIFICATION_COMMANDS, secret_command),
+            ),
+        ),
+        tasks=(task, frozen.tasks[1]),
+    )
+
+    validation = validate_external_project_frozen_plan(blocked)
+    rendered = json.dumps(validation.as_dict(), sort_keys=True)
+
+    assert validation.ok is False
+    assert "verification command contains secret material" in rendered
+    assert "SUPERSECRET" not in rendered
 
 
 def test_external_frozen_plan_validation_redacts_secret_remote(

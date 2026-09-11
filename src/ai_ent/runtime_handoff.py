@@ -225,7 +225,7 @@ def build_runtime_manifest_tasks(session: Session, project_id: str) -> dict[str,
             outputs=(),
             execution_class=task.execution_class,
             schedulable=task.schedulable,
-            verification=VerificationSpec(commands=_runtime_verification_commands(binding.verification_profile)),
+            verification=VerificationSpec(commands=_runtime_bound_verification_commands(binding)),
         )
     return manifest_tasks
 
@@ -462,7 +462,7 @@ class RuntimePlanImporter:
                     policy_decision=feasibility.policy_decision,
                     implements_json=_canonical_text(task.implements),
                     write_scope_json=_canonical_text(task.write_scope),
-                    acceptance_json=_canonical_text(task.verification["acceptance_criteria"]),
+                    acceptance_json=_runtime_acceptance_text(task),
                 )
             )
 
@@ -793,6 +793,45 @@ def _runtime_verification_commands(profile: str) -> tuple[str, ...]:
     if profile == "STANDARD_REGRESSION":
         return STANDARD_RUNTIME_VERIFICATION_COMMANDS
     return STANDARD_RUNTIME_VERIFICATION_COMMANDS
+
+
+def _runtime_bound_verification_commands(
+    binding: RuntimeTaskPlanBinding,
+) -> tuple[str, ...]:
+    try:
+        acceptance_payload = json.loads(binding.acceptance_json)
+    except json.JSONDecodeError:
+        return _runtime_verification_commands(binding.verification_profile)
+    if not isinstance(acceptance_payload, dict):
+        return _runtime_verification_commands(binding.verification_profile)
+    commands = acceptance_payload.get("verification_commands")
+    if not isinstance(commands, list) or not all(
+        isinstance(command, str) for command in commands
+    ):
+        return _runtime_verification_commands(binding.verification_profile)
+    return tuple(commands) or _runtime_verification_commands(binding.verification_profile)
+
+
+def _runtime_acceptance_payload(task: GeneratedImplementationTask) -> dict[str, Any]:
+    verification = task.verification
+    commands = verification.get("commands")
+    return {
+        "acceptance_criteria": list(verification.get("acceptance_criteria", ())),
+        "verification_commands": (
+            list(commands)
+            if isinstance(commands, list | tuple)
+            else list(_runtime_verification_commands(str(verification.get("profile", ""))))
+        ),
+    }
+
+
+def _runtime_acceptance_text(task: GeneratedImplementationTask) -> str:
+    return json.dumps(
+        _runtime_acceptance_payload(task),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _canonical_text(value: Any) -> str:
