@@ -1,0 +1,141 @@
+{
+  "review_id": "PTPV-001",
+  "title": "Product Timeout Policy Revalidation for PRD-TASK-003",
+  "result": "ACCEPTED_FOR_REQUEUE",
+  "baseline_validated": "41cbe3613b14d843720a57172163c4f792f8a805",
+  "runtime_execution_stopped": true,
+  "mutations_performed": {
+    "runtime_state": false,
+    "product_task_execution": false,
+    "product_task_requeue": false,
+    "gate_approval": false,
+    "decision_resolution": false,
+    "frozen_plan": false,
+    "attempt_1_worktree": false
+  },
+  "timeout_policy": {
+    "standard_timeout_seconds": 900,
+    "qualifying_timeout_seconds": 1800,
+    "prd_task_003_timeout_seconds": 1800,
+    "finite": true,
+    "selection_inputs": [
+      "RuntimeTaskPlanBinding.risk_level",
+      "RuntimeTaskPlanBinding.model_profile",
+      "RuntimeTaskPlanBinding.verification_profile"
+    ],
+    "deterministic": true,
+    "depends_on_mutable_runtime_timing": false,
+    "guarded_initial_lease_seconds": 3600,
+    "claimed_execution_lease_seconds_for_prd_task_003": 1860,
+    "lease_grace_seconds": 60
+  },
+  "frozen_task_identity": {
+    "plan_id": "PRODUCT-PLAN-7b0342fb7fd5",
+    "plan_version": "1",
+    "task_id": "PRD-TASK-003",
+    "fingerprint": "a488123b9f661a3bb36ad8a2cb6013cec831acde8cd9eb3e6a7ebdb3267de6f6",
+    "gate_id": "GATE-PRD-EXTERNAL-RUNTIME",
+    "gate_status": "approved",
+    "risk": "HIGH",
+    "model_profile": "MDL-001:Codex executor model:high-risk-guarded",
+    "verification_profile": "FULL_REGRESSION_SECURITY",
+    "policy_decision": "HUMAN_APPROVAL_REQUIRED",
+    "fingerprint_changed": false,
+    "dependencies_changed": false,
+    "scope_changed": false,
+    "risk_changed": false,
+    "policy_changed": false,
+    "gate_changed": false,
+    "verification_contract_changed": false
+  },
+  "historical_attempt_integrity": {
+    "execution_id": "execution-85a060fff90a4b7d90e44d78778704dd",
+    "attempt": 1,
+    "status": "timeout",
+    "terminal_state": "timeout",
+    "error_classification": "executor_timeout",
+    "commit": null,
+    "candidate": null,
+    "lease": "released",
+    "next_authoritative_attempt": 2,
+    "worktree_preserved": "/home/user/projects/.ai_ent-worktrees/PRD-TASK-003/execution-85a060fff90a4b7d90e44d78778704dd"
+  },
+  "policy_selection_proof": {
+    "normal_low_medium_tasks_resolve_to_900s": "PASS",
+    "prd_task_003_resolves_to_1800s": "PASS",
+    "qualifying_high_security_tasks_resolve_consistently": "PASS",
+    "non_qualifying_tasks_do_not_inherit_1800s": "PASS",
+    "policy_selection_deterministic": "PASS",
+    "policy_independent_of_runtime_timing": "PASS",
+    "proof_commands": [
+      "./aient/bin/python -m pytest -q tests/test_scheduler_iteration.py::test_timeout_policy_keeps_standard_tasks_at_900_seconds tests/test_scheduler_iteration.py::test_timeout_policy_extends_only_qualifying_runtime_tasks tests/test_scheduler_iteration.py::test_execution_package_factory_uses_profile_timeout_from_runtime_binding tests/test_scheduler_iteration.py::test_persisted_timeout_consumes_attempt_number tests/test_claimed_execution_runner.py::test_valid_claimed_execution_creates_isolated_worktree_and_persists_success tests/test_claimed_execution_runner.py::test_non_zero_exit_and_timeout_are_persisted tests/test_bounded_scheduler_runner.py::test_executor_failure_terminalizes_claimed_task_and_commits_before_stop tests/test_bounded_scheduler_runner.py::test_terminal_verification_and_repair_failure_are_committed_before_failure_stop tests/test_bounded_scheduler_runner.py::test_human_required_and_reconciliation_stop_run",
+      "read-only PostgreSQL package-construction proof for PRD-TASK-003"
+    ],
+    "targeted_result": "9 passed"
+  },
+  "lease_proof": {
+    "claimed_execution_lease_gte_timeout_plus_60s": "PASS",
+    "prd_task_003_claimed_lease_seconds": 1860,
+    "guarded_initial_lease_seconds": 3600,
+    "guarded_initial_lease_covers_max_policy_envelope": "PASS",
+    "valid_executor_run_outlives_lease": false
+  },
+  "timeout_termination_proof": {
+    "subprocess_timeout_enforced": "PASS",
+    "timeout_terminalizes_execution": "PASS",
+    "terminal_timeout_state_persisted": "PASS",
+    "lease_released_after_timeout": "PASS",
+    "bounded_runner_stops_correctly": "PASS",
+    "timeout_enforcement_weakened": false
+  },
+  "failure_persistence_proof": {
+    "real_timed_out_attempt_persists": "PASS",
+    "outer_rollback_cannot_erase_terminal_attempt": "PASS",
+    "latest_attempt_increments": "PASS",
+    "next_attempt_monotonic": "PASS",
+    "attempt_number_reuse_prevented": "PASS"
+  },
+  "security_authority_check": {
+    "extra_task_scope": false,
+    "extra_filesystem_authority": false,
+    "extra_git_authority": false,
+    "extra_docker_authority": false,
+    "extra_gate_authority": false,
+    "extra_model_tool_authority": false,
+    "extra_retry_count": false,
+    "extra_task_count_per_run": false,
+    "only_execution_duration_changed": true
+  },
+  "runtime_limits": {
+    "max_tasks_per_run": 1,
+    "effective_concurrency": 1,
+    "max_failures_per_run": 1,
+    "max_repairs_per_task": 1
+  },
+  "runtime_state": {
+    "PRD_TASK_003": "blocked",
+    "GATE_PRD_EXTERNAL_RUNTIME": "approved",
+    "completed_product_tasks": "5/25",
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "ready_tasks": [],
+    "pending_gates": 7,
+    "PRD_DEC_002": "unresolved",
+    "PRD_DEC_003": "unresolved",
+    "postgresql_authority": "active"
+  },
+  "verification": {
+    "preflight": "PASS",
+    "pytest": "PASS: 492 passed, 6 skipped in 63.58s",
+    "ruff": "PASS",
+    "pyright": "PASS",
+    "alembic": "PASS: 0020 (head)"
+  },
+  "git_status": {
+    "head": "41cbe3613b14d843720a57172163c4f792f8a805",
+    "origin_main": "41cbe3613b14d843720a57172163c4f792f8a805",
+    "clean_before_evidence": true
+  },
+  "blockers": [],
+  "recommendation": "Proceed to PRQ-004 to transition PRD-TASK-003 from blocked to pending/READY, then PRE-011 should create fresh authoritative attempt 2 with the 1800s executor timeout. Do not reuse the dirty attempt-1 timeout worktree."
+}
