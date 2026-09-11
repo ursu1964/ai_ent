@@ -47,6 +47,12 @@ class ProductApiApp:
         self.routes = (
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/health", "GET", "health"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/boundary", "GET", "boundary"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/plans/generated", "GET", "generated_plan"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/plans/generated/dag", "GET", "generated_dag"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/tasks", "GET", "tasks"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/executions", "GET", "executions"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/repairs", "GET", "repairs"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/state", "GET", "runtime_state"),
             ProductApiRoute(
                 f"{PRODUCT_API_PREFIX}/governance/requests/validate",
                 "POST",
@@ -84,7 +90,12 @@ class ProductApiApp:
     def post(self, path: str, *, json_payload: Mapping[str, Any] | None = None) -> ProductApiResult:
         return self.request("POST", path, json_payload=json_payload)
 
-    async def __call__(self, scope: Mapping[str, Any], receive: AsgiReceive, send: AsgiSend) -> None:
+    async def __call__(
+        self,
+        scope: Mapping[str, Any],
+        receive: AsgiReceive,
+        send: AsgiSend,
+    ) -> None:
         if scope.get("type") != "http":
             raise ProductApiError(
                 status_code=500,
@@ -125,6 +136,18 @@ class ProductApiApp:
             return response(self._services.health()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/boundary":
             return response(self._services.boundary()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/plans/generated":
+            return response(self._services.generated_plan()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/plans/generated/dag":
+            return response(self._services.generated_dag()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/tasks":
+            return response(self._services.tasks()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/executions":
+            return response(self._services.executions()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/repairs":
+            return response(self._services.repairs()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/state":
+            return response(self._services.runtime_state()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/openapi.json":
             return _contract_document()
         if method == "POST" and path == f"{PRODUCT_API_PREFIX}/governance/requests/validate":
@@ -190,6 +213,20 @@ def _contract_document() -> dict[str, Any]:
         "paths": {
             f"{PRODUCT_API_PREFIX}/health": {"get": {"operationId": "health"}},
             f"{PRODUCT_API_PREFIX}/boundary": {"get": {"operationId": "boundary"}},
+            f"{PRODUCT_API_PREFIX}/plans/generated": {
+                "get": {"operationId": "generatedPlan"}
+            },
+            f"{PRODUCT_API_PREFIX}/plans/generated/dag": {
+                "get": {"operationId": "generatedDag"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/tasks": {"get": {"operationId": "runtimeTasks"}},
+            f"{PRODUCT_API_PREFIX}/runtime/executions": {
+                "get": {"operationId": "runtimeExecutions"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/repairs": {
+                "get": {"operationId": "runtimeRepairs"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/state": {"get": {"operationId": "runtimeState"}},
             f"{PRODUCT_API_PREFIX}/governance/requests/validate": {
                 "post": {"operationId": "validateGovernanceRequest"}
             },
