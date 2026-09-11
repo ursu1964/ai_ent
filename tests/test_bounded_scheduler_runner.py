@@ -44,6 +44,18 @@ class FakeScheduler:
         return SchedulerIterationResult(status="NO_READY_TASK", project_id=project_id)
 
 
+class CommitRecordingSession:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.flushes = 0
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
 class FakeExecutionRunner:
     def __init__(self, statuses: list[ClaimedExecutionStatus] | None = None) -> None:
         self.statuses = statuses or []
@@ -266,6 +278,59 @@ def test_failed_repair_stops_without_next_task() -> None:
     assert scheduler.calls == 1
 
 
+def test_terminal_success_is_committed_before_stop_decision() -> None:
+    session = CommitRecordingSession()
+    runner = BoundedSchedulerRunner(
+        scheduler=FakeScheduler([scheduled("TASK-A")]),  # type: ignore[arg-type]
+        execution_runner=FakeExecutionRunner(),  # type: ignore[arg-type]
+        finalizer=FakeFinalizer([completed("TASK-A", "execution-TASK-A", "aaa111")]),  # type: ignore[arg-type]
+        limits=BoundedRunLimits(max_tasks_per_run=1),
+    )
+
+    result = runner.run(session, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.stop_reason == "MAX_TASKS_PER_RUN"
+    assert result.tasks_completed == 1
+    assert session.commits == 1
+
+
+def test_terminal_verification_and_repair_failure_are_committed_before_failure_stop() -> None:
+    session = CommitRecordingSession()
+    runner = BoundedSchedulerRunner(
+        scheduler=FakeScheduler([scheduled("TASK-A"), scheduled("TASK-B")]),  # type: ignore[arg-type]
+        execution_runner=FakeExecutionRunner(),  # type: ignore[arg-type]
+        finalizer=FakeFinalizer([failed("TASK-A", "execution-TASK-A")]),  # type: ignore[arg-type]
+        repair_runner=FakeRepairRunner([repair_result("REPAIR_FAILED")]),  # type: ignore[arg-type]
+        limits=BoundedRunLimits(max_tasks_per_run=2, max_repairs_per_task=1),
+    )
+
+    result = runner.run(session, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.stop_reason == "MAX_FAILURES_PER_RUN"
+    assert result.tasks_failed == 1
+    assert result.repairs_attempted == 1
+    assert session.commits == 1
+
+
+def test_executor_failure_terminalizes_claimed_task_and_commits_before_stop() -> None:
+    session = CommitRecordingSession()
+    scheduled_result = scheduled("TASK-A")
+    assert scheduled_result.task is not None
+    scheduled_result.task.status = "running"
+    runner = BoundedSchedulerRunner(
+        scheduler=FakeScheduler([scheduled_result]),  # type: ignore[arg-type]
+        execution_runner=FakeExecutionRunner(["EXECUTOR_FAILED"]),  # type: ignore[arg-type]
+        limits=BoundedRunLimits(max_tasks_per_run=1),
+    )
+
+    result = runner.run(session, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.stop_reason == "RUNTIME_ERROR"
+    assert result.tasks_failed == 1
+    assert scheduled_result.task.status == "blocked"
+    assert session.commits == 1
+
+
 def test_human_required_and_reconciliation_stop_run() -> None:
     human = FailureClassification("POLICY_SECURITY_FAILURE", "SCOPE_VALIDATION", "HUMAN_REQUIRED", "scope")
     db = FailureClassification("DB_FINALIZATION_FAILURE", "DB_FINALIZATION", "RECONCILIATION_REQUIRED", "db")
@@ -287,9 +352,11 @@ def test_human_required_and_reconciliation_stop_run() -> None:
             repair_runner=FakeRepairRunner([RepairExecutionResult(status="REPAIR_NOT_ALLOWED", decision=decision)]),  # type: ignore[arg-type]
         )
 
-        result = runner.run(None, project_id="project-1")  # type: ignore[arg-type]
+        session = CommitRecordingSession()
+        result = runner.run(session, project_id="project-1")  # type: ignore[arg-type]
 
         assert result.stop_reason == expected
+        assert session.commits == 1
 
 
 def test_claim_contention_does_not_count_as_failure() -> None:

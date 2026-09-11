@@ -152,6 +152,8 @@ class BoundedSchedulerRunner:
                 continue
             if scheduled.status != "PACKAGE_READY" or scheduled.package is None:
                 outcomes.append(_scheduler_outcome(scheduled, "BLOCKED"))
+                if scheduled.execution is not None:
+                    self._persist_attempt_boundary(session)
                 stop_reason = "RUNTIME_ERROR"
                 break
 
@@ -159,6 +161,7 @@ class BoundedSchedulerRunner:
             last_task_id = scheduled.package.task_id
             last_execution_id = scheduled.package.execution_id
             outcome = self._run_task(session, scheduled)
+            self._persist_attempt_boundary(session)
             outcomes.append(outcome.outcome)
             commits.extend(outcome.commits)
             repairs_attempted += outcome.repairs_attempted
@@ -200,6 +203,7 @@ class BoundedSchedulerRunner:
             owner_id=owner_id,
         )
         if executed.status != "EXECUTED" or executed.package is None:
+            self._record_executor_failure(session, scheduled, executed.status, owner_id)
             return _InternalTaskResult(
                 outcome=TaskRunOutcome(
                     task_id=scheduled.package.task_id,
@@ -274,6 +278,27 @@ class BoundedSchedulerRunner:
         if readiness is not None and not readiness.list_ready_tasks(session, project_id=project_id, limit=1):
             return "NO_READY_TASK"
         return "MAX_TASKS_PER_RUN"
+
+    def _persist_attempt_boundary(self, session: Session) -> None:
+        commit = getattr(session, "commit", None)
+        if callable(commit):
+            commit()
+
+    def _record_executor_failure(
+        self,
+        session: Session,
+        scheduled: SchedulerIterationResult,
+        status: str,
+        owner_id: str,
+    ) -> None:
+        if scheduled.task is not None and scheduled.task.status == "running":
+            scheduled.task.status = "blocked"
+        claiming = getattr(self.execution_runner, "claiming", None)
+        if scheduled.lease is not None and scheduled.lease.status == "active" and status != "OWNERSHIP_LOST" and claiming is not None:
+            claiming.release(session, lease_id=scheduled.lease.id, owner_id=owner_id)
+        flush = getattr(session, "flush", None)
+        if callable(flush):
+            flush()
 
 
 @dataclass(frozen=True)

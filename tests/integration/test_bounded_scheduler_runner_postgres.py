@@ -19,7 +19,7 @@ from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
-from ai_ent.persistence.models import Execution, Task, TaskLease
+from ai_ent.persistence.models import Checkpoint, Execution, Task, TaskLease
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
@@ -286,6 +286,74 @@ def test_postgres_failure_stop_does_not_start_dependent_task(tmp_path: Path) -> 
             executions = session.scalars(select(Execution).where(Execution.task_id.in_([task_a.id, task_b.id]))).all()
             assert len(executions) == 2
             assert all(execution.commit_hash is None for execution in executions)
+            remove_task_worktrees(root, (task_a.id, task_b.id), executions)
+    finally:
+        with database.session() as session:
+            executions = session.scalars(select(Execution).where(Execution.task_id.in_([task_a.id, task_b.id]))).all()
+            remove_task_worktrees(root, (task_a.id, task_b.id), executions)
+        clean_test_tables(database)
+        database.dispose()
+
+
+def test_postgres_terminal_failure_survives_outer_stop_path_rollback(tmp_path: Path) -> None:
+    database = integration_database()
+    clean_test_tables(database)
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
+    project_id = make_test_project_id(suffix)
+    task_a = proof_task(f"TEST-BOUND-ROLLBACK-A-{suffix}", "bounded_rollback_a.txt", "AIENT_BOUNDED_ROLLBACK_A=1")
+    task_b = proof_task(
+        f"TEST-BOUND-ROLLBACK-B-{suffix}",
+        "bounded_rollback_b.txt",
+        "AIENT_BOUNDED_ROLLBACK_B=1",
+        depends_on=(task_a.id,),
+    )
+    manifest_tasks = {task_a.id: task_a, task_b.id: task_b}
+    wrong_writer = (
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; "
+            "p=Path('tests/fixtures/bounded_rollback_a.txt'); "
+            "p.parent.mkdir(parents=True, exist_ok=True); "
+            "p.write_text('wrong\\n', encoding='utf-8')"
+        ),
+    )
+    root = Path.cwd()
+
+    try:
+        seed_project_tasks(database, project_id, task_a, task_b)
+        try:
+            with database.session() as session:
+                result = make_runner(
+                    manifest_tasks=manifest_tasks,
+                    command=wrong_writer,
+                    worktree_root=tmp_path / "worktrees",
+                    max_tasks=2,
+                    max_repairs=1,
+                ).run(session, project_id=project_id)
+
+                assert result.tasks_attempted == 1
+                assert result.tasks_failed == 1
+                assert result.repairs_attempted == 1
+                assert result.stop_reason == "MAX_FAILURES_PER_RUN"
+                raise RuntimeError("outer bounded stop wrapper failed after terminal outcome")
+        except RuntimeError as exc:
+            assert str(exc) == "outer bounded stop wrapper failed after terminal outcome"
+
+        with database.session() as session:
+            executions = session.scalars(
+                select(Execution).where(Execution.task_id == task_a.id).order_by(Execution.attempt)
+            ).all()
+            leases = session.scalars(select(TaskLease).where(TaskLease.task_id == task_a.id)).all()
+            checkpoints = session.scalars(select(Checkpoint).where(Checkpoint.task_id == task_a.id)).all()
+
+            assert session.get(Task, task_a.id).status == "blocked"  # type: ignore[union-attr]
+            assert session.get(Task, task_b.id).status == "pending"  # type: ignore[union-attr]
+            assert [execution.attempt for execution in executions] == [1, 2]
+            assert all(execution.status == "failed" for execution in executions)
+            assert all(execution.commit_hash is None for execution in executions)
+            assert all(lease.status == "released" for lease in leases)
+            assert len(checkpoints) == 2
             remove_task_worktrees(root, (task_a.id, task_b.id), executions)
     finally:
         with database.session() as session:
