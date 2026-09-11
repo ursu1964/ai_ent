@@ -19,6 +19,7 @@ from ai_ent.persistence.models import (
 )
 from ai_ent.runtime_handoff import (
     DEFAULT_RUNTIME_PROJECT_ID,
+    ExternalProjectRuntimeImporter,
     RuntimeHandoffArtifacts,
     RuntimePlanImporter,
     build_runtime_manifest_tasks,
@@ -244,6 +245,44 @@ def test_external_frozen_plan_imports_generic_task_ids_and_pending_gate(
         )
         assert gate is not None
         assert gate.status == "pending"
+
+
+def test_external_runtime_importer_preserves_explicit_approved_gate_state(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(tmp_path)
+    approved = replace(
+        frozen,
+        project=replace(
+            frozen.project,
+            lifecycle_state="IMPORT",
+            runtime_binding=replace(
+                frozen.project.runtime_binding,
+                pending_human_gates=(),
+                approved_human_gates=("GATE-EXT-TASK-002",),
+            ),
+        ),
+    )
+
+    with factory() as session:
+        result = ExternalProjectRuntimeImporter().import_frozen_plan(
+            session,
+            approved,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        gate = session.get(RuntimeHumanGate, "GATE-EXT-TASK-002")
+        session.get(Task, "EXT-TASK-001").status = "passed"  # type: ignore[union-attr]
+        session.flush()
+        readiness = TaskReadinessService().evaluate_task(session, "EXT-TASK-002")
+
+        assert result.status == "IMPORTED"
+        assert result.gated_not_ready_tasks == ()
+        assert gate is not None
+        assert gate.status == "approved"
+        assert readiness.status == "READY"
 
 
 def test_external_runtime_handoff_artifacts_are_deterministic(

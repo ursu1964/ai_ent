@@ -26,6 +26,7 @@ from ai_ent.persistence.models import (
     Execution,
     Project,
     RuntimeHumanGate,
+    RuntimeHumanGateStatus,
     RuntimePlanImport,
     RuntimeTaskPlanBinding,
     Task,
@@ -57,6 +58,7 @@ from ai_ent.scheduler.readiness import TaskReadinessService
 
 RUNTIME_HANDOFF_IMPORTER_VERSION = "rhi-001.1"
 EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION = "erhi-001.1"
+EXTERNAL_PROJECT_RUNTIME_IMPORTER_VERSION = "epri-001.1"
 RUNTIME_IMPORT_PREFIX = "IMPL-"
 DEFAULT_RUNTIME_PROJECT_ID = "PRJ-AI-ENT"
 STANDARD_RUNTIME_VERIFICATION_COMMANDS = (
@@ -478,7 +480,7 @@ class RuntimePlanImporter:
                     task_id=task_id,
                     plan_id=lock.plan_id,
                     plan_version=lock.plan_version,
-                    status="pending",
+                    status=_runtime_gate_status(gate),
                     reason=str(gate["reason"]),
                     risk_level=risk_by_task[task_id],
                     approval_boundary=str(gate.get("required_before", "execution")),
@@ -671,6 +673,55 @@ class RuntimePlanImporter:
         ).first()
 
 
+class ExternalProjectRuntimeImporter:
+    def __init__(
+        self,
+        *,
+        importer_version: str = EXTERNAL_PROJECT_RUNTIME_IMPORTER_VERSION,
+        readiness: TaskReadinessService | None = None,
+    ) -> None:
+        self._runtime_importer = RuntimePlanImporter(
+            importer_version=importer_version,
+            readiness=readiness,
+        )
+
+    @property
+    def importer_version(self) -> str:
+        return self._runtime_importer.importer_version
+
+    def import_frozen_plan(
+        self,
+        session: Session,
+        frozen_plan: ExternalProjectFrozenPlan,
+        *,
+        runtime_project_id: str | None = None,
+        require_clean_git: bool = True,
+        require_codex_command: bool = True,
+        repository_root: Path = Path("."),
+    ) -> RuntimePlanImportResult:
+        return self._runtime_importer.import_external_frozen_plan(
+            session,
+            frozen_plan,
+            runtime_project_id=runtime_project_id,
+            require_clean_git=require_clean_git,
+            require_codex_command=require_codex_command,
+            repository_root=repository_root,
+        )
+
+    def status(
+        self,
+        session: Session,
+        *,
+        project_id: str,
+        include_guarded_dry_run: bool = False,
+    ) -> RuntimePlanStatus:
+        return self._runtime_importer.status(
+            session,
+            project_id=project_id,
+            include_guarded_dry_run=include_guarded_dry_run,
+        )
+
+
 def load_runtime_handoff_artifacts(
     *,
     manifest_root: Path = Path("manifest/project/ai-ent"),
@@ -821,6 +872,13 @@ def _external_project_implementation_plan(
         }
         for index, wave in enumerate(waves, start=1)
     )
+    human_gates = tuple(
+        _external_project_gate_definition(frozen_plan, gate)
+        for gate in sorted(
+            frozen_plan.human_gate_definitions,
+            key=lambda item: str(item.get("id", "")),
+        )
+    )
     plan = ImplementationPlan(
         source_compiled_hash=project.model_hash,
         capability_resolution_hash=_hash_external(
@@ -864,13 +922,7 @@ def _external_project_implementation_plan(
         waves=waves,
         parallelizable_sets=parallelizable_sets,
         critical_path=_critical_path(task_by_id),
-        human_gates=tuple(
-            dict(gate)
-            for gate in sorted(
-                frozen_plan.human_gate_definitions,
-                key=lambda item: str(item.get("id", "")),
-            )
-        ),
+        human_gates=human_gates,
         findings=(),
         warning_classifications=(),
     )
@@ -919,15 +971,17 @@ def _external_project_feasibility(
     frozen_plan: ExternalProjectFrozenPlan,
 ) -> FeasibilityEvaluation:
     gate_ids_by_task: dict[str, tuple[str, ...]] = {}
-    gate_task_ids = {
-        str(gate.get("task_id", ""))
-        for gate in frozen_plan.human_gate_definitions
-    }
+    pending_gate_definitions = [
+        gate
+        for gate in plan.human_gates
+        if _runtime_gate_status(gate) == "pending"
+    ]
+    gate_task_ids = {str(gate.get("task_id", "")) for gate in pending_gate_definitions}
     for task_id in sorted(gate_task_ids):
         gate_ids_by_task[task_id] = tuple(
             sorted(
                 str(gate["id"])
-                for gate in frozen_plan.human_gate_definitions
+                for gate in pending_gate_definitions
                 if str(gate.get("task_id", "")) == task_id
             )
         )
@@ -1001,6 +1055,28 @@ def _external_project_feasibility(
         technical_blockers=(),
         findings=(),
     )
+
+
+def _external_project_gate_definition(
+    frozen_plan: ExternalProjectFrozenPlan,
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    gate_id = str(gate.get("id", ""))
+    approved = set(frozen_plan.project.runtime_binding.approved_human_gates)
+    pending = set(frozen_plan.project.runtime_binding.pending_human_gates)
+    status = "approved" if gate_id in approved else "pending"
+    if gate_id not in approved and gate_id not in pending:
+        status = _runtime_gate_status(gate)
+    return {**gate, "status": status}
+
+
+def _runtime_gate_status(gate: dict[str, Any]) -> RuntimeHumanGateStatus:
+    raw_status = str(gate.get("status", "pending")).lower()
+    if raw_status == "approved":
+        return "approved"
+    if raw_status == "rejected":
+        return "rejected"
+    return "pending"
 
 
 def _external_project_task_feasibility(

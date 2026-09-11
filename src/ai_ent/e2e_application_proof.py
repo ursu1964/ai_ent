@@ -31,15 +31,28 @@ from ai_ent.canonical_project_model import (
     CanonicalProjectRelationship,
     CanonicalRelationshipType,
 )
+from ai_ent.external_project import (
+    CONTROL_PLANE_AUTHORITY,
+    DEFAULT_PROHIBITED_PATHS,
+    MANDATORY_VERIFICATION_COMMANDS,
+    ExternalProject,
+    ExternalProjectFrozenPlan,
+    ExternalProjectRuntimeTask,
+    ProjectPlan,
+    ProjectRepository,
+    ProjectRuntimeBinding,
+    ProjectWorkspace,
+)
 from ai_ent.manifest_intake import MANIFEST_INTAKE_SCHEMA_VERSION, parse_approved_project_manifest
 from ai_ent.post_implementation import evaluate_post_residual_implementation
 from ai_ent.project_manifest import GENERATED_MARKER, canonical_bytes
-from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
+from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, ExternalProjectRuntimeImporter
 
 E2E_001_VERSION = "e2e-001.1"
 TARGET_PROJECT_ID = "E2E-TEAM-WORK-TRACKER"
 TARGET_PROJECT_NAME = "Team Work Tracker"
 DEFAULT_TARGET_WORKSPACE = Path("/home/user/projects/e2e-team-work-tracker")
+EQUIVALENT_RUNTIME_IMPORT_SUCCESS_STATUSES = frozenset({"IMPORTED", "ALREADY_IMPORTED", "IN_SYNC"})
 
 E2EResultValue = Literal["ACCEPTED", "ACCEPTED_WITH_LIMITATIONS", "REJECTED"]
 LimitationClass = Literal[
@@ -192,6 +205,114 @@ class _FakeTargetModelAdapter:
         )
 
 
+def _acceptance_hash(
+    *,
+    head: str,
+    version: str,
+    target_project_id: str,
+    intake_hash: str,
+    canonical_hash: str,
+    architecture_hash: str,
+    target_plan_hash: str,
+    application_commit: str | None,
+    proofs: tuple[E2EProof, ...],
+    limitations: tuple[E2ELimitation, ...],
+    result: E2EResultValue,
+) -> str:
+    return hashlib.sha256(
+        canonical_bytes(
+            _semantic_acceptance_payload(
+                head=head,
+                version=version,
+                target_project_id=target_project_id,
+                intake_hash=intake_hash,
+                canonical_hash=canonical_hash,
+                architecture_hash=architecture_hash,
+                target_plan_hash=target_plan_hash,
+                application_commit=application_commit,
+                proofs=proofs,
+                limitations=limitations,
+                result=result,
+            )
+        )
+    ).hexdigest()
+
+
+def _semantic_acceptance_payload(
+    *,
+    head: str,
+    version: str,
+    target_project_id: str,
+    intake_hash: str,
+    canonical_hash: str,
+    architecture_hash: str,
+    target_plan_hash: str,
+    application_commit: str | None,
+    proofs: tuple[E2EProof, ...],
+    limitations: tuple[E2ELimitation, ...],
+    result: E2EResultValue,
+) -> dict[str, Any]:
+    return {
+        "head": head,
+        "version": version,
+        "target_project_id": target_project_id,
+        "intake_hash": intake_hash,
+        "canonical_hash": canonical_hash,
+        "architecture_hash": architecture_hash,
+        "target_plan_hash": target_plan_hash,
+        "application_commit": application_commit,
+        "proofs": [_semantic_proof(proof) for proof in proofs],
+        "limitations": [limitation.as_dict() for limitation in limitations],
+        "result": result,
+    }
+
+
+def _semantic_proof(proof: E2EProof) -> dict[str, Any]:
+    payload = proof.as_dict()
+    details = _copy_jsonable(payload["details"])
+    if proof.proof_id == "G" and isinstance(details, dict) and "python" in details:
+        details["python"] = bool(details["python"])
+    if proof.proof_id == "I" and isinstance(details, dict):
+        workspace = details.get("workspace_prepared")
+        if isinstance(workspace, dict) and "created" in workspace:
+            workspace["created"] = "target_workspace"
+        runtime_import = details.get("runtime_import")
+        if isinstance(runtime_import, dict):
+            details["runtime_import"] = _semantic_runtime_import(runtime_import)
+    payload["details"] = details
+    return payload
+
+
+def _semantic_runtime_import(runtime_import: dict[str, Any]) -> dict[str, Any]:
+    payload = _copy_jsonable(runtime_import)
+    status = str(payload.get("status", ""))
+    if payload.get("ok") is True and status in EQUIVALENT_RUNTIME_IMPORT_SUCCESS_STATUSES:
+        payload["status"] = "IN_SYNC"
+    if "mandatory_verification_commands" in payload:
+        payload["mandatory_verification_commands"] = [
+            _semantic_verification_command(command)
+            for command in payload["mandatory_verification_commands"]
+        ]
+    payload.pop("frozen_plan_hash", None)
+    return payload
+
+
+def _semantic_verification_command(command: Any) -> str:
+    text = str(command)
+    executable, separator, rest = text.partition(" ")
+    if separator and executable.endswith("/python"):
+        return f"python {rest}"
+    return text
+
+
+def _copy_jsonable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _copy_jsonable(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [_copy_jsonable(item) for item in value]
+    return value
+
+
 def run_first_application_creation_proof(
     session: Session,
     *,
@@ -228,6 +349,7 @@ def run_first_application_creation_proof(
     target_plan = _target_plan(architecture)
     plan_hash = hashlib.sha256(canonical_bytes(target_plan)).hexdigest()
     workspace_result = _prepare_target_workspace(target_workspace)
+    runtime_import = _import_target_runtime_plan(session, target_workspace, target_plan)
     _write_target_artifacts(
         target_workspace,
         intake=intake.as_dict(),
@@ -298,9 +420,10 @@ def run_first_application_creation_proof(
         E2EProof(
             "I",
             "Guarded implementation",
-            "PASS",
+            "PASS" if runtime_import["ok"] else "FAIL",
             {
                 "workspace_prepared": workspace_result,
+                "runtime_import": runtime_import,
                 "implementation_tasks_completed": len(target_plan["tasks"]),
                 "effective_concurrency": 1,
                 "scope_checked": True,
@@ -331,20 +454,19 @@ def run_first_application_creation_proof(
     )
     canonical_hash = hashlib.sha256(canonical_bytes(canonical)).hexdigest()
     architecture_hash = hashlib.sha256(canonical_bytes(architecture)).hexdigest()
-    payload = {
-        "head": started_head,
-        "version": E2E_001_VERSION,
-        "target_project_id": TARGET_PROJECT_ID,
-        "intake_hash": intake.manifest_hash,
-        "canonical_hash": canonical_hash,
-        "architecture_hash": architecture_hash,
-        "target_plan_hash": plan_hash,
-        "application_commit": app_commit,
-        "proofs": [proof.as_dict() for proof in proofs],
-        "limitations": [limitation.as_dict() for limitation in limitations],
-        "result": result,
-    }
-    acceptance_hash = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+    acceptance_hash = _acceptance_hash(
+        head=started_head,
+        version=E2E_001_VERSION,
+        target_project_id=TARGET_PROJECT_ID,
+        intake_hash=str(intake.manifest_hash),
+        canonical_hash=canonical_hash,
+        architecture_hash=architecture_hash,
+        target_plan_hash=plan_hash,
+        application_commit=app_commit,
+        proofs=proofs,
+        limitations=limitations,
+        result=result,
+    )
     return E2EApplicationProofResult(
         result=result,
         recommendation=recommendation,
@@ -664,6 +786,133 @@ def _target_plan(architecture: dict[str, Any]) -> dict[str, Any]:
         "human_gates": [],
         "frozen_state": "FROZEN",
     }
+
+
+def _import_target_runtime_plan(
+    session: Session,
+    target_workspace: Path,
+    target_plan: dict[str, Any],
+) -> dict[str, Any]:
+    frozen_plan = _target_external_frozen_plan(target_workspace, target_plan)
+    importer = ExternalProjectRuntimeImporter()
+    result = importer.import_frozen_plan(
+        session,
+        frozen_plan,
+        require_clean_git=False,
+        require_codex_command=False,
+        repository_root=target_workspace,
+    )
+    return {
+        "ok": result.ok,
+        "status": result.status,
+        "import_id": result.import_id,
+        "importer_version": importer.importer_version,
+        "project_id": result.project_id,
+        "plan_id": result.plan_id,
+        "plan_version": result.plan_version,
+        "tasks_imported": result.tasks_imported,
+        "dependency_edges_imported": result.dependency_edges_imported,
+        "human_gates_bound": result.human_gates_bound,
+        "runtime_ready_tasks": list(result.runtime_ready_tasks),
+        "gated_not_ready_tasks": list(result.gated_not_ready_tasks),
+        "blockers": list(result.blockers),
+        "control_plane_authority": frozen_plan.project.runtime_binding.control_plane_authority,
+        "grants_control_plane_authority": (
+            frozen_plan.project.runtime_binding.grants_control_plane_authority
+        ),
+        "verifier_bypass_authority": frozen_plan.project.runtime_binding.verifier_bypass_authority,
+        "implicit_human_gate_approval": (
+            frozen_plan.project.runtime_binding.implicit_human_gate_approval
+        ),
+        "mandatory_verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        "independent_verification_required": frozen_plan.project.plan.independent_verification_required,
+        "frozen_plan_hash": frozen_plan.frozen_plan_hash,
+    }
+
+
+def _target_external_frozen_plan(
+    target_workspace: Path,
+    target_plan: dict[str, Any],
+) -> ExternalProjectFrozenPlan:
+    workspace = ProjectWorkspace(
+        workspace_id="WS-E2E-TEAM-WORK-TRACKER",
+        root_path=str(target_workspace),
+        owner_project_id=TARGET_PROJECT_ID,
+        allowed_roots=("**",),
+    )
+    repository = ProjectRepository(
+        repository_id="REPO-E2E-TEAM-WORK-TRACKER",
+        workspace_id=workspace.workspace_id,
+        state="INITIALIZED",
+    )
+    tasks = tuple(
+        _target_external_runtime_task(task)
+        for task in sorted(target_plan["tasks"], key=lambda item: str(item["id"]))
+    )
+    plan = ProjectPlan(
+        plan_id="PLAN-E2E-TEAM-WORK-TRACKER",
+        version="1",
+        state="FROZEN",
+        task_ids=tuple(task.id for task in tasks),
+        required_human_gates=(),
+    )
+    binding = ProjectRuntimeBinding(
+        binding_id="BIND-E2E-TEAM-WORK-TRACKER",
+        project_id=TARGET_PROJECT_ID,
+        workspace_id=workspace.workspace_id,
+        repository_id=repository.repository_id,
+        plan_id=plan.plan_id,
+        plan_version=plan.version,
+        state="READY_FOR_IMPORT",
+        control_plane_authority=CONTROL_PLANE_AUTHORITY,
+    )
+    project = ExternalProject(
+        project_id=TARGET_PROJECT_ID,
+        name=TARGET_PROJECT_NAME,
+        lifecycle_state="IMPORT",
+        workspace=workspace,
+        repository=repository,
+        plan=plan,
+        runtime_binding=binding,
+    )
+    return ExternalProjectFrozenPlan(
+        project=project,
+        tasks=tasks,
+        human_gate_definitions=(),
+        effective_concurrency=1,
+    )
+
+
+def _target_external_runtime_task(task: dict[str, Any]) -> ExternalProjectRuntimeTask:
+    requirement_ids = tuple(requirement["id"] for requirement in _target_requirements())
+    capability_ids = tuple(
+        sorted(
+            {
+                capability_id
+                for requirement in _target_requirements()
+                for capability_id in requirement["capabilities"]
+            }
+        )
+    )
+    prohibited_paths = tuple(
+        sorted({*DEFAULT_PROHIBITED_PATHS, *(str(item) for item in task["write_scope"]["prohibited"])})
+    )
+    return ExternalProjectRuntimeTask(
+        id=str(task["id"]),
+        title=str(task["title"]),
+        objective=str(task["objective"]),
+        requirement_ids=requirement_ids,
+        capability_ids=capability_ids,
+        component_ids=("CMP-WEB", "CMP-API", "CMP-AUTH", "CMP-DATA", "CMP-AUDIT", "CMP-OPS"),
+        interface_ids=("IF-HTTP", "IF-DB", "IF-AUDIT"),
+        depends_on=tuple(str(item) for item in task["depends_on"]),
+        allowed_paths=tuple(str(item) for item in task["write_scope"]["allowed"]),
+        prohibited_paths=prohibited_paths,
+        verification_commands=MANDATORY_VERIFICATION_COMMANDS,
+        acceptance_criteria=tuple(_acceptance_criteria()),
+        risk_level=str(task["risk"]),
+        provenance={"source": "E2E-001-target-plan"},
+    )
 
 
 def _task(task_id: str, title: str, risk: str, depends_on: list[str]) -> dict[str, Any]:
@@ -1063,13 +1312,7 @@ def _provenance_summary(
 
 
 def _limitations(pir_002: dict[str, Any], docker_proof: E2EProof) -> tuple[E2ELimitation, ...]:
-    limitations = [
-        E2ELimitation(
-            "FUTURE_HARDENING",
-            "Target-app task import/execution is proven through the E2E guarded generation harness; "
-            "a reusable external-project runtime importer should be promoted before broad product use.",
-        )
-    ]
+    limitations: list[E2ELimitation] = []
     for item in pir_002.get("limitations", []):
         limitations.append(E2ELimitation("FUTURE_HARDENING", f"PIR-002 carried limitation: {item}"))
     if docker_proof.status == "SKIPPED":
