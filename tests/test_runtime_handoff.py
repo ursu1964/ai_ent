@@ -22,9 +22,11 @@ from ai_ent.runtime_handoff import (
     RuntimeHandoffArtifacts,
     RuntimePlanImporter,
     build_runtime_manifest_tasks,
+    external_project_runtime_handoff_artifacts,
     load_runtime_handoff_artifacts,
 )
 from ai_ent.scheduler.readiness import TaskReadinessService
+from tests.test_external_project import frozen_plan_project
 
 
 def session_factory() -> sessionmaker[Session]:
@@ -203,3 +205,79 @@ def test_runtime_status_has_no_side_effects(tmp_path: Path) -> None:
         assert status.active_leases == 0
         assert session.scalar(select(func.count()).select_from(Execution)) == 0
         assert session.scalar(select(func.count()).select_from(TaskLease)) == 0
+
+
+def test_external_frozen_plan_imports_generic_task_ids_and_pending_gate(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(tmp_path)
+
+    with factory() as session:
+        result = RuntimePlanImporter().import_external_frozen_plan(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+        session.commit()
+
+        status = RuntimePlanImporter().status(session, project_id=frozen.project.project_id)
+        manifest_tasks = build_runtime_manifest_tasks(session, frozen.project.project_id)
+        gate = session.get(RuntimeHumanGate, "GATE-EXT-TASK-002")
+
+        assert result.status == "IMPORTED"
+        assert result.project_id == frozen.project.project_id
+        assert result.tasks_imported == 2
+        assert result.dependency_edges_imported == 1
+        assert result.human_gates_bound == 1
+        assert result.runtime_ready_tasks == ("EXT-TASK-001",)
+        assert result.gated_not_ready_tasks == ("EXT-TASK-002",)
+        assert status.imported_tasks == 2
+        assert status.pending_human_gates == 1
+        assert set(manifest_tasks) == {"EXT-TASK-001", "EXT-TASK-002"}
+        assert manifest_tasks["EXT-TASK-002"].depends_on == ("EXT-TASK-001",)
+        assert any(
+            "pytest" in command
+            for command in manifest_tasks["EXT-TASK-001"].verification.commands
+        )
+        assert gate is not None
+        assert gate.status == "pending"
+
+
+def test_external_runtime_handoff_artifacts_are_deterministic(
+    tmp_path: Path,
+) -> None:
+    first = external_project_runtime_handoff_artifacts(frozen_plan_project(tmp_path))
+    second = external_project_runtime_handoff_artifacts(frozen_plan_project(tmp_path))
+
+    assert first.plan.as_dict() == second.plan.as_dict()
+    assert first.feasibility.as_dict() == second.feasibility.as_dict()
+    assert first.dry_run.as_dict() == second.dry_run.as_dict()
+    assert first.dry_run.lock.plan_id == "PLAN-EXT-RUNTIME"
+    assert first.dry_run.lock.project_id == "EXT-RUNTIME-APP"
+
+
+def test_external_frozen_plan_import_blocks_without_leaking_secret_remote(
+    tmp_path: Path,
+) -> None:
+    factory = session_factory()
+    frozen = frozen_plan_project(
+        tmp_path,
+        remote_url="https://git.example/runtime-app.git?token=SUPERSECRET",
+    )
+
+    with factory() as session:
+        result = RuntimePlanImporter().import_external_frozen_plan(
+            session,
+            frozen,
+            require_clean_git=False,
+            require_codex_command=False,
+            repository_root=tmp_path,
+        )
+
+    rendered = "\n".join(result.blockers)
+    assert result.status == "BLOCKED"
+    assert "https://git.example/runtime-app.git?<redacted>" in rendered
+    assert "SUPERSECRET" not in rendered

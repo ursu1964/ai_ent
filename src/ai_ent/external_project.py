@@ -4,7 +4,7 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
@@ -33,6 +33,7 @@ BindingState = Literal["PENDING_GATES", "READY_FOR_IMPORT", "IMPORTED", "EXECUTI
 ArtifactKind = Literal["source", "documentation", "log", "package", "evidence", "runtime_config"]
 ArtifactAuthorityState = Literal["NON_AUTHORITATIVE", "VALIDATED"]
 ExternalProjectFindingSeverity = Literal["ERROR"]
+ExternalFrozenPlanFindingSeverity = Literal["ERROR"]
 
 EXTERNAL_PROJECT_LIFECYCLE: tuple[ExternalProjectLifecycleState, ...] = (
     "CREATE",
@@ -210,6 +211,125 @@ class GeneratedArtifact:
             "authority_state": self.authority_state,
             "contains_secret": self.contains_secret,
             "metadata": _redact_mapping(self.metadata or {}),
+        }
+
+
+@dataclass(frozen=True)
+class ExternalProjectRuntimeTask:
+    id: str
+    title: str
+    objective: str
+    requirement_ids: tuple[str, ...]
+    capability_ids: tuple[str, ...]
+    component_ids: tuple[str, ...] = ()
+    interface_ids: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
+    allowed_paths: tuple[str, ...] = ()
+    prohibited_paths: tuple[str, ...] = DEFAULT_PROHIBITED_PATHS
+    agent_role: str = "external-project-implementation"
+    model_profile: str = "STANDARD_CODING"
+    executor: str = "codex"
+    verification_profile: str = "STANDARD_REGRESSION"
+    verification_commands: tuple[str, ...] = MANDATORY_VERIFICATION_COMMANDS
+    acceptance_criteria: tuple[str, ...] = ()
+    risk_level: str = "LOW"
+    risk_reason: str = "bounded external-project runtime task"
+    provenance: dict[str, str] = field(default_factory=dict)
+    fingerprint: str | None = None
+
+    @property
+    def effective_fingerprint(self) -> str:
+        if self.fingerprint is not None:
+            return self.fingerprint
+        return _hash(self._payload(include_fingerprint=False))
+
+    def as_dict(self) -> dict[str, Any]:
+        return self._payload(include_fingerprint=True)
+
+    def _payload(self, *, include_fingerprint: bool) -> dict[str, Any]:
+        payload = {
+            "id": self.id,
+            "title": self.title,
+            "objective": self.objective,
+            "implements": {
+                "requirements": sorted(self.requirement_ids),
+                "capabilities": sorted(self.capability_ids),
+                "components": sorted(self.component_ids),
+                "interfaces": sorted(self.interface_ids),
+            },
+            "depends_on": sorted(self.depends_on),
+            "write_scope": {
+                "allowed": sorted(self.allowed_paths),
+                "prohibited": sorted(self.prohibited_paths),
+            },
+            "execution": {
+                "agent_role": self.agent_role,
+                "model_profile": self.model_profile,
+                "executor": self.executor,
+            },
+            "verification": {
+                "profile": self.verification_profile,
+                "commands": list(self.verification_commands),
+                "acceptance_criteria": list(self.acceptance_criteria),
+            },
+            "risk": {
+                "level": self.risk_level,
+                "reason": self.risk_reason,
+            },
+            "provenance": _redact_mapping(dict(self.provenance)),
+        }
+        if include_fingerprint:
+            payload["fingerprint"] = self.effective_fingerprint
+        return payload
+
+
+@dataclass(frozen=True)
+class ExternalProjectFrozenPlan:
+    project: ExternalProject
+    tasks: tuple[ExternalProjectRuntimeTask, ...]
+    human_gate_definitions: tuple[dict[str, Any], ...] = ()
+    effective_concurrency: int = 1
+
+    @property
+    def task_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(task.id for task in self.tasks))
+
+    @property
+    def dependency_edges(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (task.id, dependency)
+                for task in self.tasks
+                for dependency in task.depends_on
+            )
+        )
+
+    @property
+    def frozen_plan_hash(self) -> str:
+        return _hash(self._payload())
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**self._payload(), "frozen_plan_hash": self.frozen_plan_hash}
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "record_kind": "external_project_frozen_plan",
+            "schema_version": self.project.schema_version,
+            "contract_version": self.project.contract_version,
+            "project": self.project.as_dict(),
+            "tasks": [
+                task.as_dict()
+                for task in sorted(self.tasks, key=lambda item: item.id)
+            ],
+            "dependency_edges": [list(edge) for edge in self.dependency_edges],
+            "human_gate_definitions": [
+                _redact_value(gate)
+                for gate in sorted(
+                    self.human_gate_definitions,
+                    key=lambda item: str(item.get("id", "")),
+                )
+            ],
+            "effective_concurrency": self.effective_concurrency,
         }
 
 
@@ -558,6 +678,36 @@ class ExternalProjectModelValidation:
         }
 
 
+@dataclass(frozen=True)
+class ExternalProjectFrozenPlanFinding:
+    finding_id: str
+    severity: ExternalFrozenPlanFindingSeverity
+    message: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "finding_id": self.finding_id,
+            "severity": self.severity,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class ExternalProjectFrozenPlanValidation:
+    project_id: str
+    frozen_plan_hash: str
+    ok: bool
+    findings: tuple[ExternalProjectFrozenPlanFinding, ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "frozen_plan_hash": self.frozen_plan_hash,
+            "ok": self.ok,
+            "findings": [finding.as_dict() for finding in self.findings],
+        }
+
+
 def validate_external_project(project: ExternalProject) -> ExternalProjectModelValidation:
     findings: list[ExternalProjectModelFinding] = []
     _validate_identity_bindings(project, findings)
@@ -575,11 +725,50 @@ def validate_external_project(project: ExternalProject) -> ExternalProjectModelV
     )
 
 
+def validate_external_project_frozen_plan(
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> ExternalProjectFrozenPlanValidation:
+    findings: list[ExternalProjectFrozenPlanFinding] = []
+    project = frozen_plan.project
+    project_validation = validate_external_project(project)
+    findings.extend(
+        ExternalProjectFrozenPlanFinding(
+            finding_id=f"EFP-MODEL-{finding.finding_id}",
+            severity="ERROR",
+            message=finding.message,
+        )
+        for finding in project_validation.findings
+    )
+    _validate_external_project_import_state(frozen_plan, findings)
+    _validate_external_project_task_bindings(frozen_plan, findings)
+    _validate_external_project_gate_definitions(frozen_plan, findings)
+    _validate_external_project_runtime_scope(frozen_plan, findings)
+    _validate_external_project_secret_surfaces(frozen_plan, findings)
+    sorted_findings = tuple(sorted(findings, key=lambda item: item.finding_id))
+    return ExternalProjectFrozenPlanValidation(
+        project_id=project.project_id,
+        frozen_plan_hash=frozen_plan.frozen_plan_hash,
+        ok=not sorted_findings,
+        findings=sorted_findings,
+    )
+
+
 def external_project_model_record(project: ExternalProject) -> dict[str, Any]:
     validation = validate_external_project(project)
     return {
         "record_kind": "external_project_model",
         "project": project.as_dict(),
+        "validation": validation.as_dict(),
+    }
+
+
+def external_project_frozen_plan_record(
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> dict[str, Any]:
+    validation = validate_external_project_frozen_plan(frozen_plan)
+    return {
+        "record_kind": "external_project_frozen_plan",
+        "frozen_plan": frozen_plan.as_dict(),
         "validation": validation.as_dict(),
     }
 
@@ -596,6 +785,197 @@ def _require_service_safe_project(project: ExternalProject) -> None:
             raise ExternalProjectServiceError(
                 "artifact path is outside workspace allowed roots: "
                 f"{artifact.artifact_id}"
+            )
+
+
+def _validate_external_project_import_state(
+    frozen_plan: ExternalProjectFrozenPlan,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    project = frozen_plan.project
+    if project.plan.state != "FROZEN":
+        _append_frozen(
+            finding_id="EFP-PLAN-NOT-FROZEN",
+            message=f"external project plan state is {project.plan.state}",
+            findings=findings,
+        )
+    if project.runtime_binding.state != "READY_FOR_IMPORT":
+        _append_frozen(
+            finding_id="EFP-BINDING-NOT-READY",
+            message=f"runtime binding state is {project.runtime_binding.state}",
+            findings=findings,
+        )
+    if frozen_plan.effective_concurrency < 1:
+        _append_frozen(
+            finding_id="EFP-CONCURRENCY",
+            message="effective concurrency must be at least 1",
+            findings=findings,
+        )
+
+
+def _validate_external_project_task_bindings(
+    frozen_plan: ExternalProjectFrozenPlan,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    declared_task_ids = tuple(sorted(frozen_plan.project.plan.task_ids))
+    task_ids = frozen_plan.task_ids
+    if len(task_ids) != len(set(task_ids)):
+        _append_frozen(
+            finding_id="EFP-TASK-DUPLICATE",
+            message="external frozen plan contains duplicate task ids",
+            findings=findings,
+        )
+    if task_ids != declared_task_ids:
+        _append_frozen(
+            finding_id="EFP-TASK-PLAN-MISMATCH",
+            message="frozen task ids do not match project plan task ids",
+            findings=findings,
+        )
+    task_id_set = set(task_ids)
+    for task in frozen_plan.tasks:
+        for dependency_id in task.depends_on:
+            if dependency_id not in task_id_set:
+                _append_frozen(
+                    finding_id=f"EFP-TASK-DEPENDENCY-{_slug(task.id)}-{_slug(dependency_id)}",
+                    message=f"task dependency is not in frozen plan: {task.id}",
+                    findings=findings,
+                )
+        missing_commands = sorted(
+            set(MANDATORY_VERIFICATION_COMMANDS) - set(task.verification_commands)
+        )
+        for command in missing_commands:
+            _append_frozen(
+                finding_id=f"EFP-TASK-VERIFY-{_slug(task.id)}-{_slug(command)}",
+                message=f"runtime task missing mandatory verification command: {task.id}",
+                findings=findings,
+            )
+        if task.executor != "codex":
+            _append_frozen(
+                finding_id=f"EFP-TASK-EXECUTOR-{_slug(task.id)}",
+                message=f"runtime task executor is not codex: {task.id}",
+                findings=findings,
+            )
+    if _has_dependency_cycle(frozen_plan.dependency_edges):
+        _append_frozen(
+            finding_id="EFP-TASK-DEPENDENCY-CYCLE",
+            message="external frozen plan dependency graph contains a cycle",
+            findings=findings,
+        )
+
+
+def _validate_external_project_gate_definitions(
+    frozen_plan: ExternalProjectFrozenPlan,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    project = frozen_plan.project
+    scoped_gates = set(project.plan.required_human_gates)
+    approved = set(project.runtime_binding.approved_human_gates)
+    pending = set(project.runtime_binding.pending_human_gates)
+    if approved & pending:
+        _append_frozen(
+            finding_id="EFP-GATE-DUPLICATE-STATE",
+            message="human gate cannot be both pending and approved",
+            findings=findings,
+        )
+    missing_bound = sorted(scoped_gates - approved - pending)
+    for gate_id in missing_bound:
+        _append_frozen(
+            finding_id=f"EFP-GATE-UNBOUND-{gate_id}",
+            message=f"human gate is not explicitly bound: {gate_id}",
+            findings=findings,
+        )
+    definitions_by_id = {
+        str(gate.get("id", "")): gate
+        for gate in frozen_plan.human_gate_definitions
+    }
+    definition_ids = set(definitions_by_id)
+    for gate_id in sorted(scoped_gates - definition_ids):
+        _append_frozen(
+            finding_id=f"EFP-GATE-DEFINITION-MISSING-{gate_id}",
+            message=f"human gate definition is missing: {gate_id}",
+            findings=findings,
+        )
+    for gate_id in sorted(definition_ids - scoped_gates):
+        _append_frozen(
+            finding_id=f"EFP-GATE-DEFINITION-UNKNOWN-{gate_id}",
+            message=f"human gate definition is not plan-scoped: {gate_id}",
+            findings=findings,
+        )
+    task_ids = set(frozen_plan.task_ids)
+    for gate_id, gate in definitions_by_id.items():
+        task_id = str(gate.get("task_id", ""))
+        if task_id not in task_ids:
+            _append_frozen(
+                finding_id=f"EFP-GATE-TASK-{gate_id}",
+                message=f"human gate target task is not in frozen plan: {gate_id}",
+                findings=findings,
+            )
+
+
+def _validate_external_project_runtime_scope(
+    frozen_plan: ExternalProjectFrozenPlan,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    allowed_roots = frozen_plan.project.workspace.allowed_roots
+    prohibited_paths = frozen_plan.project.workspace.prohibited_paths
+    for task in frozen_plan.tasks:
+        for path in (*task.allowed_paths, *task.prohibited_paths):
+            if _is_unsafe_relative_path(path):
+                _append_frozen(
+                    finding_id=f"EFP-SCOPE-PATH-{_slug(task.id)}-{_slug(path)}",
+                    message=f"runtime task path is not project-relative: {task.id}",
+                    findings=findings,
+                )
+        for allowed_path in task.allowed_paths:
+            if _is_unsafe_relative_path(allowed_path):
+                continue
+            if not _path_in_allowed_roots(allowed_path, allowed_roots):
+                _append_frozen(
+                    finding_id=f"EFP-SCOPE-OUTSIDE-WORKSPACE-{_slug(task.id)}",
+                    message=f"runtime task allowed path is outside workspace roots: {task.id}",
+                    findings=findings,
+                )
+            if _matches_prohibited_path(allowed_path, prohibited_paths):
+                _append_frozen(
+                    finding_id=f"EFP-SCOPE-CONFLICT-{_slug(task.id)}-{_slug(allowed_path)}",
+                    message=(
+                        "runtime task allowed path conflicts with prohibited policy: "
+                        f"{task.id}"
+                    ),
+                    findings=findings,
+                )
+
+
+def _validate_external_project_secret_surfaces(
+    frozen_plan: ExternalProjectFrozenPlan,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    remote_url = frozen_plan.project.repository.remote_url
+    if remote_url and _remote_url_has_secret_material(remote_url):
+        _append_frozen(
+            finding_id="EFP-SECRET-REMOTE",
+            message=(
+                "repository remote contains secret-bearing material: "
+                f"{_redact_remote_url_for_error(remote_url)}"
+            ),
+            findings=findings,
+        )
+    for task in frozen_plan.tasks:
+        if _mapping_has_secret_field(dict(task.provenance)):
+            _append_frozen(
+                finding_id=f"EFP-SECRET-TASK-PROVENANCE-{_slug(task.id)}",
+                message=f"runtime task provenance contains secret-bearing fields: {task.id}",
+                findings=findings,
+            )
+    for gate in frozen_plan.human_gate_definitions:
+        if _mapping_has_secret_field(gate):
+            _append_frozen(
+                finding_id=f"EFP-SECRET-GATE-{_slug(str(gate.get('id', 'unknown')))}",
+                message=(
+                    "human gate definition contains secret-bearing fields: "
+                    f"{gate.get('id', 'unknown')}"
+                ),
+                findings=findings,
             )
 
 
@@ -688,6 +1068,8 @@ def _path_in_allowed_roots(path: str, allowed_roots: tuple[str, ...]) -> bool:
     normalized = _normalize_relative_path(path)
     for allowed_root in allowed_roots:
         normalized_root = _normalize_relative_path(allowed_root)
+        if normalized_root == "**":
+            return True
         if normalized == normalized_root or normalized.startswith(f"{normalized_root}/"):
             return True
     return False
@@ -946,6 +1328,21 @@ def _append(
     )
 
 
+def _append_frozen(
+    *,
+    finding_id: str,
+    message: str,
+    findings: list[ExternalProjectFrozenPlanFinding],
+) -> None:
+    findings.append(
+        ExternalProjectFrozenPlanFinding(
+            finding_id=finding_id,
+            severity="ERROR",
+            message=message,
+        )
+    )
+
+
 def _hash(payload: Any) -> str:
     return hashlib.sha256(canonical_bytes(payload)).hexdigest()
 
@@ -1022,3 +1419,27 @@ def _is_sha256_hex(value: str) -> bool:
 def _slug(value: str) -> str:
     slug = "".join(character if character.isalnum() else "-" for character in value.lower())
     return slug.strip("-")[:80] or "empty"
+
+
+def _has_dependency_cycle(edges: tuple[tuple[str, str], ...]) -> bool:
+    dependencies: dict[str, set[str]] = {}
+    for task_id, depends_on in edges:
+        dependencies.setdefault(task_id, set()).add(depends_on)
+        dependencies.setdefault(depends_on, set())
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(task_id: str) -> bool:
+        if task_id in visiting:
+            return True
+        if task_id in visited:
+            return False
+        visiting.add(task_id)
+        for dependency_id in dependencies.get(task_id, set()):
+            if visit(dependency_id):
+                return True
+        visiting.remove(task_id)
+        visited.add(task_id)
+        return False
+
+    return any(visit(task_id) for task_id in sorted(dependencies))

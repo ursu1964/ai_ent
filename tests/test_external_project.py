@@ -14,6 +14,8 @@ from ai_ent.external_project import (
     MANDATORY_VERIFICATION_COMMANDS,
     WORKSPACE_MARKER_PATH,
     ExternalProject,
+    ExternalProjectFrozenPlan,
+    ExternalProjectRuntimeTask,
     ExternalProjectServiceError,
     GeneratedAppWorkspaceManager,
     GeneratedArtifact,
@@ -21,8 +23,10 @@ from ai_ent.external_project import (
     ProjectRepository,
     ProjectRuntimeBinding,
     ProjectWorkspace,
+    external_project_frozen_plan_record,
     external_project_model_record,
     validate_external_project,
+    validate_external_project_frozen_plan,
 )
 
 
@@ -532,3 +536,159 @@ def test_workspace_marker_path_is_scoped_under_workspace(tmp_path: Path) -> None
 
     assert marker_path == Path(prepared.root_path) / WORKSPACE_MARKER_PATH
     assert marker_path.resolve().is_relative_to(Path(prepared.root_path).resolve())
+
+
+def frozen_plan_project(
+    tmp_path: Path,
+    *,
+    remote_url: str | None = None,
+) -> ExternalProjectFrozenPlan:
+    workspace = ProjectWorkspace(
+        workspace_id="WS-EXT-RUNTIME",
+        root_path=str(tmp_path / "generated-apps" / "runtime-app"),
+        owner_project_id="EXT-RUNTIME-APP",
+        allowed_roots=("app", "tests"),
+    )
+    repository = ProjectRepository(
+        repository_id="REPO-EXT-RUNTIME",
+        workspace_id=workspace.workspace_id,
+        remote_url=remote_url,
+    )
+    tasks = (
+        ExternalProjectRuntimeTask(
+            id="EXT-TASK-001",
+            title="Create application shell",
+            objective="Create the external application shell.",
+            requirement_ids=("REQ-EXT-001",),
+            capability_ids=("C20",),
+            component_ids=("CMP-EXT-APP",),
+            allowed_paths=("app", "tests"),
+            acceptance_criteria=("application shell exists",),
+            provenance={"source": "unit-test"},
+        ),
+        ExternalProjectRuntimeTask(
+            id="EXT-TASK-002",
+            title="Bind runtime evidence",
+            objective="Bind runtime evidence for the generated app.",
+            requirement_ids=("REQ-EXT-002",),
+            capability_ids=("C20",),
+            component_ids=("CMP-EXT-RUNTIME",),
+            depends_on=("EXT-TASK-001",),
+            allowed_paths=("app", "tests"),
+            acceptance_criteria=("runtime evidence is recorded",),
+            risk_level="HIGH",
+            provenance={"source": "unit-test"},
+        ),
+    )
+    plan = ProjectPlan(
+        plan_id="PLAN-EXT-RUNTIME",
+        version="1",
+        state="FROZEN",
+        task_ids=tuple(task.id for task in tasks),
+        required_human_gates=("GATE-EXT-TASK-002",),
+    )
+    binding = ProjectRuntimeBinding(
+        binding_id="BIND-EXT-RUNTIME",
+        project_id="EXT-RUNTIME-APP",
+        workspace_id=workspace.workspace_id,
+        repository_id=repository.repository_id,
+        plan_id=plan.plan_id,
+        plan_version=plan.version,
+        state="READY_FOR_IMPORT",
+        pending_human_gates=("GATE-EXT-TASK-002",),
+    )
+    project = ExternalProject(
+        project_id="EXT-RUNTIME-APP",
+        name="Runtime Import App",
+        lifecycle_state="APPROVE",
+        workspace=workspace,
+        repository=repository,
+        plan=plan,
+        runtime_binding=binding,
+    )
+    return ExternalProjectFrozenPlan(
+        project=project,
+        tasks=tasks,
+        human_gate_definitions=(
+            {
+                "id": "GATE-EXT-TASK-002",
+                "task_id": "EXT-TASK-002",
+                "reason": "high-risk runtime binding requires explicit approval",
+                "required_before": "execution",
+            },
+        ),
+        effective_concurrency=1,
+    )
+
+
+def test_external_frozen_plan_record_is_deterministic_and_import_ready(
+    tmp_path: Path,
+) -> None:
+    first = frozen_plan_project(tmp_path)
+    second = frozen_plan_project(tmp_path)
+
+    assert first.as_dict() == second.as_dict()
+    assert first.frozen_plan_hash == second.frozen_plan_hash
+    assert validate_external_project_frozen_plan(first).ok
+    record = external_project_frozen_plan_record(first)
+    assert record["validation"]["ok"] is True
+    assert record["frozen_plan"]["project"]["repository"]["control_plane_write_authority"] is False
+    assert record["frozen_plan"]["project"]["runtime_binding"]["verifier_bypass_authority"] is False
+    assert record["frozen_plan"]["project"]["runtime_binding"]["pending_human_gates"] == [
+        "GATE-EXT-TASK-002"
+    ]
+
+
+def test_external_frozen_plan_validation_rejects_missing_explicit_gate(
+    tmp_path: Path,
+) -> None:
+    frozen = frozen_plan_project(tmp_path)
+    blocked = replace(
+        frozen,
+        project=replace(
+            frozen.project,
+            runtime_binding=replace(
+                frozen.project.runtime_binding,
+                pending_human_gates=(),
+                approved_human_gates=(),
+            ),
+        ),
+    )
+    validation = validate_external_project_frozen_plan(blocked)
+
+    assert validation.ok is False
+    assert "human gate is not explicitly bound: GATE-EXT-TASK-002" in {
+        finding.message for finding in validation.findings
+    }
+
+
+def test_external_frozen_plan_validation_redacts_secret_remote(
+    tmp_path: Path,
+) -> None:
+    frozen = frozen_plan_project(
+        tmp_path,
+        remote_url="https://user:SUPERSECRET@git.example/runtime-app.git",
+    )
+    validation = validate_external_project_frozen_plan(frozen)
+    rendered = json.dumps(validation.as_dict(), sort_keys=True)
+
+    assert validation.ok is False
+    assert "https://<redacted>@git.example/runtime-app.git" in rendered
+    assert "SUPERSECRET" not in rendered
+
+
+def test_external_frozen_plan_record_redacts_secret_task_provenance(
+    tmp_path: Path,
+) -> None:
+    frozen = frozen_plan_project(tmp_path)
+    task = replace(
+        frozen.tasks[0],
+        provenance={"api_key": "SUPERSECRET", "source": "unit-test"},
+    )
+    blocked = replace(frozen, tasks=(task, frozen.tasks[1]))
+    record = external_project_frozen_plan_record(blocked)
+    rendered = json.dumps(record, sort_keys=True)
+
+    assert record["validation"]["ok"] is False
+    assert record["frozen_plan"]["tasks"][0]["provenance"]["api_key"] == "<redacted>"
+    assert "SUPERSECRET" not in rendered

@@ -16,6 +16,11 @@ from sqlalchemy.orm import Session
 
 from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
 from ai_ent.bootstrap.paths import VENV_PYTHON
+from ai_ent.external_project import (
+    ExternalProjectFrozenPlan,
+    ExternalProjectRuntimeTask,
+    validate_external_project_frozen_plan,
+)
 from ai_ent.persistence.models import (
     BootstrapRun,
     Execution,
@@ -30,10 +35,19 @@ from ai_ent.persistence.models import (
 )
 from ai_ent.persistence.repositories.bootstrap import BootstrapRunRepository
 from ai_ent.project_manifest import (
+    EnvironmentProfile,
     FeasibilityEvaluation,
+    FeasibilityFacet,
+    FeasibilityPolicyProfile,
+    GeneratedImplementationTask,
     ImplementationDryRun,
     ImplementationPlan,
+    PlanFeasibilityStatus,
+    PolicyDecision,
+    TaskFeasibility,
+    TaskFeasibilityStatus,
     canonical_bytes,
+    dry_run_evaluated_plan,
     dry_run_implementation_plan,
     evaluate_feasibility,
     generate_implementation_plan,
@@ -42,6 +56,7 @@ from ai_ent.scheduler.guarded import GuardedAutonomousRunner, GuardedRunConfig
 from ai_ent.scheduler.readiness import TaskReadinessService
 
 RUNTIME_HANDOFF_IMPORTER_VERSION = "rhi-001.1"
+EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION = "erhi-001.1"
 RUNTIME_IMPORT_PREFIX = "IMPL-"
 DEFAULT_RUNTIME_PROJECT_ID = "PRJ-AI-ENT"
 STANDARD_RUNTIME_VERIFICATION_COMMANDS = (
@@ -251,17 +266,14 @@ class RuntimePlanImporter:
                 return self._conflict_result(artifacts, import_id, project_id, blockers)
             return self._result("ALREADY_IMPORTED", session, artifacts, import_id, project_id)
 
-        existing_impl_tasks = list(
-            session.scalars(
-                select(Task.id).where(Task.project_id == project_id, Task.id.like(f"{RUNTIME_IMPORT_PREFIX}%"))
-            ).all()
-        )
-        if existing_impl_tasks:
+        existing_runtime_tasks = list(_imported_task_ids(session, project_id))
+        if existing_runtime_tasks:
+            blocker = f"existing runtime implementation tasks: {', '.join(sorted(existing_runtime_tasks))}"
             return self._conflict_result(
                 artifacts,
                 import_id,
                 project_id,
-                (f"existing runtime implementation tasks: {', '.join(sorted(existing_impl_tasks))}",),
+                (blocker,),
             )
 
         try:
@@ -271,6 +283,50 @@ class RuntimePlanImporter:
             raise RuntimePlanImportError("runtime frozen plan import failed") from exc
 
         return self._result("IMPORTED", session, artifacts, import_id, project_id)
+
+    def import_external_frozen_plan(
+        self,
+        session: Session,
+        frozen_plan: ExternalProjectFrozenPlan,
+        *,
+        runtime_project_id: str | None = None,
+        require_clean_git: bool = True,
+        require_codex_command: bool = True,
+        repository_root: Path = Path("."),
+    ) -> RuntimePlanImportResult:
+        project_id = runtime_project_id or frozen_plan.project.project_id
+        import_id = _import_id(
+            frozen_plan.project.plan.plan_id,
+            frozen_plan.project.plan.version,
+        )
+        validation = validate_external_project_frozen_plan(frozen_plan)
+        if not validation.ok:
+            return RuntimePlanImportResult(
+                status="BLOCKED",
+                import_id=import_id,
+                project_id=project_id,
+                plan_id=frozen_plan.project.plan.plan_id,
+                plan_version=frozen_plan.project.plan.version,
+                tasks_imported=0,
+                dependency_edges_imported=0,
+                human_gates_bound=0,
+                effective_concurrency=frozen_plan.effective_concurrency,
+                fingerprints_validated=False,
+                runtime_ready_tasks=(),
+                gated_not_ready_tasks=(),
+                executions_after_import=0,
+                active_leases_after_import=0,
+                blockers=tuple(finding.message for finding in validation.findings),
+            )
+        artifacts = external_project_runtime_handoff_artifacts(frozen_plan)
+        return self.import_frozen_plan(
+            session,
+            artifacts,
+            runtime_project_id=project_id,
+            require_clean_git=require_clean_git,
+            require_codex_command=require_codex_command,
+            repository_root=repository_root,
+        )
 
     def status(
         self,
@@ -648,6 +704,36 @@ def load_runtime_handoff_artifacts(
     )
 
 
+def external_project_runtime_handoff_artifacts(
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> RuntimeHandoffArtifacts:
+    validation = validate_external_project_frozen_plan(frozen_plan)
+    if not validation.ok:
+        messages = "; ".join(finding.message for finding in validation.findings)
+        raise RuntimePlanImportError(f"external frozen plan is not importable: {messages}")
+    plan = _external_project_implementation_plan(frozen_plan)
+    feasibility = _external_project_feasibility(plan, frozen_plan)
+    dry_run = dry_run_evaluated_plan(plan, feasibility)
+    lock = replace(
+        dry_run.lock,
+        plan_id=frozen_plan.project.plan.plan_id,
+        plan_version=frozen_plan.project.plan.version,
+        project_id=frozen_plan.project.project_id,
+        effective_concurrency=frozen_plan.effective_concurrency,
+        state="FROZEN",
+    )
+    return RuntimeHandoffArtifacts(
+        plan=plan,
+        feasibility=feasibility,
+        dry_run=replace(
+            dry_run,
+            frozen_plan_state="FROZEN",
+            effective_parallel_width=frozen_plan.effective_concurrency,
+            lock=lock,
+        ),
+    )
+
+
 def _import_id(plan_id: str, plan_version: str) -> str:
     return f"rhi-{plan_id.lower()}-v{plan_version}"
 
@@ -709,11 +795,312 @@ def _downstream_by_task(plan: ImplementationPlan) -> dict[str, tuple[str, ...]]:
 def _imported_task_ids(session: Session, project_id: str) -> tuple[str, ...]:
     return tuple(
         session.scalars(
-            select(Task.id)
-            .where(Task.project_id == project_id, Task.id.like(f"{RUNTIME_IMPORT_PREFIX}%"))
-            .order_by(Task.id)
+            select(RuntimeTaskPlanBinding.task_id)
+            .join(RuntimePlanImport, RuntimeTaskPlanBinding.import_id == RuntimePlanImport.id)
+            .where(RuntimePlanImport.project_id == project_id)
+            .order_by(RuntimeTaskPlanBinding.task_id)
         ).all()
     )
+
+
+def _external_project_implementation_plan(
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> ImplementationPlan:
+    project = frozen_plan.project
+    task_by_id = {task.id: task for task in frozen_plan.tasks}
+    tasks = tuple(
+        _external_project_generated_task(task)
+        for task in sorted(frozen_plan.tasks, key=lambda item: item.id)
+    )
+    waves = _topological_waves(task_by_id)
+    parallelizable_sets = tuple(
+        {
+            "id": f"EXT-PARALLEL-{index:03d}",
+            "task_ids": wave["task_ids"],
+            "reason": "tasks have no unmet dependencies within the same runtime wave",
+        }
+        for index, wave in enumerate(waves, start=1)
+    )
+    plan = ImplementationPlan(
+        source_compiled_hash=project.model_hash,
+        capability_resolution_hash=_hash_external(
+            {
+                "project_id": project.project_id,
+                "capabilities": sorted(
+                    {
+                        capability_id
+                        for task in frozen_plan.tasks
+                        for capability_id in task.capability_ids
+                    }
+                ),
+            }
+        ),
+        trace_validation_hash=_hash_external(
+            {
+                "project_id": project.project_id,
+                "dependency_edges": [list(edge) for edge in frozen_plan.dependency_edges],
+                "task_ids": frozen_plan.task_ids,
+            }
+        ),
+        generator_version=EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION,
+        implementation_plan_hash=frozen_plan.frozen_plan_hash,
+        epics=(
+            {
+                "id": f"EXT-EPIC-{project.project_id}",
+                "title": project.name,
+                "source": "external_project_frozen_plan",
+            },
+        ),
+        features=(
+            {
+                "id": f"EXT-FEATURE-{project.project_id}",
+                "title": project.name,
+                "source": "external_project_frozen_plan",
+            },
+        ),
+        tasks=tasks,
+        satisfied_units=(),
+        dependency_edges=frozen_plan.dependency_edges,
+        waves=waves,
+        parallelizable_sets=parallelizable_sets,
+        critical_path=_critical_path(task_by_id),
+        human_gates=tuple(
+            dict(gate)
+            for gate in sorted(
+                frozen_plan.human_gate_definitions,
+                key=lambda item: str(item.get("id", "")),
+            )
+        ),
+        findings=(),
+        warning_classifications=(),
+    )
+    return plan
+
+
+def _external_project_generated_task(
+    task: ExternalProjectRuntimeTask,
+) -> GeneratedImplementationTask:
+    return GeneratedImplementationTask(
+        id=task.id,
+        title=task.title,
+        objective=task.objective,
+        implements={
+            "requirements": tuple(sorted(task.requirement_ids)),
+            "capabilities": tuple(sorted(task.capability_ids)),
+            "components": tuple(sorted(task.component_ids)),
+            "interfaces": tuple(sorted(task.interface_ids)),
+        },
+        depends_on=tuple(sorted(task.depends_on)),
+        write_scope={
+            "allowed": tuple(sorted(task.allowed_paths)),
+            "prohibited": tuple(sorted(task.prohibited_paths)),
+        },
+        execution={
+            "agent_role": task.agent_role,
+            "model_profile": task.model_profile,
+            "executor": task.executor,
+        },
+        verification={
+            "profile": task.verification_profile,
+            "commands": list(task.verification_commands),
+            "acceptance_criteria": list(task.acceptance_criteria),
+        },
+        risk={"level": task.risk_level, "reason": task.risk_reason},
+        provenance=dict(task.provenance),
+        fingerprint=task.effective_fingerprint,
+        epic_id="EXT-EPIC",
+        feature_id="EXT-FEATURE",
+        component_id=task.component_ids[0] if task.component_ids else None,
+    )
+
+
+def _external_project_feasibility(
+    plan: ImplementationPlan,
+    frozen_plan: ExternalProjectFrozenPlan,
+) -> FeasibilityEvaluation:
+    gate_ids_by_task: dict[str, tuple[str, ...]] = {}
+    gate_task_ids = {
+        str(gate.get("task_id", ""))
+        for gate in frozen_plan.human_gate_definitions
+    }
+    for task_id in sorted(gate_task_ids):
+        gate_ids_by_task[task_id] = tuple(
+            sorted(
+                str(gate["id"])
+                for gate in frozen_plan.human_gate_definitions
+                if str(gate.get("task_id", "")) == task_id
+            )
+        )
+    task_results = tuple(
+        _external_project_task_feasibility(task, gate_ids_by_task.get(task.id, ()))
+        for task in plan.tasks
+    )
+    status: PlanFeasibilityStatus = (
+        "READY_WITH_HUMAN_GATES"
+        if frozen_plan.human_gate_definitions
+        else "READY_FOR_DRY_RUN"
+    )
+    environment = EnvironmentProfile(
+        profile_id="external-project-runtime-import",
+        repository_path=frozen_plan.project.workspace.root_path,
+        git_available=True,
+        postgresql_available=True,
+        alembic_available=True,
+        docker_available=True,
+        docker_compose_available=True,
+        codex_command_configured=True,
+        codex_executable_available=True,
+        python_path=str(VENV_PYTHON),
+        python_available=True,
+        ram_mb=None,
+        gpu_available=False,
+        external_network="not_required",
+        configured_secret_names=(),
+    )
+    policy = FeasibilityPolicyProfile(
+        profile_id="external-project-runtime-import-policy",
+        agent_roles=tuple(sorted({task.execution["agent_role"] for task in plan.tasks})),
+        model_profiles=tuple(sorted({task.execution["model_profile"] for task in plan.tasks})),
+        executors=tuple(sorted({task.execution["executor"] for task in plan.tasks})),
+        verification_profiles=tuple(
+            sorted({str(task.verification["profile"]) for task in plan.tasks})
+        ),
+        auto_allowed_risks=("LOW",),
+        guarded_allowed_risks=("LOW", "MEDIUM", "HIGH"),
+        prohibited_path_patterns=tuple(frozen_plan.project.workspace.prohibited_paths),
+        max_parallel_width=frozen_plan.effective_concurrency,
+    )
+    payload = {
+        "implementation_plan_hash": plan.implementation_plan_hash,
+        "source_compiled_hash": plan.source_compiled_hash,
+        "capability_resolution_hash": plan.capability_resolution_hash,
+        "trace_validation_hash": plan.trace_validation_hash,
+        "evaluator_version": EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION,
+        "plan_status": status,
+        "environment_profile": environment.as_dict(),
+        "policy_profile": policy.as_dict(),
+        "task_results": [result.as_dict() for result in task_results],
+        "human_gates": list(plan.human_gates),
+        "feasible_parallel_width": frozen_plan.effective_concurrency,
+        "technical_blockers": [],
+        "findings": [],
+    }
+    return FeasibilityEvaluation(
+        implementation_plan_hash=plan.implementation_plan_hash,
+        source_compiled_hash=plan.source_compiled_hash,
+        capability_resolution_hash=plan.capability_resolution_hash,
+        trace_validation_hash=plan.trace_validation_hash,
+        evaluator_version=EXTERNAL_RUNTIME_HANDOFF_ADAPTER_VERSION,
+        feasibility_hash=_hash_external(payload),
+        plan_status=status,
+        environment_profile=environment,
+        policy_profile=policy,
+        task_results=task_results,
+        human_gates=plan.human_gates,
+        feasible_parallel_width=frozen_plan.effective_concurrency,
+        technical_blockers=(),
+        findings=(),
+    )
+
+
+def _external_project_task_feasibility(
+    task: GeneratedImplementationTask,
+    gate_ids: tuple[str, ...],
+) -> TaskFeasibility:
+    has_gate = bool(gate_ids)
+    status: TaskFeasibilityStatus = "HUMAN_APPROVAL_REQUIRED" if has_gate else "FEASIBLE"
+    policy_decision: PolicyDecision = (
+        "HUMAN_APPROVAL_REQUIRED" if has_gate else "GUARDED_ALLOWED"
+    )
+    return TaskFeasibility(
+        task_id=task.id,
+        status=status,
+        reasons=(
+            ("human approval gate required before execution",)
+            if has_gate
+            else ("task is feasible under current guarded policy",)
+        ),
+        blockers=(),
+        conditions=(),
+        required_human_gates=gate_ids,
+        agent_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("external project agent role is importable",),
+        ),
+        model_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("external project model profile is importable",),
+        ),
+        tool_feasibility=FeasibilityFacet("AVAILABLE", ("executor codex is available",)),
+        infrastructure_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("runtime infrastructure is provided by the control plane",),
+        ),
+        resource_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("declared task resources fit the runtime import profile",),
+        ),
+        verification_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("mandatory independent verification is configured",),
+        ),
+        policy_decision=policy_decision,
+        dependency_feasibility=FeasibilityFacet(
+            "AVAILABLE",
+            ("dependency references are present in frozen plan",),
+        ),
+    )
+
+
+def _topological_waves(
+    task_by_id: dict[str, ExternalProjectRuntimeTask],
+) -> tuple[dict[str, Any], ...]:
+    remaining = set(task_by_id)
+    completed: set[str] = set()
+    waves: list[dict[str, Any]] = []
+    while remaining:
+        ready = tuple(
+            sorted(
+                task_id
+                for task_id in remaining
+                if set(task_by_id[task_id].depends_on) <= completed
+            )
+        )
+        if not ready:
+            ready = tuple(sorted(remaining))
+        waves.append({"id": f"EXT-WAVE-{len(waves) + 1:03d}", "task_ids": list(ready)})
+        completed.update(ready)
+        remaining.difference_update(ready)
+    return tuple(waves)
+
+
+def _critical_path(
+    task_by_id: dict[str, ExternalProjectRuntimeTask],
+) -> tuple[str, ...]:
+    memo: dict[str, tuple[str, ...]] = {}
+
+    def path_to(task_id: str) -> tuple[str, ...]:
+        if task_id in memo:
+            return memo[task_id]
+        dependencies = tuple(
+            dependency_id
+            for dependency_id in sorted(task_by_id[task_id].depends_on)
+            if dependency_id in task_by_id
+        )
+        if not dependencies:
+            memo[task_id] = (task_id,)
+            return memo[task_id]
+        best = max((path_to(dependency_id) for dependency_id in dependencies), key=len)
+        memo[task_id] = (*best, task_id)
+        return memo[task_id]
+
+    if not task_by_id:
+        return ()
+    return max((path_to(task_id) for task_id in sorted(task_by_id)), key=len)
+
+
+def _hash_external(value: Any) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def _dependency_count(session: Session, task_ids: tuple[str, ...] | list[str]) -> int:
