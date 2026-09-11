@@ -12,7 +12,7 @@ from ai_ent.bootstrap.manifest import load_tasks
 from ai_ent.bootstrap.models import BootstrapTask, ExecutionPackage
 from ai_ent.bootstrap.paths import ROOT
 from ai_ent.bootstrap.worktree import task_worktree_path
-from ai_ent.persistence.models import Execution, Task, TaskLease
+from ai_ent.persistence.models import Execution, RuntimeTaskPlanBinding, Task, TaskLease
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.scheduler.claiming import ClaimResult, TaskClaimingService
 from ai_ent.scheduler.readiness import TaskReadinessService
@@ -42,16 +42,59 @@ class SchedulerIterationResult:
         return self.status == "PACKAGE_READY"
 
 
+@dataclass(frozen=True)
+class ExecutionTimeoutPolicy:
+    standard_timeout_seconds: int = 900
+    high_complexity_timeout_seconds: int = 1800
+
+    def __post_init__(self) -> None:
+        if self.standard_timeout_seconds <= 0:
+            raise ValueError("standard timeout must be positive")
+        if self.high_complexity_timeout_seconds <= 0:
+            raise ValueError("high-complexity timeout must be positive")
+        if self.high_complexity_timeout_seconds < self.standard_timeout_seconds:
+            raise ValueError("high-complexity timeout must be at least the standard timeout")
+
+    @classmethod
+    def for_standard_timeout(cls, timeout_seconds: int) -> ExecutionTimeoutPolicy:
+        return cls(
+            standard_timeout_seconds=timeout_seconds,
+            high_complexity_timeout_seconds=timeout_seconds,
+        )
+
+    @classmethod
+    def for_codex_default(cls, timeout_seconds: int) -> ExecutionTimeoutPolicy:
+        return cls(
+            standard_timeout_seconds=timeout_seconds,
+            high_complexity_timeout_seconds=max(timeout_seconds * 2, 1800),
+        )
+
+    @property
+    def maximum_timeout_seconds(self) -> int:
+        return max(self.standard_timeout_seconds, self.high_complexity_timeout_seconds)
+
+    def timeout_for_task(self, task: Task) -> int:
+        binding = task.runtime_plan_binding
+        if binding is not None and _requires_high_complexity_timeout(binding):
+            return self.high_complexity_timeout_seconds
+        return self.standard_timeout_seconds
+
+
 class ExecutionPackageFactory:
     def __init__(
         self,
         *,
         repository_path: Path = ROOT,
         timeout_seconds: int | None = None,
+        timeout_policy: ExecutionTimeoutPolicy | None = None,
         manifest_tasks: dict[str, BootstrapTask] | None = None,
     ) -> None:
         self.repository_path = repository_path
-        self.timeout_seconds = timeout_seconds
+        self.timeout_policy = timeout_policy or (
+            ExecutionTimeoutPolicy.for_standard_timeout(timeout_seconds)
+            if timeout_seconds is not None
+            else None
+        )
         self.manifest_tasks = manifest_tasks
 
     def build(self, persisted_task: Task, *, execution_id: str) -> ExecutionPackage:
@@ -70,8 +113,23 @@ class ExecutionPackageFactory:
             repository_path=self.repository_path,
             worktree_path=task_worktree_path(persisted_task.id),
             execution_id=execution_id,
-            timeout_seconds=self.timeout_seconds or CodexConfig.from_env().default_timeout_seconds,
+            timeout_seconds=(
+                self.timeout_policy.timeout_for_task(persisted_task)
+                if self.timeout_policy is not None
+                else CodexConfig.from_env().default_timeout_seconds
+            ),
         )
+
+
+def _requires_high_complexity_timeout(binding: RuntimeTaskPlanBinding) -> bool:
+    risk = binding.risk_level.upper()
+    model_profile = binding.model_profile.lower().replace("_", "-")
+    verification_profile = binding.verification_profile.upper()
+    return (
+        risk == "HIGH"
+        or "high-risk" in model_profile
+        or verification_profile == "FULL_REGRESSION_SECURITY"
+    )
 
 
 class SchedulerIterationService:

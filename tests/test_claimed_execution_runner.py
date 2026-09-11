@@ -146,6 +146,11 @@ def test_valid_claimed_execution_creates_isolated_worktree_and_persists_success(
         assert persisted.status == "succeeded"
         assert persisted.finished_at is not None
         assert persisted.commit_hash is None
+        renewed_lease = session.get(TaskLease, require_lease(scheduled).id)
+        assert renewed_lease is not None
+        assert (renewed_lease.expires_at - renewed_lease.renewed_at).total_seconds() == (
+            package.timeout_seconds + 60
+        )
         assert session.get(Task, task.id).status == "running"  # type: ignore[union-attr]
 
 
@@ -240,7 +245,11 @@ def test_non_zero_exit_and_timeout_are_persisted(tmp_path: Path) -> None:
         execution = require_execution(scheduled)
         timed_out = timeout_runner.run_claimed(session, package=package, owner_id="worker-1")
         assert timed_out.status == "EXECUTOR_FAILED"
-        assert session.get(Execution, execution.id).status == "timeout"  # type: ignore[union-attr]
+        persisted_timeout = session.get(Execution, execution.id)
+        assert persisted_timeout is not None
+        assert persisted_timeout.status == "timeout"
+        assert persisted_timeout.terminal_state == "timeout"
+        assert persisted_timeout.error_classification == "executor_timeout"
 
 
 def test_worktree_creation_failure_leaves_recoverable_execution(tmp_path: Path) -> None:

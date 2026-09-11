@@ -1,0 +1,112 @@
+{
+  "review_id": "PTP-001",
+  "title": "Product Task Timeout Policy Remediation for PRD-TASK-003",
+  "result": "TIMEOUT_POLICY_REMEDIATED",
+  "runtime_execution_stopped": true,
+  "mutations_performed": {
+    "runtime_state": false,
+    "product_task_execution": false,
+    "gate_approval": false,
+    "decision_resolution": false,
+    "frozen_plan": false,
+    "timeout_worktree_reuse": false
+  },
+  "context": {
+    "ptr_001_result": "TIMEOUT_CONFIGURATION_DEFECT",
+    "ptr_001_decision": "RETRY_WITH_TIMEOUT_ADJUSTMENT_REQUIRING_REVALIDATION",
+    "ptr_001_adequacy": "TIMEOUT_TOO_SHORT",
+    "old_timeout_seconds": 900,
+    "lease_grace_seconds": 60
+  },
+  "remediation": {
+    "policy": "ExecutionTimeoutPolicy",
+    "standard_timeout_seconds": 900,
+    "high_complexity_timeout_seconds": 1800,
+    "finite": true,
+    "selection_rule": "Use the high-complexity timeout when runtime task binding metadata has risk_level HIGH, a high-risk model profile, or verification_profile FULL_REGRESSION_SECURITY; otherwise use the standard timeout.",
+    "prd_task_003_new_timeout_seconds": 1800,
+    "standard_tasks_remain_seconds": 900,
+    "initial_scheduler_lease_seconds_for_guarded_run": 3600,
+    "claimed_execution_renewal_seconds_for_prd_task_003": 1860,
+    "timeout_disabled": false,
+    "unlimited_timeout": false,
+    "dirty_timeout_worktree_reused": false
+  },
+  "selection_rationale": {
+    "task_id": "PRD-TASK-003",
+    "risk": "HIGH",
+    "model_profile": "MDL-001:Codex executor model:high-risk-guarded",
+    "verification_profile": "FULL_REGRESSION_SECURITY",
+    "expected_work": "external-project runtime importer, runtime handoff binding, E2E integration, deterministic security tests, and full regression verification",
+    "historical_evidence": "PRE-010 showed active Codex work through the end of the 900 second window with no candidate freeze or verification run.",
+    "local_environment": "full pytest completed in about 64 seconds after implementation, leaving insufficient margin inside a 900 second executor budget for this task's coding plus verification preparation."
+  },
+  "frozen_plan_compatibility": {
+    "timeout_classification": "runtime execution-policy metadata",
+    "frozen_plan_modified": false,
+    "task_fingerprint_before": "a488123b9f661a3bb36ad8a2cb6013cec831acde8cd9eb3e6a7ebdb3267de6f6",
+    "task_fingerprint_after": "a488123b9f661a3bb36ad8a2cb6013cec831acde8cd9eb3e6a7ebdb3267de6f6",
+    "fingerprint_changed": false,
+    "plan_reacceptance_required": false
+  },
+  "lease_semantics": {
+    "lease_duration_gte_timeout_plus_grace": true,
+    "standard_claimed_renewal_seconds": 960,
+    "high_complexity_claimed_renewal_seconds": 1860,
+    "guarded_initial_lease_uses_policy_maximum": true,
+    "guarded_initial_lease_seconds": 3600
+  },
+  "executor_timeout_behavior": {
+    "subprocess_timeout_enforced": true,
+    "timeout_remains_terminal": true,
+    "executor_timeout_classification": "executor_timeout",
+    "timeout_persistence_survives_bounded_stop": true,
+    "no_orphan_codex_process": true
+  },
+  "attempt_1_preservation": {
+    "execution_id": "execution-85a060fff90a4b7d90e44d78778704dd",
+    "attempt": 1,
+    "status": "timeout",
+    "terminal_state": "timeout",
+    "candidate": null,
+    "commit": null,
+    "lease": "released",
+    "worktree_preserved_as_historical_evidence": "/home/user/projects/.ai_ent-worktrees/PRD-TASK-003/execution-85a060fff90a4b7d90e44d78778704dd"
+  },
+  "tests": {
+    "targeted_timeout_policy_tests": "PASS: tests/test_scheduler_iteration.py tests/test_claimed_execution_runner.py tests/test_bounded_scheduler_runner.py, 31 passed",
+    "scheduler_executor_tests": "PASS",
+    "failure_persistence_tests": "PASS",
+    "guarded_runner_revalidation": "PASS: tests/test_guarded_runner.py tests/integration/test_bounded_scheduler_runner_postgres.py, 10 passed, 1 skipped",
+    "preflight": "PASS",
+    "full_pytest": "PASS: 492 passed, 6 skipped in 64.04s",
+    "ruff": "PASS",
+    "pyright": "PASS",
+    "alembic": "PASS: 0020 (head)"
+  },
+  "runtime_state": {
+    "PRD_TASK_003": "blocked",
+    "gate": "GATE-PRD-EXTERNAL-RUNTIME approved",
+    "completed_product_tasks": "5/25",
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "ready_tasks": [],
+    "pending_gates": 7,
+    "PRD_DEC_002": "unresolved",
+    "PRD_DEC_003": "unresolved",
+    "postgresql_authority": "active"
+  },
+  "git_status_before_commit": {
+    "tracked_changes": [
+      "scripts/bootstrap.py",
+      "src/ai_ent/scheduler/iteration.py",
+      "tests/test_claimed_execution_runner.py",
+      "tests/test_scheduler_iteration.py"
+    ],
+    "evidence_files": [
+      "artifacts/ptp-001/PTP-001.json",
+      "artifacts/ptp-001/PTP-001.md"
+    ]
+  },
+  "recommendation": "Run a separate PTPV-001 revalidation gate. If accepted, requeue PRD-TASK-003 for a fresh attempt 2; do not reuse the dirty timeout worktree."
+}

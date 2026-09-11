@@ -9,10 +9,21 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ai_ent.bootstrap.models import BootstrapTask
-from ai_ent.persistence.models import Base, Execution, Task, TaskLease
+from ai_ent.persistence.models import (
+    Base,
+    Execution,
+    RuntimePlanImport,
+    RuntimeTaskPlanBinding,
+    Task,
+    TaskLease,
+)
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 from ai_ent.scheduler.claiming import ClaimResult
-from ai_ent.scheduler.iteration import ExecutionPackageFactory, SchedulerIterationService
+from ai_ent.scheduler.iteration import (
+    ExecutionPackageFactory,
+    ExecutionTimeoutPolicy,
+    SchedulerIterationService,
+)
 
 
 def session_factory() -> sessionmaker[Session]:
@@ -83,6 +94,64 @@ def service_for(*tasks: BootstrapTask) -> SchedulerIterationService:
     )
 
 
+def seed_runtime_plan_import(session: Session, project_id: str = "project-1") -> RuntimePlanImport:
+    plan_import = RuntimePlanImport(
+        id=f"import-{project_id}",
+        project_id=project_id,
+        plan_project_id=project_id,
+        plan_id=f"PLAN-{project_id}",
+        plan_version="1",
+        status="imported",
+        compiled_project_hash="0" * 64,
+        capability_resolution_hash="1" * 64,
+        trace_validation_hash="2" * 64,
+        implementation_plan_hash="3" * 64,
+        feasibility_hash="4" * 64,
+        dry_run_hash="5" * 64,
+        task_fingerprint_hash="6" * 64,
+        dependency_graph_hash="7" * 64,
+        importer_version="test",
+        task_count=1,
+        dependency_count=0,
+        human_gate_count=0,
+        effective_concurrency=1,
+    )
+    session.add(plan_import)
+    session.flush()
+    return plan_import
+
+
+def seed_runtime_binding(
+    session: Session,
+    task: Task,
+    plan_import: RuntimePlanImport,
+    *,
+    risk_level: str = "MEDIUM",
+    model_profile: str = "STANDARD",
+    verification_profile: str = "STANDARD_REGRESSION",
+) -> RuntimeTaskPlanBinding:
+    binding = RuntimeTaskPlanBinding(
+        task_id=task.id,
+        import_id=plan_import.id,
+        plan_id=plan_import.plan_id,
+        plan_version=plan_import.plan_version,
+        fingerprint=f"fingerprint-{task.id}",
+        risk_level=risk_level,
+        agent_role="test-agent",
+        model_profile=model_profile,
+        executor="codex",
+        verification_profile=verification_profile,
+        feasibility_status="FEASIBLE",
+        policy_decision="AUTO_ALLOWED",
+        implements_json="{}",
+        write_scope_json="{}",
+        acceptance_json="{}",
+    )
+    session.add(binding)
+    session.flush()
+    return binding
+
+
 def test_no_ready_tasks_returns_no_ready() -> None:
     factory = session_factory()
     service = service_for()
@@ -116,6 +185,93 @@ def test_one_ready_task_is_claimed_and_package_returned() -> None:
         assert result.package.allowed_paths == task.allowed_paths
         assert "tests/fixtures/result.txt" in result.package.instructions
         assert session.get(Task, task.id).status == "running"  # type: ignore[union-attr]
+
+
+def test_timeout_policy_keeps_standard_tasks_at_900_seconds() -> None:
+    policy = ExecutionTimeoutPolicy.for_codex_default(900)
+    task = Task(id="TASK-A", project_id="project-1", title="Task A")
+
+    assert policy.standard_timeout_seconds == 900
+    assert policy.high_complexity_timeout_seconds == 1800
+    assert policy.maximum_timeout_seconds == 1800
+    assert policy.timeout_for_task(task) == 900
+
+
+def test_timeout_policy_extends_only_qualifying_runtime_tasks() -> None:
+    policy = ExecutionTimeoutPolicy.for_codex_default(900)
+    standard = Task(id="TASK-STANDARD", project_id="project-1", title="Standard")
+    high = Task(id="TASK-HIGH", project_id="project-1", title="High")
+    security = Task(id="TASK-SECURITY", project_id="project-1", title="Security")
+    high.runtime_plan_binding = RuntimeTaskPlanBinding(
+        task_id=high.id,
+        import_id="import-1",
+        plan_id="PLAN",
+        plan_version="1",
+        fingerprint="fingerprint-high",
+        risk_level="HIGH",
+        agent_role="agent",
+        model_profile="MDL-001:Codex executor model:high-risk-guarded",
+        executor="codex",
+        verification_profile="STANDARD_REGRESSION",
+        feasibility_status="FEASIBLE",
+        policy_decision="HUMAN_APPROVAL_REQUIRED",
+        implements_json="{}",
+        write_scope_json="{}",
+        acceptance_json="{}",
+    )
+    security.runtime_plan_binding = RuntimeTaskPlanBinding(
+        task_id=security.id,
+        import_id="import-1",
+        plan_id="PLAN",
+        plan_version="1",
+        fingerprint="fingerprint-security",
+        risk_level="MEDIUM",
+        agent_role="agent",
+        model_profile="STANDARD",
+        executor="codex",
+        verification_profile="FULL_REGRESSION_SECURITY",
+        feasibility_status="FEASIBLE",
+        policy_decision="AUTO_ALLOWED",
+        implements_json="{}",
+        write_scope_json="{}",
+        acceptance_json="{}",
+    )
+
+    assert policy.timeout_for_task(standard) == 900
+    assert policy.timeout_for_task(high) == 1800
+    assert policy.timeout_for_task(security) == 1800
+
+
+def test_execution_package_factory_uses_profile_timeout_from_runtime_binding() -> None:
+    factory = session_factory()
+    task = manifest_task("PRD-TASK-003", title="Reusable external-project runtime importer")
+    service = SchedulerIterationService(
+        package_factory=ExecutionPackageFactory(
+            repository_path=Path("/repo"),
+            timeout_policy=ExecutionTimeoutPolicy.for_codex_default(900),
+            manifest_tasks={task.id: task},
+        ),
+        owner_id="worker-1",
+        lease_duration=timedelta(hours=1),
+    )
+    with factory() as session:
+        seed_project(session)
+        persisted = seed_task(session, task.id, title=task.title)
+        plan_import = seed_runtime_plan_import(session)
+        seed_runtime_binding(
+            session,
+            persisted,
+            plan_import,
+            risk_level="HIGH",
+            model_profile="MDL-001:Codex executor model:high-risk-guarded",
+            verification_profile="FULL_REGRESSION_SECURITY",
+        )
+
+        result = service.run_once(session, project_id="project-1")
+
+        assert result.status == "PACKAGE_READY"
+        assert result.package is not None
+        assert result.package.timeout_seconds == 1800
 
 
 def test_deterministic_selection_and_run_once_processes_one_task() -> None:
@@ -173,6 +329,33 @@ def test_expired_lease_allows_iteration() -> None:
         assert second.status == "PACKAGE_READY"
         assert second.execution is not None
         assert second.execution.attempt == 2
+
+
+def test_persisted_timeout_consumes_attempt_number() -> None:
+    factory = session_factory()
+    task = manifest_task("TASK-TIMEOUT")
+    service = service_for(task)
+    with factory() as session:
+        seed_project(session)
+        seed_task(session, task.id, title=task.title)
+        session.add(
+            Execution(
+                id="execution-timeout-1",
+                task_id=task.id,
+                executor_type="codex",
+                status="timeout",
+                attempt=1,
+                terminal_state="timeout",
+                error_classification="executor_timeout",
+            )
+        )
+        session.flush()
+
+        result = service.run_once(session, project_id="project-1")
+
+        assert result.status == "PACKAGE_READY"
+        assert result.execution is not None
+        assert result.execution.attempt == 2
 
 
 def test_claim_contention_is_structured() -> None:

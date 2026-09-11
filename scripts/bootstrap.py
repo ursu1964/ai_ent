@@ -26,7 +26,11 @@ from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
 from ai_ent.scheduler.guarded import GuardedAutonomousRunner, GuardedRunConfig, GuardedRunResult
-from ai_ent.scheduler.iteration import ExecutionPackageFactory, SchedulerIterationService
+from ai_ent.scheduler.iteration import (
+    ExecutionPackageFactory,
+    ExecutionTimeoutPolicy,
+    SchedulerIterationService,
+)
 from ai_ent.scheduler.repair import RepairExecutionService, RepairPlanner, RepairPolicy
 
 
@@ -212,6 +216,7 @@ def guarded_run(args: argparse.Namespace) -> int:
 
 def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedAutonomousRunner:
     codex_config = CodexConfig.from_env()
+    timeout_policy = ExecutionTimeoutPolicy.for_codex_default(codex_config.default_timeout_seconds)
     if session is not None and config.project_id == DEFAULT_RUNTIME_PROJECT_ID:
         manifest_tasks = build_runtime_manifest_tasks(session, config.project_id)
     else:
@@ -222,10 +227,10 @@ def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedA
     scheduler = SchedulerIterationService(
         package_factory=ExecutionPackageFactory(
             manifest_tasks=manifest_tasks,
-            timeout_seconds=codex_config.default_timeout_seconds,
+            timeout_policy=timeout_policy,
         ),
         owner_id="guarded-run",
-        lease_duration=timedelta(seconds=max(codex_config.default_timeout_seconds * 2, 60)),
+        lease_duration=timedelta(seconds=max(timeout_policy.maximum_timeout_seconds * 2, 60)),
     )
     repair_runner = RepairExecutionService(
         planner=RepairPlanner(manifest_tasks=manifest_tasks, policy=repair_policy),
