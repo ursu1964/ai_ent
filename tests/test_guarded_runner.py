@@ -13,6 +13,7 @@ from ai_ent.scheduler.guarded import (
     GuardedPreflightResult,
     GuardedRunConfig,
     PostgresAuthorityResult,
+    repository_preflight,
 )
 from ai_ent.scheduler.recovery import RecoveryResult
 
@@ -137,6 +138,19 @@ def test_dry_run_performs_no_claims_or_codex() -> None:
     assert bounded.calls == 0
 
 
+def test_dry_run_with_no_ready_tasks_reports_no_ready_without_scheduling() -> None:
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(bounded=bounded)
+
+    result = runner.dry_run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.dry_run
+    assert result.stop_reason == "NO_READY_TASK"
+    assert result.likely_next_task_id is None
+    assert result.remaining_ready_tasks == ()
+    assert bounded.calls == 0
+
+
 def test_postgresql_authority_required_after_cutover() -> None:
     runner = make_runner(authority=missing_authority)
 
@@ -144,6 +158,18 @@ def test_postgresql_authority_required_after_cutover() -> None:
 
     assert result.stop_reason == "RUNTIME_ERROR"
     assert result.blockers == ("postgresql_authority_required:missing project-1",)
+
+
+def test_dry_run_authority_failure_preserves_dry_run_mode() -> None:
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(authority=missing_authority, bounded=bounded)
+
+    result = runner.dry_run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.dry_run
+    assert result.stop_reason == "RUNTIME_ERROR"
+    assert result.blockers == ("postgresql_authority_required:missing project-1",)
+    assert bounded.calls == 0
 
 
 def test_preflight_failure_stops_before_recovery_or_scheduling() -> None:
@@ -155,6 +181,52 @@ def test_preflight_failure_stops_before_recovery_or_scheduling() -> None:
 
     assert result.stop_reason == "RUNTIME_ERROR"
     assert result.blockers == ("preflight_failed:docker unavailable",)
+    assert recovery.calls == 0
+    assert bounded.calls == 0
+
+
+def test_dry_run_preflight_failure_preserves_dry_run_mode() -> None:
+    recovery = FakeRecovery(clean_recovery())
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(preflight=failing_preflight, recovery=recovery, bounded=bounded)
+
+    result = runner.dry_run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.dry_run
+    assert result.stop_reason == "RUNTIME_ERROR"
+    assert result.blockers == ("preflight_failed:docker unavailable",)
+    assert recovery.calls == 0
+    assert bounded.calls == 0
+
+
+def test_repository_preflight_reports_missing_python(monkeypatch: Any, tmp_path: Path) -> None:
+    from ai_ent.scheduler import guarded
+
+    monkeypatch.setattr(guarded, "ROOT", tmp_path)
+    monkeypatch.setattr(guarded, "VENV_PYTHON", tmp_path / "missing-python")
+
+    result = repository_preflight()
+
+    assert result == GuardedPreflightResult(False, "preflight python missing")
+
+
+def test_dry_run_repository_preflight_missing_python_reports_dry_run(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    from ai_ent.scheduler import guarded
+
+    monkeypatch.setattr(guarded, "ROOT", tmp_path)
+    monkeypatch.setattr(guarded, "VENV_PYTHON", tmp_path / "missing-python")
+    recovery = FakeRecovery(clean_recovery())
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(preflight=repository_preflight, recovery=recovery, bounded=bounded)
+
+    result = runner.dry_run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.dry_run
+    assert result.stop_reason == "RUNTIME_ERROR"
+    assert result.blockers == ("preflight_failed:preflight python missing",)
     assert recovery.calls == 0
     assert bounded.calls == 0
 
@@ -189,6 +261,41 @@ def test_product_routing_mismatch_stops_before_recovery_or_scheduling() -> None:
     assert result.human_action_required
     assert "PROJECT_PLAN_ROUTING_MISMATCH" in result.blockers[0]
     assert "requested_project_mismatch" in result.blockers[0]
+    assert recovery.calls == 0
+    assert readiness.calls == 0
+    assert bounded.calls == 0
+
+
+def test_dry_run_routing_mismatch_preserves_dry_run_mode() -> None:
+    from ai_ent.persistence.models import Project
+    from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
+    from tests.test_product_runtime_handoff import session_factory
+
+    factory = session_factory()
+    with factory() as session:
+        session.add(Project(id="ai-ent", name="Bootstrap"))
+        session.flush()
+        recovery = FakeRecovery(clean_recovery())
+        readiness = FakeReadiness(("TASK-0001",))
+        bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+        runner = make_runner(recovery=recovery, readiness=readiness, bounded=bounded)
+
+        result = runner.dry_run(
+            session,
+            GuardedRunConfig(
+                project_id="ai-ent",
+                execution_mode="product",
+                expected_project_id=DEFAULT_RUNTIME_PROJECT_ID,
+                expected_plan_id="PRODUCT-PLAN-7b0342fb7fd5",
+                expected_plan_version="1",
+                task_id_prefix="PRD-TASK-",
+            ),
+        )
+
+    assert result.dry_run
+    assert result.stop_reason == "BLOCKED"
+    assert result.human_action_required
+    assert "PROJECT_PLAN_ROUTING_MISMATCH" in result.blockers[0]
     assert recovery.calls == 0
     assert readiness.calls == 0
     assert bounded.calls == 0
@@ -243,12 +350,28 @@ def test_recovery_runs_before_scheduling_and_unresolved_work_blocks() -> None:
     assert result.blockers == ("uncertain_executor_process_state",)
 
 
+def test_dry_run_recovery_boundary_preserves_dry_run_mode() -> None:
+    recovery = FakeRecovery(blocked_recovery())
+    bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+    runner = make_runner(recovery=recovery, bounded=bounded)
+
+    result = runner.dry_run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
+
+    assert result.dry_run
+    assert recovery.calls == 1
+    assert bounded.calls == 0
+    assert result.stop_reason == "HUMAN_REQUIRED"
+    assert result.human_action_required
+    assert result.blockers == ("uncertain_executor_process_state",)
+
+
 def test_bounded_run_summary_and_stop_reason_are_reported() -> None:
     bounded = FakeBoundedRunner(bounded_result("MAX_TASKS_PER_RUN", completed=1))
     runner = make_runner(bounded=bounded)
 
     result = runner.run(None, GuardedRunConfig(project_id="project-1"))  # type: ignore[arg-type]
 
+    assert not result.dry_run
     assert result.stop_reason == "TASK_LIMIT"
     assert result.tasks_attempted == 1
     assert result.tasks_completed == 1

@@ -33,6 +33,7 @@ from ai_ent_product_api.services import (
     GovernanceValidationService,
     ProductApiServices,
     ProductBoundaryService,
+    ProductHumanApprovalService,
     ProductRuntimeSnapshotService,
 )
 from tests import test_product_runtime_handoff as runtime_handoff_tests
@@ -56,6 +57,9 @@ def test_boundary_snapshot_preserves_control_plane_authority_and_gates() -> None
     assert snapshot.mandatory_verification_commands == MANDATORY_VERIFICATION_COMMANDS
     assert snapshot.decision_dependencies == PRODUCT_API_DECISION_DEPENDENCIES
     assert "DECISION_REQUIRED:PRD-DEC-001" in snapshot.decision_dependencies
+    assert "read_human_gate_review" in snapshot.allowed_operations
+    assert "validate_human_gate_evidence" in snapshot.allowed_operations
+    assert "submit_human_gate_decision" in snapshot.allowed_operations
     assert "approve_gate" in snapshot.denied_operations
     assert "schedule_execution" in snapshot.denied_operations
     assert snapshot.secret_values_exposed is False
@@ -101,6 +105,12 @@ def test_api_shell_exposes_only_versioned_non_authorizing_routes() -> None:
         f"{PRODUCT_API_PREFIX}/boundary",
         f"{PRODUCT_API_PREFIX}/governance/requests/validate",
         f"{PRODUCT_API_PREFIX}/health",
+        f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/approve",
+        f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/decisions",
+        f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/evidence/validate",
+        f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/reject",
+        f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/review",
+        f"{PRODUCT_API_PREFIX}/human-gates/reviews",
         f"{PRODUCT_API_PREFIX}/openapi.json",
         f"{PRODUCT_API_PREFIX}/plans/generated",
         f"{PRODUCT_API_PREFIX}/plans/generated/dag",
@@ -113,8 +123,10 @@ def test_api_shell_exposes_only_versioned_non_authorizing_routes() -> None:
     assert not any(
         authority in path
         for path in route_paths
-        for authority in ("approve", "commit", "execute/", "push", "schedule")
+        for authority in ("commit", "execute/", "push", "schedule")
     )
+    boundary = create_app().get(f"{PRODUCT_API_PREFIX}/boundary").json()["data"]
+    assert "approve_gate" in boundary["denied_operations"]
 
 
 def test_boundary_response_uses_versioned_schema_envelope() -> None:
@@ -124,7 +136,7 @@ def test_boundary_response_uses_versioned_schema_envelope() -> None:
     payload = result.json()
     assert payload["api_version"] == "v1"
     assert payload["schema_version"] == "ai-ent-product-api-v1.0"
-    assert payload["data"]["contract_version"] == "prd-task-005.1"
+    assert payload["data"]["contract_version"] == "prd-task-009.1"
     assert payload["data"]["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
     assert payload["data"]["mandatory_verification_commands"] == list(
         MANDATORY_VERIFICATION_COMMANDS
@@ -275,6 +287,153 @@ def test_runtime_task_readiness_projection_distinguishes_terminal_tasks() -> Non
     assert task["status"] == "passed"
     assert task["readiness_status"] == "TERMINAL"
     assert task["readiness_reasons"] == ["task_passed"]
+
+
+def test_human_gate_review_and_evidence_routes_are_explicit_and_non_authorizing() -> None:
+    app = _seeded_product_runtime_app()
+
+    reviews = app.get(f"{PRODUCT_API_PREFIX}/human-gates/reviews").json()["data"]
+    review = app.get(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/review"
+    ).json()["data"]
+    validation = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/evidence/validate",
+        json_payload={
+            "actor_id": "approver-1",
+            "evidence_refs": review["expected_evidence"],
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+            "scope_task_ids": ["PRD-TASK-008"],
+        },
+    ).json()["data"]
+
+    assert reviews["pending_count"] == 8
+    assert reviews["approved_count"] == 0
+    assert review["gate_id"] == "GATE-PRD-RUNTIME-CONTROL"
+    assert review["task_id"] == "PRD-TASK-008"
+    assert review["status"] == "pending"
+    assert review["explicit_human_review_required"] is True
+    assert review["independent_verification_required"] is True
+    assert review["authority"]["gate_approval_authority"] is False
+    assert validation["valid"] is True
+    assert validation["missing_expected_evidence"] == []
+    assert validation["missing_mandatory_verification_commands"] == []
+    assert validation["applies_runtime_gate_mutation"] is False
+    assert validation["grants_gate_approval_authority"] is False
+    assert validation["verifier_bypass_granted"] is False
+
+
+def test_human_gate_approval_rejection_and_scoped_decisions_do_not_mutate_runtime_gate() -> None:
+    factory = _seeded_product_runtime_session_factory()
+    app = _product_runtime_app(factory)
+    review = app.get(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/review"
+    ).json()["data"]
+    payload = {
+        "actor_id": "approver-1",
+        "rationale": "Explicit review completed.",
+        "evidence_refs": review["expected_evidence"],
+        "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        "scope_task_ids": ["PRD-TASK-008"],
+    }
+
+    approval = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/approve",
+        json_payload=payload,
+    ).json()["data"]
+    rejection = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/reject",
+        json_payload=payload,
+    ).json()["data"]
+    scoped = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/decisions",
+        json_payload={**payload, "decision": "approve"},
+    ).json()["data"]
+
+    assert approval["requested_decision"] == "approve"
+    assert rejection["requested_decision"] == "reject"
+    assert scoped["requested_decision"] == "approve"
+    assert approval["request_accepted"] is True
+    assert approval["decision_status"] == "CONTROL_PLANE_REVIEW_REQUIRED"
+    assert len(approval["decision_request_hash"]) == 64
+    assert approval["scope_task_ids"] == ["PRD-TASK-008"]
+    assert approval["runtime_gate_status_before"] == "pending"
+    assert approval["runtime_gate_status_after"] == "pending"
+    assert approval["applied_to_runtime"] is False
+    assert approval["grants_gate_approval_authority"] is False
+    assert approval["verifier_bypass_granted"] is False
+    assert approval["scheduling_authority_granted"] is False
+    assert approval["independent_verification_required"] is True
+
+    with factory() as session:
+        gate = session.get(RuntimeHumanGate, "GATE-PRD-RUNTIME-CONTROL")
+        assert gate is not None
+        assert gate.status == "pending"
+
+
+def test_human_gate_decision_requires_mandatory_verification_and_valid_scope() -> None:
+    app = _seeded_product_runtime_app()
+    review = app.get(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/review"
+    ).json()["data"]
+    result = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/approve",
+        json_payload={
+            "actor_id": "approver-1",
+            "rationale": "Attempt approval without independent verification.",
+            "evidence_refs": review["expected_evidence"],
+            "verification_commands": [],
+            "scope_task_ids": ["PRD-TASK-999"],
+        },
+    ).json()["data"]
+
+    assert result["request_accepted"] is False
+    assert result["decision_status"] == "EVIDENCE_INCOMPLETE"
+    assert result["evidence_valid"] is False
+    assert result["missing_mandatory_verification_commands"] == list(
+        MANDATORY_VERIFICATION_COMMANDS
+    )
+    assert result["unknown_scope_task_ids"] == ["PRD-TASK-999"]
+    assert result["runtime_gate_status_after"] == "pending"
+
+    rejection = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/reject",
+        json_payload={
+            "actor_id": "approver-1",
+            "rationale": "Reject because expected evidence is incomplete.",
+            "evidence_refs": [],
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+            "scope_task_ids": ["PRD-TASK-008"],
+        },
+    ).json()["data"]
+
+    assert rejection["request_accepted"] is True
+    assert rejection["decision_status"] == "CONTROL_PLANE_REVIEW_REQUIRED"
+    assert rejection["evidence_valid"] is False
+    assert rejection["missing_expected_evidence"] == review["expected_evidence"]
+
+
+def test_human_gate_decision_response_does_not_echo_secret_values() -> None:
+    app = _seeded_product_runtime_app()
+    review = app.get(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/review"
+    ).json()["data"]
+    result = app.post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/approve",
+        json_payload={
+            "actor_id": "approver-1",
+            "rationale": "token-value",
+            "evidence_refs": [*review["expected_evidence"], "password-value"],
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+            "scope_task_ids": ["PRD-TASK-008"],
+        },
+    )
+
+    payload = result.json()
+
+    assert result.status_code == 200
+    assert "token-value" not in str(payload)
+    assert "password-value" not in str(payload)
+    assert payload["data"]["request_accepted"] is True
 
 
 def test_governance_validation_route_preserves_explicit_human_and_verifier_gates() -> None:
@@ -516,11 +675,19 @@ def _seeded_product_runtime_app(
         with factory() as session:
             mutator(session)
             session.commit()
+    return _product_runtime_app(factory)
+
+
+def _product_runtime_app(factory: sessionmaker[Session]) -> Any:
     return create_app(
         ProductApiServices(
             boundary_service=ProductBoundaryService(),
             governance_service=GovernanceValidationService(),
             runtime_service=ProductRuntimeSnapshotService(
+                artifacts_loader=runtime_handoff_tests.artifacts,
+                session_factory=factory,
+            ),
+            human_approval_service=ProductHumanApprovalService(
                 artifacts_loader=runtime_handoff_tests.artifacts,
                 session_factory=factory,
             ),

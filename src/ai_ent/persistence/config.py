@@ -88,6 +88,7 @@ def parse_env_file(path: Path) -> dict[str, str]:
 
 
 def load_database_settings(env_file: Path | None = None) -> DatabaseSettings:
-    values = parse_env_file(env_file) if env_file else {}
-    values.update(os.environ)
+    values = dict(os.environ)
+    if env_file:
+        values.update(parse_env_file(env_file))
     return DatabaseSettings.from_mapping(values)

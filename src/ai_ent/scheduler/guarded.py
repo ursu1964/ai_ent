@@ -286,7 +286,7 @@ class GuardedAutonomousRunner:
         *,
         recovered_state: RecoveryResult | None = None,
         bounded_result: BoundedRunResult | None = None,
-        dry_run: bool = False,
+        dry_run: bool | None = None,
         tasks_attempted: int = 0,
         tasks_completed: int = 0,
         tasks_failed: int = 0,
@@ -306,7 +306,7 @@ class GuardedAutonomousRunner:
             stop_reason=stop_reason,
             recovered_state=recovered_state,
             bounded_result=bounded_result,
-            dry_run=dry_run,
+            dry_run=config.dry_run if dry_run is None else dry_run,
             tasks_attempted=tasks_attempted,
             tasks_completed=tasks_completed,
             tasks_failed=tasks_failed,
@@ -321,16 +321,31 @@ class GuardedAutonomousRunner:
 
 
 def repository_preflight() -> GuardedPreflightResult:
-    completed = subprocess.run(
-        [str(VENV_PYTHON), str(ROOT / "scripts" / "preflight.py")],
-        cwd=ROOT,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
+    preflight_script = ROOT / "scripts" / "preflight.py"
+    if not VENV_PYTHON.exists():
+        return GuardedPreflightResult(False, "preflight python missing")
+    if not preflight_script.exists():
+        return GuardedPreflightResult(False, "preflight script missing")
+    try:
+        completed = subprocess.run(
+            [str(VENV_PYTHON), str(preflight_script)],
+            cwd=ROOT,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return GuardedPreflightResult(
+            False,
+            f"preflight command unavailable:{exc.__class__.__name__}",
+        )
     if completed.returncode != 0:
-        detail = completed.stdout.splitlines()[-1] if completed.stdout else "preflight command failed"
+        detail = (
+            completed.stdout.splitlines()[-1]
+            if completed.stdout
+            else "preflight command failed"
+        )
         return GuardedPreflightResult(False, detail)
     return GuardedPreflightResult(True, "preflight passed")
 

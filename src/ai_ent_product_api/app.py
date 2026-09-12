@@ -15,6 +15,10 @@ from ai_ent_product_api.schemas import (
     PRODUCT_API_SCHEMA_VERSION,
     PRODUCT_API_VERSION,
     GovernanceValidationRequest,
+    HumanGateApprovalRequest,
+    HumanGateEvidenceValidationRequest,
+    HumanGateRejectionRequest,
+    HumanGateScopedDecisionRequest,
     response,
 )
 from ai_ent_product_api.services import ProductApiServices
@@ -53,6 +57,32 @@ class ProductApiApp:
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/executions", "GET", "executions"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/repairs", "GET", "repairs"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/state", "GET", "runtime_state"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/human-gates/reviews", "GET", "gate_reviews"),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/review",
+                "GET",
+                "gate_review",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/evidence/validate",
+                "POST",
+                "validate_gate_evidence",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/approve",
+                "POST",
+                "submit_gate_approval",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/reject",
+                "POST",
+                "submit_gate_rejection",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/decisions",
+                "POST",
+                "scoped_gate_decision",
+            ),
             ProductApiRoute(
                 f"{PRODUCT_API_PREFIX}/governance/requests/validate",
                 "POST",
@@ -148,6 +178,30 @@ class ProductApiApp:
             return response(self._services.repairs()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/state":
             return response(self._services.runtime_state()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/human-gates/reviews":
+            return response(self._services.human_gate_reviews()).model_dump(mode="json")
+        if (gate_id := _gate_route(path, "review")) and method == "GET":
+            return response(self._services.human_gate_review(gate_id)).model_dump(mode="json")
+        if (gate_id := _gate_route(path, "evidence/validate")) and method == "POST":
+            request = HumanGateEvidenceValidationRequest.model_validate(json_payload or {})
+            return response(
+                self._services.validate_human_gate_evidence(gate_id, request)
+            ).model_dump(mode="json")
+        if (gate_id := _gate_route(path, "approve")) and method == "POST":
+            request = HumanGateApprovalRequest.model_validate(json_payload or {})
+            return response(self._services.approve_human_gate(gate_id, request)).model_dump(
+                mode="json"
+            )
+        if (gate_id := _gate_route(path, "reject")) and method == "POST":
+            request = HumanGateRejectionRequest.model_validate(json_payload or {})
+            return response(self._services.reject_human_gate(gate_id, request)).model_dump(
+                mode="json"
+            )
+        if (gate_id := _gate_route(path, "decisions")) and method == "POST":
+            request = HumanGateScopedDecisionRequest.model_validate(json_payload or {})
+            return response(
+                self._services.scoped_human_gate_decision(gate_id, request)
+            ).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/openapi.json":
             return _contract_document()
         if method == "POST" and path == f"{PRODUCT_API_PREFIX}/governance/requests/validate":
@@ -199,6 +253,17 @@ async def _request_json(receive: AsgiReceive) -> Mapping[str, Any] | None:
     return decoded
 
 
+def _gate_route(path: str, action: str) -> str | None:
+    prefix = f"{PRODUCT_API_PREFIX}/human-gates/"
+    suffix = f"/{action}"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return None
+    gate_id = path[len(prefix) : -len(suffix)]
+    if not gate_id or "/" in gate_id:
+        return None
+    return gate_id
+
+
 def _contract_document() -> dict[str, Any]:
     return {
         "api_version": PRODUCT_API_VERSION,
@@ -227,6 +292,24 @@ def _contract_document() -> dict[str, Any]:
                 "get": {"operationId": "runtimeRepairs"}
             },
             f"{PRODUCT_API_PREFIX}/runtime/state": {"get": {"operationId": "runtimeState"}},
+            f"{PRODUCT_API_PREFIX}/human-gates/reviews": {
+                "get": {"operationId": "humanGateReviews"}
+            },
+            f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/review": {
+                "get": {"operationId": "humanGateReview"}
+            },
+            f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/evidence/validate": {
+                "post": {"operationId": "validateHumanGateEvidence"}
+            },
+            f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/approve": {
+                "post": {"operationId": "submitHumanGateApproval"}
+            },
+            f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/reject": {
+                "post": {"operationId": "submitHumanGateRejection"}
+            },
+            f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/decisions": {
+                "post": {"operationId": "scopedHumanGateDecision"}
+            },
             f"{PRODUCT_API_PREFIX}/governance/requests/validate": {
                 "post": {"operationId": "validateGovernanceRequest"}
             },

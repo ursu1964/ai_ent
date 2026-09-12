@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 PRODUCT_API_VERSION = "v1"
 PRODUCT_API_PREFIX = "/api/v1"
 PRODUCT_API_SCHEMA_VERSION = "ai-ent-product-api-v1.0"
-PRODUCT_API_CONTRACT_VERSION = "prd-task-005.1"
+PRODUCT_API_CONTRACT_VERSION = "prd-task-009.1"
 PRODUCT_API_DECISION_DEPENDENCIES = ("DECISION_REQUIRED:PRD-DEC-001",)
 
 
@@ -62,6 +62,9 @@ class RuntimeAuthoritySnapshot(SchemaModel):
         "read_execution_snapshot",
         "read_repair_snapshot",
         "read_runtime_state",
+        "read_human_gate_review",
+        "validate_human_gate_evidence",
+        "submit_human_gate_decision",
     )
     denied_operations: tuple[str, ...] = (
         "approve_gate",
@@ -264,6 +267,109 @@ class RuntimeStateSnapshot(SchemaModel):
     failed_executions: int
     active_leases: int
     runtime_human_gates: tuple[RuntimeHumanGateStateSnapshot, ...]
+    authority: RuntimeAuthoritySnapshot
+
+
+class HumanGateReviewSnapshot(SchemaModel):
+    api_version: str = PRODUCT_API_VERSION
+    contract_version: str = PRODUCT_API_CONTRACT_VERSION
+    schema_version: str = PRODUCT_API_SCHEMA_VERSION
+    gate_id: str
+    task_id: str
+    status: str
+    reason: str
+    risk_level: str
+    approval_boundary: str
+    expected_evidence: tuple[str, ...]
+    downstream_task_ids: tuple[str, ...]
+    resume_semantics: str
+    explicit_human_review_required: bool = True
+    independent_verification_required: bool = True
+    decision_dependencies: tuple[str, ...] = PRODUCT_API_DECISION_DEPENDENCIES
+    authority: RuntimeAuthoritySnapshot
+
+
+class HumanGateReviewCollectionSnapshot(SchemaModel):
+    api_version: str = PRODUCT_API_VERSION
+    contract_version: str = PRODUCT_API_CONTRACT_VERSION
+    schema_version: str = PRODUCT_API_SCHEMA_VERSION
+    product_plan_id: str
+    plan_version: str
+    reviews: tuple[HumanGateReviewSnapshot, ...]
+    pending_count: int
+    approved_count: int
+    rejected_count: int
+    authority: RuntimeAuthoritySnapshot
+
+
+class HumanGateEvidenceValidationRequest(SchemaModel):
+    actor_id: str
+    evidence_refs: tuple[str, ...]
+    verification_commands: tuple[str, ...]
+    scope_task_ids: tuple[str, ...] = ()
+
+
+class HumanGateEvidenceValidationResponse(SchemaModel):
+    gate_id: str
+    task_id: str
+    valid: bool
+    missing_expected_evidence: tuple[str, ...]
+    missing_mandatory_verification_commands: tuple[str, ...]
+    unknown_scope_task_ids: tuple[str, ...]
+    explicit_human_review_required: bool = True
+    independent_verification_required: bool = True
+    applies_runtime_gate_mutation: bool = False
+    grants_gate_approval_authority: bool = False
+    verifier_bypass_granted: bool = False
+    authority: RuntimeAuthoritySnapshot
+
+
+class HumanGateApprovalRequest(SchemaModel):
+    actor_id: str
+    rationale: str
+    evidence_refs: tuple[str, ...]
+    verification_commands: tuple[str, ...]
+    scope_task_ids: tuple[str, ...] = ()
+
+
+class HumanGateRejectionRequest(SchemaModel):
+    actor_id: str
+    rationale: str
+    evidence_refs: tuple[str, ...] = ()
+    verification_commands: tuple[str, ...]
+    scope_task_ids: tuple[str, ...] = ()
+
+
+class HumanGateScopedDecisionRequest(SchemaModel):
+    actor_id: str
+    decision: Literal["approve", "reject"]
+    rationale: str
+    evidence_refs: tuple[str, ...] = ()
+    verification_commands: tuple[str, ...]
+    scope_task_ids: tuple[str, ...] = Field(min_length=1)
+
+
+class HumanGateDecisionResponse(SchemaModel):
+    gate_id: str
+    task_id: str
+    requested_decision: Literal["approve", "reject"]
+    request_accepted: bool
+    decision_status: Literal["CONTROL_PLANE_REVIEW_REQUIRED", "EVIDENCE_INCOMPLETE"]
+    decision_request_hash: str
+    scope_task_ids: tuple[str, ...]
+    evidence_valid: bool
+    missing_expected_evidence: tuple[str, ...]
+    missing_mandatory_verification_commands: tuple[str, ...]
+    unknown_scope_task_ids: tuple[str, ...]
+    runtime_gate_status_before: str
+    runtime_gate_status_after: str
+    applied_to_runtime: bool = False
+    explicit_human_review_required: bool = True
+    independent_verification_required: bool = True
+    grants_gate_approval_authority: bool = False
+    verifier_bypass_granted: bool = False
+    scheduling_authority_granted: bool = False
+    decision_dependencies: tuple[str, ...] = PRODUCT_API_DECISION_DEPENDENCIES
     authority: RuntimeAuthoritySnapshot
 
 

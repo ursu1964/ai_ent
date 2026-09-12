@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -31,6 +33,7 @@ from ai_ent.product_runtime_handoff import (
 from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
 from ai_ent.scheduler.readiness import TaskReadinessService
 from ai_ent.scheduler.repair import FailureClassifier, RepairPolicy
+from ai_ent_product_api.errors import ProductApiError
 from ai_ent_product_api.schemas import (
     BoundarySnapshot,
     ExecutionCollectionSnapshot,
@@ -43,6 +46,14 @@ from ai_ent_product_api.schemas import (
     GovernanceValidationResponse,
     GovernanceValidationSummary,
     HealthStatus,
+    HumanGateApprovalRequest,
+    HumanGateDecisionResponse,
+    HumanGateEvidenceValidationRequest,
+    HumanGateEvidenceValidationResponse,
+    HumanGateRejectionRequest,
+    HumanGateReviewCollectionSnapshot,
+    HumanGateReviewSnapshot,
+    HumanGateScopedDecisionRequest,
     RepairCollectionSnapshot,
     RepairSnapshot,
     RuntimeAuthoritySnapshot,
@@ -66,12 +77,17 @@ class ProductBoundaryService:
             allowed_operations=(
                 "observe_boundary",
                 "validate_governance_request",
+                "read_human_gate_review",
+                "validate_human_gate_evidence",
+                "submit_human_gate_decision",
             ),
             denied_operations=(
                 "approve_gate",
                 "bypass_commit_boundary",
                 "bypass_verifier",
+                "claim_task",
                 "commit",
+                "execute_repair",
                 "execute_runtime",
                 "push",
                 "schedule_execution",
@@ -477,10 +493,239 @@ class ProductRuntimeSnapshotService:
 
 
 @dataclass(frozen=True)
+class ProductHumanApprovalService:
+    artifacts_loader: ArtifactsLoader = load_product_runtime_handoff_artifacts
+    session_factory: SessionFactory | None = None
+
+    def reviews(self) -> HumanGateReviewCollectionSnapshot:
+        artifacts = self.artifacts_loader()
+        lock = artifacts.lock
+        reviews = self._review_snapshots(artifacts)
+        return HumanGateReviewCollectionSnapshot(
+            product_plan_id=str(lock.get("product_plan_id", PRODUCT_PLAN_ID)),
+            plan_version=str(lock.get("plan_version", PRODUCT_PLAN_VERSION)),
+            reviews=reviews,
+            pending_count=sum(1 for review in reviews if _is_pending_gate_status(review.status)),
+            approved_count=sum(1 for review in reviews if review.status == "approved"),
+            rejected_count=sum(1 for review in reviews if review.status == "rejected"),
+            authority=_runtime_authority(),
+        )
+
+    def review(self, gate_id: str) -> HumanGateReviewSnapshot:
+        for review in self.reviews().reviews:
+            if review.gate_id == gate_id:
+                return review
+        raise ProductApiError(
+            status_code=404,
+            code="HUMAN_GATE_NOT_FOUND",
+            message="human gate is not exposed by the product API boundary",
+        )
+
+    def validate_evidence(
+        self,
+        gate_id: str,
+        request: HumanGateEvidenceValidationRequest,
+    ) -> HumanGateEvidenceValidationResponse:
+        review = self.review(gate_id)
+        return self._evidence_validation(
+            review=review,
+            evidence_refs=request.evidence_refs,
+            verification_commands=request.verification_commands,
+            scope_task_ids=request.scope_task_ids,
+        )
+
+    def approve(
+        self,
+        gate_id: str,
+        request: HumanGateApprovalRequest,
+    ) -> HumanGateDecisionResponse:
+        return self._decision_response(
+            gate_id=gate_id,
+            requested_decision="approve",
+            request=request.model_dump(mode="python"),
+            evidence_refs=request.evidence_refs,
+            verification_commands=request.verification_commands,
+            scope_task_ids=request.scope_task_ids,
+        )
+
+    def reject(
+        self,
+        gate_id: str,
+        request: HumanGateRejectionRequest,
+    ) -> HumanGateDecisionResponse:
+        return self._decision_response(
+            gate_id=gate_id,
+            requested_decision="reject",
+            request=request.model_dump(mode="python"),
+            evidence_refs=request.evidence_refs,
+            verification_commands=request.verification_commands,
+            scope_task_ids=request.scope_task_ids,
+        )
+
+    def scoped_decision(
+        self,
+        gate_id: str,
+        request: HumanGateScopedDecisionRequest,
+    ) -> HumanGateDecisionResponse:
+        return self._decision_response(
+            gate_id=gate_id,
+            requested_decision=request.decision,
+            request=request.model_dump(mode="python"),
+            evidence_refs=request.evidence_refs,
+            verification_commands=request.verification_commands,
+            scope_task_ids=request.scope_task_ids,
+        )
+
+    def dependency_status(self) -> ServiceDependencyStatus:
+        return ServiceDependencyStatus(
+            name="product_human_approvals",
+            boundary="explicit non-mutating human gate review and decision projection",
+            status="wired",
+        )
+
+    def _review_snapshots(
+        self,
+        artifacts: ProductRuntimeHandoffArtifacts,
+    ) -> tuple[HumanGateReviewSnapshot, ...]:
+        if self.session_factory is not None:
+            with self.session_factory() as session:
+                gates = tuple(
+                    session.scalars(
+                        select(RuntimeHumanGate)
+                        .where(RuntimeHumanGate.plan_id == PRODUCT_PLAN_ID)
+                        .order_by(RuntimeHumanGate.id)
+                    )
+                )
+                if gates:
+                    return tuple(self._runtime_review_snapshot(gate) for gate in gates)
+        return self._generated_review_snapshots(artifacts)
+
+    def _runtime_review_snapshot(self, gate: RuntimeHumanGate) -> HumanGateReviewSnapshot:
+        return HumanGateReviewSnapshot(
+            gate_id=gate.id,
+            task_id=gate.task_id,
+            status=gate.status,
+            reason=gate.reason,
+            risk_level=gate.risk_level,
+            approval_boundary=gate.approval_boundary,
+            expected_evidence=_json_string_tuple(gate.expected_evidence_json),
+            downstream_task_ids=_json_string_tuple(gate.downstream_task_ids_json),
+            resume_semantics=gate.resume_semantics,
+            authority=_runtime_authority(),
+        )
+
+    def _generated_review_snapshots(
+        self,
+        artifacts: ProductRuntimeHandoffArtifacts,
+    ) -> tuple[HumanGateReviewSnapshot, ...]:
+        lock = artifacts.lock
+        downstream_by_task = _downstream_by_task(artifacts.import_preview)
+        return tuple(
+            HumanGateReviewSnapshot(
+                gate_id=str(gate.get("gate_id", "")),
+                task_id=task_id,
+                status=str(gate.get("status", "PENDING_NOT_APPROVED")),
+                reason=str(gate.get("reason", "")),
+                risk_level=str(gate.get("risk", gate.get("risk_level", ""))),
+                approval_boundary=str(gate.get("approval_boundary", "")),
+                expected_evidence=_string_tuple(gate.get("expected_evidence")),
+                downstream_task_ids=downstream_by_task.get(task_id, ()),
+                resume_semantics=str(
+                    gate.get(
+                        "resume_semantics",
+                        "explicit approval, then reevaluate readiness before claim",
+                    )
+                ),
+                authority=_runtime_authority(),
+            )
+            for gate in _dict_tuple(lock.get("human_gate_definitions"))
+            if (task_id := str(gate.get("task_id", "")))
+        )
+
+    def _evidence_validation(
+        self,
+        *,
+        review: HumanGateReviewSnapshot,
+        evidence_refs: tuple[str, ...],
+        verification_commands: tuple[str, ...],
+        scope_task_ids: tuple[str, ...],
+    ) -> HumanGateEvidenceValidationResponse:
+        provided_evidence = set(evidence_refs)
+        provided_commands = set(verification_commands)
+        allowed_scope = {review.task_id, *review.downstream_task_ids}
+        missing_evidence = tuple(
+            evidence for evidence in review.expected_evidence if evidence not in provided_evidence
+        )
+        missing_commands = tuple(
+            command
+            for command in MANDATORY_VERIFICATION_COMMANDS
+            if command not in provided_commands
+        )
+        unknown_scope = tuple(task_id for task_id in scope_task_ids if task_id not in allowed_scope)
+        valid = not missing_evidence and not missing_commands and not unknown_scope
+        return HumanGateEvidenceValidationResponse(
+            gate_id=review.gate_id,
+            task_id=review.task_id,
+            valid=valid,
+            missing_expected_evidence=missing_evidence,
+            missing_mandatory_verification_commands=missing_commands,
+            unknown_scope_task_ids=unknown_scope,
+            authority=_runtime_authority(),
+        )
+
+    def _decision_response(
+        self,
+        *,
+        gate_id: str,
+        requested_decision: Literal["approve", "reject"],
+        request: dict[str, Any],
+        evidence_refs: tuple[str, ...],
+        verification_commands: tuple[str, ...],
+        scope_task_ids: tuple[str, ...],
+    ) -> HumanGateDecisionResponse:
+        review = self.review(gate_id)
+        scope = scope_task_ids or (review.task_id,)
+        evidence = self._evidence_validation(
+            review=review,
+            evidence_refs=evidence_refs,
+            verification_commands=verification_commands,
+            scope_task_ids=scope,
+        )
+        request_accepted = not (
+            evidence.missing_mandatory_verification_commands
+            or evidence.unknown_scope_task_ids
+            or (requested_decision == "approve" and evidence.missing_expected_evidence)
+        )
+        return HumanGateDecisionResponse(
+            gate_id=review.gate_id,
+            task_id=review.task_id,
+            requested_decision=requested_decision,
+            request_accepted=request_accepted,
+            decision_status=(
+                "CONTROL_PLANE_REVIEW_REQUIRED" if request_accepted else "EVIDENCE_INCOMPLETE"
+            ),
+            decision_request_hash=_decision_hash(gate_id, requested_decision, request),
+            scope_task_ids=scope,
+            evidence_valid=evidence.valid,
+            missing_expected_evidence=evidence.missing_expected_evidence,
+            missing_mandatory_verification_commands=(
+                evidence.missing_mandatory_verification_commands
+            ),
+            unknown_scope_task_ids=evidence.unknown_scope_task_ids,
+            runtime_gate_status_before=review.status,
+            runtime_gate_status_after=review.status,
+            authority=_runtime_authority(),
+        )
+
+
+@dataclass(frozen=True)
 class ProductApiServices:
     boundary_service: ProductBoundaryService
     governance_service: GovernanceValidationService
     runtime_service: ProductRuntimeSnapshotService
+    human_approval_service: ProductHumanApprovalService = field(
+        default_factory=ProductHumanApprovalService
+    )
 
     @classmethod
     def defaults(cls) -> ProductApiServices:
@@ -488,6 +733,7 @@ class ProductApiServices:
             boundary_service=ProductBoundaryService(),
             governance_service=GovernanceValidationService(),
             runtime_service=ProductRuntimeSnapshotService(),
+            human_approval_service=ProductHumanApprovalService(),
         )
 
     def health(self) -> HealthStatus:
@@ -495,6 +741,7 @@ class ProductApiServices:
             self.boundary_service.dependency_status(),
             self.governance_service.dependency_status(),
             self.runtime_service.dependency_status(),
+            self.human_approval_service.dependency_status(),
         )
         return HealthStatus(dependencies=dependencies)
 
@@ -525,6 +772,40 @@ class ProductApiServices:
     def runtime_state(self) -> RuntimeStateSnapshot:
         return self.runtime_service.runtime_state()
 
+    def human_gate_reviews(self) -> HumanGateReviewCollectionSnapshot:
+        return self.human_approval_service.reviews()
+
+    def human_gate_review(self, gate_id: str) -> HumanGateReviewSnapshot:
+        return self.human_approval_service.review(gate_id)
+
+    def validate_human_gate_evidence(
+        self,
+        gate_id: str,
+        request: HumanGateEvidenceValidationRequest,
+    ) -> HumanGateEvidenceValidationResponse:
+        return self.human_approval_service.validate_evidence(gate_id, request)
+
+    def approve_human_gate(
+        self,
+        gate_id: str,
+        request: HumanGateApprovalRequest,
+    ) -> HumanGateDecisionResponse:
+        return self.human_approval_service.approve(gate_id, request)
+
+    def reject_human_gate(
+        self,
+        gate_id: str,
+        request: HumanGateRejectionRequest,
+    ) -> HumanGateDecisionResponse:
+        return self.human_approval_service.reject(gate_id, request)
+
+    def scoped_human_gate_decision(
+        self,
+        gate_id: str,
+        request: HumanGateScopedDecisionRequest,
+    ) -> HumanGateDecisionResponse:
+        return self.human_approval_service.scoped_decision(gate_id, request)
+
 
 def _runtime_authority() -> RuntimeAuthoritySnapshot:
     return RuntimeAuthoritySnapshot(mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS)
@@ -548,6 +829,21 @@ def _runtime_dependency_edges(
         for edge in artifacts.lock.get("dependency_edges", ())
         if isinstance(edge, list | tuple) and len(edge) == 2
     )
+
+
+def _downstream_by_task(import_preview: tuple[dict[str, Any], ...]) -> dict[str, tuple[str, ...]]:
+    downstream: dict[str, list[str]] = {
+        str(contract.get("task_id", "")): [] for contract in import_preview
+    }
+    for contract in import_preview:
+        task_id = str(contract.get("task_id", ""))
+        for dependency in _string_tuple(contract.get("depends_on")):
+            downstream.setdefault(dependency, []).append(task_id)
+    return {
+        task_id: tuple(sorted(child for child in children if child))
+        for task_id, children in downstream.items()
+        if task_id
+    }
 
 
 def _latest_product_import(session: Session) -> RuntimePlanImport | None:
@@ -670,6 +966,31 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
     return tuple(str(item) for item in value)
+
+
+def _json_string_tuple(value: str) -> tuple[str, ...]:
+    try:
+        return _string_tuple(json.loads(value))
+    except json.JSONDecodeError:
+        return ()
+
+
+def _is_pending_gate_status(status: str) -> bool:
+    return status in {"pending", "PENDING_NOT_APPROVED"}
+
+
+def _decision_hash(
+    gate_id: str,
+    requested_decision: str,
+    request: dict[str, Any],
+) -> str:
+    payload = {
+        "gate_id": gate_id,
+        "requested_decision": requested_decision,
+        "request": request,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _int(value: object, default: int) -> int:
