@@ -9,3 +9,18 @@ operations:
     classification: NORMATIVE
     source_refs: [R15]
     command: ./aient/bin/python scripts/project_manifest.py validate --manifest-root manifest/project/ai-ent
+  - id: OP-003
+    name: Runtime cleanup dry-run
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R17, R20, R21, R22]
+    command: ./aient/bin/python scripts/bootstrap.py maintenance cleanup
+  - id: OP-004
+    name: Runtime migration safety check
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R17, R20, R22]
+    command: ./aient/bin/python scripts/bootstrap.py maintenance migration-check
+  - id: OP-005
+    name: Control-plane backup guidance
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R17, R22]
+    command: ./aient/bin/python scripts/bootstrap.py maintenance backup-guidance

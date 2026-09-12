@@ -1,0 +1,214 @@
+{
+  "review_id": "PRF-008",
+  "title": "PRD-TASK-022 Source-Reference + Runtime-Operations Remediation",
+  "result": "IMPLEMENTED_AND_VERIFIED",
+  "runtime_product_execution_stopped": true,
+  "constraints_observed": {
+    "requeued_prd_task_022": false,
+    "executed_product_task": false,
+    "approved_gates": false,
+    "resolved_prd_dec_002": false,
+    "resolved_prd_dec_003": false,
+    "modified_frozen_product_plan": false,
+    "created_execution_or_lease": false
+  },
+  "authoritative_context": {
+    "prd_task_022_status": "blocked",
+    "attempts_preserved": [
+      {
+        "attempt": 1,
+        "execution_id": "execution-2b6148d6d55c4845b14eb11bd90d2183",
+        "status": "failed",
+        "error_classification": "verification_failed"
+      },
+      {
+        "attempt": 2,
+        "execution_id": "execution-f4f07c51f43b4f9eb1218a632d11762d",
+        "status": "failed",
+        "error_classification": "verification_failed"
+      }
+    ],
+    "next_authoritative_attempt": 3,
+    "ready": [],
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "completed": "17/25",
+    "remaining": "8/25",
+    "prd_dec_002": "unresolved",
+    "prd_dec_003": "unresolved",
+    "postgresql_authority": "active"
+  },
+  "source_reference_fix": {
+    "status": "implemented",
+    "operation_source_refs": {
+      "OP-003": [
+        "BEAG-001",
+        "R17",
+        "R20",
+        "R21",
+        "R22"
+      ],
+      "OP-004": [
+        "BEAG-001",
+        "R17",
+        "R20",
+        "R22"
+      ],
+      "OP-005": [
+        "BEAG-001",
+        "R17",
+        "R22"
+      ]
+    },
+    "namespace_invariant": "requirement IDs, capability IDs, operation IDs, and source-corpus references remain separate",
+    "tests": [
+      "tests/test_project_manifest.py::test_operation_source_refs_reject_requirement_id_namespace",
+      "tests/test_project_manifest.py::test_operation_source_refs_preserve_exact_source_corpus_provenance",
+      "tests/test_project_manifest.py::test_operation_source_refs_serialize_readback_deterministically"
+    ]
+  },
+  "migration_safety_fix": {
+    "status": "implemented",
+    "implementation": "MigrationSafetyChecker inspects schema through the active Session connection and resolves active PostgreSQL authority through BootstrapRunRepository.get_active_authority.",
+    "authority_states": {
+      "postgresql_active": "PASS when active BootstrapStateAuthority backend=postgresql status=active exists for the project",
+      "postgresql_configured_unavailable": "blocked by preflight/database health before migration operations",
+      "fallback_or_non_authoritative_db": "FAIL when no active PostgreSQL authority marker is present",
+      "unknown_authority": "FAIL with structured control_plane_authority detail"
+    },
+    "real_postgresql_proof": [
+      "PASS schema_tables: all mapped tables present",
+      "PASS control_plane_authority: active postgresql authority marker preserved for run run-phi-product-plan-7b0342fb7fd5-v1; dialect=postgresql",
+      "PASS human_gates: runtime human gates remain explicit",
+      "PASS independent_verification: runtime task bindings require verification profiles"
+    ],
+    "tests": [
+      "tests/test_runtime_operations.py::test_migration_checks_preserve_authority_and_verification_profiles",
+      "tests/test_runtime_operations.py::test_migration_check_blocks_missing_postgresql_authority"
+    ]
+  },
+  "deterministic_coverage_hash_fix": {
+    "status": "implemented",
+    "semantic_hash_inputs": [
+      "compiled normative requirements",
+      "requirement classification",
+      "capability bindings",
+      "canonical_bytes serialization"
+    ],
+    "c20_runtime_requirements": [
+      "ACC-001",
+      "ACC-003",
+      "DATA-002",
+      "DATA-003",
+      "DATA-004",
+      "FR-003",
+      "FR-004",
+      "FR-005",
+      "FR-006",
+      "NFR-002",
+      "NFR-003",
+      "NFR-004",
+      "OPS-001",
+      "OPS-002",
+      "OPS-003",
+      "OPS-004",
+      "OPS-005",
+      "OPS-006",
+      "SEC-001",
+      "SEC-002",
+      "SEC-003"
+    ],
+    "tests": [
+      "tests/test_runtime_kernel.py::test_c20_runtime_requirements_are_derived_from_normative_manifest_inputs",
+      "tests/test_runtime_kernel.py::test_c20_runtime_requirements_include_added_normative_requirement",
+      "tests/test_runtime_kernel.py::test_c20_runtime_requirements_ignore_operation_provenance_only_changes",
+      "tests/test_project_manifest.py::test_implementation_plan_classifies_trace_warnings",
+      "tests/test_post_implementation.py::test_pir_002_closes_residual_gap_set_with_combined_runtime_evidence",
+      "tests/test_system_acceptance.py::test_saag_accepts_complete_system_with_all_proofs"
+    ]
+  },
+  "runtime_operations_contract": {
+    "implemented_operations": [
+      "retention cleanup dry-run and explicit-gate apply",
+      "migration safety check",
+      "backup guidance",
+      "graceful shutdown at a durable task boundary"
+    ],
+    "security_boundaries_preserved": {
+      "unrestricted_docker_authority": false,
+      "unrelated_container_access": false,
+      "control_plane_postgresql_mutation_authority": false,
+      "host_filesystem_escape": false,
+      "unrelated_workspace_access": false,
+      "secret_exposure": false,
+      "arbitrary_git_authority": false,
+      "arbitrary_codex_authority": false,
+      "gate_approval_authority": false,
+      "verification_bypass": false,
+      "lan_or_public_exposure": false
+    }
+  },
+  "prior_remediation_matrix": {
+    "project_plan_namespace_routing": "preserved",
+    "runtime_bound_package_construction": "preserved",
+    "non_interactive_codex_exec": "preserved",
+    "workspace_isolation": "preserved",
+    "scheduler_failure_persistence": "preserved",
+    "guarded_dry_run_semantics": "preserved",
+    "timeout_lease_semantics": "preserved",
+    "verification_command_ordering": "preserved",
+    "mandatory_verification_commands": "preserved",
+    "acceptance_hash_determinism": "remediated through manifest-derived semantic inputs",
+    "api_error_redaction": "preserved",
+    "git_hook_boundary": "preserved",
+    "identity_rbac": "preserved",
+    "hitl_authority_separation": "preserved",
+    "regression": false
+  },
+  "environment": {
+    "docker_daemon": "available",
+    "postgres_container": "aient-postgres Up 3 hours 127.0.0.1:5432->5432/tcp",
+    "pg_isready": "PASS",
+    "sqlalchemy_select_1": 1,
+    "alembic": "0020 (head)",
+    "aient_codex_command": {
+      "persistent": "absent",
+      "future_pre_execution_must_configure": "/home/user/.local/bin/codex",
+      "resolved_argv": "/home/user/.local/bin/codex exec --sandbox workspace-write --ignore-rules -"
+    }
+  },
+  "verification": {
+    "targeted": {
+      "prd_failure_set": "20 passed in 6.90s",
+      "nearby_suites": "124 passed in 12.59s",
+      "manifest_validate": "PASS; requirements_count=28; validation_errors=[]",
+      "maintenance_migration_check": "PASS",
+      "maintenance_cleanup_dry_run": "PASS; planned; actions=0",
+      "maintenance_backup_guidance": "PASS; environment variable references only"
+    },
+    "mandatory": {
+      "preflight": "PASS",
+      "pytest": "566 passed, 6 skipped in 74.15s",
+      "ruff": "All checks passed!",
+      "pyright": "0 errors, 0 warnings, 0 informations",
+      "alembic_current": "0020 (head)"
+    }
+  },
+  "runtime_integrity_after": {
+    "prd_task_022": "blocked",
+    "attempts": [
+      1,
+      2
+    ],
+    "next_attempt": 3,
+    "ready": [],
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "completed": "17/25",
+    "remaining": "8/25",
+    "prd_dec_002": "unresolved",
+    "prd_dec_003": "unresolved",
+    "postgresql_authority": "active"
+  },
+  "recommendation": "Proceed to PRV-010 independent revalidation before any requeue or PRE execution."
+}

@@ -30,6 +30,7 @@ from ai_ent.runtime_kernel import (
     RUNTIME_KERNEL_CONTRACT_VERSION,
     RUNTIME_KERNEL_OUTPUT_SCHEMA_VERSION,
     RuntimeKernelService,
+    runtime_requirements_for_capability,
 )
 
 MANIFEST_ROOT = Path("manifest/project/ai-ent")
@@ -233,6 +234,56 @@ def test_cmp_006_runtime_kernel_blocks_missing_runtime_import() -> None:
         assert f"runtime plan is not imported:{DEFAULT_RUNTIME_PROJECT_ID}" in result.blockers
 
 
+def test_c20_runtime_requirements_are_derived_from_normative_manifest_inputs(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(MANIFEST_ROOT, target)
+    baseline = runtime_requirements_for_capability(target)
+
+    assert baseline == tuple(sorted(baseline))
+    assert {"DATA-004", "OPS-004", "OPS-005", "OPS-006"} <= set(baseline)
+    assert baseline == C20_RUNTIME_KERNEL_REQUIREMENTS
+
+
+def test_c20_runtime_requirements_include_added_normative_requirement(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(MANIFEST_ROOT, target)
+    requirements = target / "requirements" / "operations.yaml"
+    requirements.write_text(
+        requirements.read_text(encoding="utf-8")
+        + "\n"
+        + "  - id: OPS-999\n"
+        + "    title: Added deterministic runtime requirement\n"
+        + "    classification: NORMATIVE\n"
+        + "    source_refs: [BEAG-001]\n"
+        + "    capabilities: [C20]\n",
+        encoding="utf-8",
+    )
+
+    first = runtime_requirements_for_capability(target)
+    second = runtime_requirements_for_capability(target)
+
+    assert "OPS-999" in first
+    assert first == second
+    assert first == tuple(sorted(first))
+
+
+def test_c20_runtime_requirements_ignore_operation_provenance_only_changes(tmp_path: Path) -> None:
+    target = tmp_path / "manifest"
+    _copy_manifest(MANIFEST_ROOT, target)
+    baseline = runtime_requirements_for_capability(target)
+    operations = target / "operations.yaml"
+    operations.write_text(
+        operations.read_text(encoding="utf-8").replace(
+            "source_refs: [BEAG-001, R17, R20, R21, R22]",
+            "source_refs: [R22, R17, BEAG-001]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    assert runtime_requirements_for_capability(target) == baseline
+
+
 class FailingValidator(DeterministicValidatorService):
     def validate(self, _: Path) -> DeterministicValidationReport:
         return DeterministicValidationReport(
@@ -271,6 +322,13 @@ def _mark_direct_dependencies_passed(session: Session, task_id: str) -> None:
         assert task is not None
         task.status = "passed"
     session.flush()
+
+
+def _copy_manifest(source: Path, target: Path) -> None:
+    for path in source.rglob("*.yaml"):
+        destination = target / path.relative_to(source)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _environment(*, codex_configured: bool = True) -> EnvironmentProfile:

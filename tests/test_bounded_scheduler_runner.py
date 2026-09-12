@@ -95,6 +95,16 @@ class FakeClock:
         return self.values.pop(0) if self.values else 999.0
 
 
+class FakeShutdown:
+    def __init__(self, values: list[bool]) -> None:
+        self.values = values
+
+    def __call__(self) -> bool:
+        if self.values:
+            return self.values.pop(0)
+        return False
+
+
 def scheduled(task_id: str) -> SchedulerIterationResult:
     pkg = package(task_id, f"execution-{task_id}")
     return SchedulerIterationResult(
@@ -237,6 +247,40 @@ def test_wall_clock_budget_prevents_starting_additional_work() -> None:
 
     assert result.stop_reason == "MAX_WALL_CLOCK_SECONDS"
     assert result.tasks_attempted == 0
+
+
+def test_shutdown_request_prevents_new_claim() -> None:
+    scheduler = FakeScheduler([scheduled("TASK-A")])
+    runner = BoundedSchedulerRunner(
+        scheduler=scheduler,  # type: ignore[arg-type]
+        shutdown_requested=lambda: True,
+    )
+
+    result = runner.run(None, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.stop_reason == "SHUTDOWN_REQUESTED"
+    assert result.tasks_attempted == 0
+    assert scheduler.calls == 0
+
+
+def test_shutdown_request_after_task_stops_at_persisted_boundary() -> None:
+    session = CommitRecordingSession()
+    scheduler = FakeScheduler([scheduled("TASK-A"), scheduled("TASK-B")])
+    runner = BoundedSchedulerRunner(
+        scheduler=scheduler,  # type: ignore[arg-type]
+        execution_runner=FakeExecutionRunner(),  # type: ignore[arg-type]
+        finalizer=FakeFinalizer([completed("TASK-A", "execution-TASK-A", "aaa111")]),  # type: ignore[arg-type]
+        limits=BoundedRunLimits(max_tasks_per_run=2),
+        shutdown_requested=FakeShutdown([False, True]),
+    )
+
+    result = runner.run(session, project_id="project-1")  # type: ignore[arg-type]
+
+    assert result.stop_reason == "SHUTDOWN_REQUESTED"
+    assert result.tasks_attempted == 1
+    assert result.tasks_completed == 1
+    assert session.commits == 1
+    assert scheduler.calls == 1
 
 
 def test_repairable_failure_repairs_then_continues() -> None:

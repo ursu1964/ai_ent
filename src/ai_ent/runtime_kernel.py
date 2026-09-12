@@ -8,7 +8,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from ai_ent.deterministic_validator import DeterministicValidatorService
-from ai_ent.project_manifest import GENERATED_MARKER, canonical_bytes
+from ai_ent.project_manifest import GENERATED_MARKER, canonical_bytes, compile_project_manifest
 from ai_ent.project_memory import (
     PROJECT_MEMORY_CONTRACT_VERSION,
     PROJECT_MEMORY_SCHEMA_VERSION,
@@ -31,25 +31,26 @@ RUNTIME_KERNEL_CAPABILITY_ID = "C20"
 WORKER_PACKAGE_INTERFACE_ID = "IF-004"
 EVIDENCE_RECORDING_INTERFACE_ID = "IF-005"
 
-C20_RUNTIME_KERNEL_REQUIREMENTS = (
-    "ACC-001",
-    "ACC-003",
-    "DATA-002",
-    "DATA-003",
-    "FR-003",
-    "FR-004",
-    "FR-005",
-    "FR-006",
-    "NFR-002",
-    "NFR-003",
-    "NFR-004",
-    "OPS-001",
-    "OPS-002",
-    "OPS-003",
-    "SEC-001",
-    "SEC-002",
-    "SEC-003",
-)
+DEFAULT_MANIFEST_ROOT = Path("manifest/project/ai-ent")
+
+
+def runtime_requirements_for_capability(
+    manifest_root: Path = DEFAULT_MANIFEST_ROOT,
+    *,
+    capability_id: str = RUNTIME_KERNEL_CAPABILITY_ID,
+) -> tuple[str, ...]:
+    compiled = compile_project_manifest(manifest_root).compiled
+    return tuple(
+        sorted(
+            str(requirement["id"])
+            for requirement in compiled.requirements
+            if requirement.get("classification") == "NORMATIVE"
+            and capability_id in {str(item) for item in requirement.get("capabilities", [])}
+        )
+    )
+
+
+C20_RUNTIME_KERNEL_REQUIREMENTS = runtime_requirements_for_capability()
 C20_RUNTIME_STOP_CONDITIONS = (
     "no_ready_task",
     "pending_human_gate",
@@ -138,7 +139,7 @@ class RuntimeKernelEvaluation:
             "generated": GENERATED_MARKER,
             "component_id": RUNTIME_KERNEL_COMPONENT_ID,
             "capability_id": RUNTIME_KERNEL_CAPABILITY_ID,
-            "requirements": list(C20_RUNTIME_KERNEL_REQUIREMENTS),
+            "requirements": list(self.requirements_covered),
             "contract_version": self.contract_version,
             "schema_version": self.schema_version,
             "service": RUNTIME_KERNEL_SERVICE_NAME,
@@ -243,7 +244,8 @@ class RuntimeKernelService:
             if not task_context.requirements:
                 blockers.append(f"runtime task binding not found:{task_id}")
             else:
-                missing = sorted(set(C20_RUNTIME_KERNEL_REQUIREMENTS) - set(task_context.requirements))
+                expected_requirements = runtime_requirements_for_capability(manifest_root)
+                missing = sorted(set(expected_requirements) - set(task_context.requirements))
                 if missing:
                     blockers.append(f"C20 requirement coverage missing:{task_id}:{','.join(missing)}")
             if "C20" not in task_context.capabilities:
@@ -280,7 +282,7 @@ class RuntimeKernelService:
         )
         blockers_tuple = tuple(sorted(dict.fromkeys(blockers)))
         worker_package_permitted = not blockers_tuple and readiness.ready
-        requirements = task_context.requirements or C20_RUNTIME_KERNEL_REQUIREMENTS
+        requirements = task_context.requirements or runtime_requirements_for_capability(manifest_root)
         capabilities = task_context.capabilities or ("C20",)
         return RuntimeKernelEvaluation(
             contract_version=self.contract_version,

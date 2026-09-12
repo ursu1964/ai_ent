@@ -32,6 +32,7 @@ GuardedStopReason = Literal[
     "TIME_LIMIT",
     "TASK_LIMIT",
     "RUNTIME_ERROR",
+    "SHUTDOWN_REQUESTED",
 ]
 
 
@@ -528,5 +529,6 @@ def _map_bounded_stop_reason(reason: str) -> GuardedStopReason:
         "REPLAN": "BLOCKED",
         "RECONCILIATION_REQUIRED": "RECONCILIATION_REQUIRED",
         "RUNTIME_ERROR": "RUNTIME_ERROR",
+        "SHUTDOWN_REQUESTED": "SHUTDOWN_REQUESTED",
     }
     return mapping.get(reason, "RUNTIME_ERROR")

@@ -31,6 +31,7 @@ StopReason = Literal[
     "REPLAN",
     "RECONCILIATION_REQUIRED",
     "RUNTIME_ERROR",
+    "SHUTDOWN_REQUESTED",
 ]
 TaskOutcomeStatus = Literal[
     "COMPLETED",
@@ -95,6 +96,7 @@ class BoundedSchedulerRunner:
         limits: BoundedRunLimits | None = None,
         run_id_factory: Callable[[], str] | None = None,
         clock: Clock = time.monotonic,
+        shutdown_requested: Callable[[], bool] | None = None,
     ) -> None:
         self.limits = limits or BoundedRunLimits()
         repair_policy = RepairPolicy(
@@ -111,6 +113,7 @@ class BoundedSchedulerRunner:
         self.recovery = recovery or SchedulerRecoveryService()
         self.run_id_factory = run_id_factory or (lambda: f"run-{uuid.uuid4().hex}")
         self.clock = clock
+        self.shutdown_requested = shutdown_requested or (lambda: False)
 
     def recover_then_run(self, session: Session, *, project_id: str) -> tuple[RecoveryResult, BoundedRunResult | None]:
         recovery = self.recovery.recover_project(session, project_id=project_id)
@@ -142,6 +145,9 @@ class BoundedSchedulerRunner:
             if tasks_failed >= self.limits.max_failures_per_run:
                 stop_reason = "MAX_FAILURES_PER_RUN"
                 break
+            if self.shutdown_requested():
+                stop_reason = "SHUTDOWN_REQUESTED"
+                break
 
             scheduled = self.scheduler.run_once(session, project_id=project_id)
             if scheduled.status == "NO_READY_TASK":
@@ -167,6 +173,9 @@ class BoundedSchedulerRunner:
             repairs_attempted += outcome.repairs_attempted
             if outcome.outcome.status in {"COMPLETED", "REPAIRED"}:
                 tasks_completed += 1
+                if self.shutdown_requested():
+                    stop_reason = "SHUTDOWN_REQUESTED"
+                    break
                 if tasks_attempted >= self.limits.max_tasks_per_run:
                     stop_reason = self._max_task_stop_reason(session, project_id)
                     break

@@ -302,7 +302,10 @@ def test_pir_002_closes_residual_gap_set_with_combined_runtime_evidence(
     assert review.as_dict()["gate_id"] == "PIR-002"
     assert review.result == "NO_RESIDUAL_IMPLEMENTATION_GAPS"
     assert review.residual_gaps == ()
-    assert review.requirement_coverage["after"]["covered_requirements"] == 23
+    assert (
+        review.requirement_coverage["after"]["covered_requirements"]
+        == review.requirement_coverage["after"]["normative_requirements"]
+    )
     assert review.requirement_coverage["after"]["blocked_requirements"] == 0
     assert review.requirement_coverage["after"]["warning_count"] == 0
 

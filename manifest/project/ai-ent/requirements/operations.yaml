@@ -14,3 +14,18 @@ requirements:
     classification: NORMATIVE
     source_refs: [BEAG-001]
     capabilities: [C12, C20]
+  - id: OPS-004
+    title: Runtime cleanup must default to dry-run and require explicit operator confirmation before mutation
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R20, R21]
+    capabilities: [C12, C20]
+  - id: OPS-005
+    title: Migrations and restore drills must preserve PostgreSQL control-plane authority, explicit human gates, and independent verification profiles
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R17, R20, R22]
+    capabilities: [C12, C17, C20]
+  - id: OPS-006
+    title: Guarded runtime shutdown must stop at a durable task boundary without starting new claims
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R21]
+    capabilities: [C12, C20]

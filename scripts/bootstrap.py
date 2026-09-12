@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,6 +26,13 @@ from ai_ent.post_implementation import PRIOR_RUNTIME_PLAN_ID
 from ai_ent.product_runtime_handoff import PRODUCT_PLAN_ID, PRODUCT_PLAN_VERSION
 from ai_ent.residual_runtime_handoff import RESIDUAL_PLAN_ID, RESIDUAL_PLAN_VERSION
 from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, build_runtime_manifest_tasks
+from ai_ent.runtime_operations import (
+    GracefulShutdownController,
+    MigrationSafetyChecker,
+    RetentionPolicy,
+    RuntimeCleanupService,
+    build_backup_guidance,
+)
 from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
@@ -189,6 +197,8 @@ def state_reconcile(_: argparse.Namespace) -> int:
 
 
 def guarded_run(args: argparse.Namespace) -> int:
+    shutdown = GracefulShutdownController()
+    shutdown.install_signal_handlers()
     try:
         database = Database(load_database_settings(Path(".env")))
     except DatabaseConfigError as exc:
@@ -217,11 +227,82 @@ def guarded_run(args: argparse.Namespace) -> int:
                 max_repairs_per_task=args.max_repairs,
                 dry_run=args.dry_run,
             )
-            result = _build_guarded_runner(config, session=session).run(session, config)
+            result = _build_guarded_runner(
+                config,
+                session=session,
+                shutdown_requested=lambda: shutdown.requested,
+            ).run(session, config)
             _print_guarded_result(result)
-            return 0 if result.stop_reason in {"NO_READY_TASK", "COMPLETED_BOUND", "TASK_LIMIT"} else 1
+            successful_stops = {"NO_READY_TASK", "COMPLETED_BOUND", "TASK_LIMIT", "SHUTDOWN_REQUESTED"}
+            return 0 if result.stop_reason in successful_stops else 1
     finally:
         database.dispose()
+
+
+def cleanup(args: argparse.Namespace) -> int:
+    try:
+        database = Database(load_database_settings(Path(".env")))
+    except DatabaseConfigError as exc:
+        print(f"cleanup: database configuration blocked: {exc}", file=sys.stderr)
+        return 2
+
+    policy = RetentionPolicy(
+        stale_active_lease_grace=timedelta(minutes=args.stale_lease_grace_minutes),
+        terminal_lease_retention=(
+            timedelta(days=args.terminal_lease_retention_days)
+            if args.terminal_lease_retention_days is not None
+            else None
+        ),
+        state_snapshot_retention=(
+            timedelta(days=args.state_snapshot_retention_days)
+            if args.state_snapshot_retention_days is not None
+            else None
+        ),
+        minimum_state_snapshots_per_run=args.minimum_state_snapshots_per_run,
+    )
+    try:
+        with database.session() as session:
+            service = RuntimeCleanupService(policy)
+            result = (
+                service.apply(session, human_gate_confirmed=args.confirm_cleanup)
+                if args.apply
+                else service.plan(session)
+            )
+            print(f"status: {result.status}")
+            print(f"dry_run: {result.dry_run}")
+            print(f"human_gate_confirmed: {result.human_gate_confirmed}")
+            print(f"actions: {len(result.actions)}")
+            for action in result.actions:
+                print(f"{action.kind}: {action.target_id} - {action.reason}")
+            if result.blocked_reason:
+                print(f"blocked: {result.blocked_reason}", file=sys.stderr)
+            return 0 if result.status in {"planned", "applied"} else 1
+    finally:
+        database.dispose()
+
+
+def migration_check(args: argparse.Namespace) -> int:
+    try:
+        database = Database(load_database_settings(Path(".env")))
+    except DatabaseConfigError as exc:
+        print(f"migration_check: database configuration blocked: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        with database.session() as session:
+            result = MigrationSafetyChecker().check(session, project_id=args.project)
+            for check in result.checks:
+                print(f"{check.status.upper()} {check.name}: {check.detail}")
+            return 0 if result.ok else 1
+    finally:
+        database.dispose()
+
+
+def backup_guidance(args: argparse.Namespace) -> int:
+    guidance = build_backup_guidance(output_path=Path(args.output))
+    for line in guidance.as_lines():
+        print(line)
+    return 0
 
 
 def _guarded_routing_defaults(args: argparse.Namespace) -> dict[str, str | None]:
@@ -254,7 +335,12 @@ def _guarded_routing_defaults(args: argparse.Namespace) -> dict[str, str | None]
     }
 
 
-def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedAutonomousRunner:
+def _build_guarded_runner(
+    config: GuardedRunConfig,
+    *,
+    session=None,
+    shutdown_requested: Callable[[], bool] | None = None,
+) -> GuardedAutonomousRunner:
     codex_config = CodexConfig.for_scheduler_from_env()
     timeout_policy = ExecutionTimeoutPolicy.for_codex_default(codex_config.default_timeout_seconds)
     if session is not None and config.execution_mode != "bootstrap":
@@ -291,6 +377,7 @@ def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedA
             max_repairs_per_task=config.max_repairs_per_task,
             repair_policy=repair_policy,
         ),
+        shutdown_requested=shutdown_requested,
     )
     return GuardedAutonomousRunner(bounded_runner=bounded, readiness=readiness, codex_config=codex_config)
 
@@ -384,6 +471,26 @@ def build_parser() -> argparse.ArgumentParser:
     guarded_parser.add_argument("--max-repairs", type=int, default=2)
     guarded_parser.add_argument("--dry-run", action="store_true")
     guarded_parser.set_defaults(func=guarded_run)
+
+    maintenance_parser = subparsers.add_parser("maintenance")
+    maintenance_subparsers = maintenance_parser.add_subparsers(required=True)
+
+    cleanup_parser = maintenance_subparsers.add_parser("cleanup")
+    cleanup_parser.add_argument("--apply", action="store_true")
+    cleanup_parser.add_argument("--confirm-cleanup", action="store_true")
+    cleanup_parser.add_argument("--stale-lease-grace-minutes", type=int, default=5)
+    cleanup_parser.add_argument("--terminal-lease-retention-days", type=int)
+    cleanup_parser.add_argument("--state-snapshot-retention-days", type=int)
+    cleanup_parser.add_argument("--minimum-state-snapshots-per-run", type=int, default=1)
+    cleanup_parser.set_defaults(func=cleanup)
+
+    migration_parser = maintenance_subparsers.add_parser("migration-check")
+    migration_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    migration_parser.set_defaults(func=migration_check)
+
+    backup_parser = maintenance_subparsers.add_parser("backup-guidance")
+    backup_parser.add_argument("--output", default="backups/ai-ent-control-plane.dump")
+    backup_parser.set_defaults(func=backup_guidance)
 
     return parser
 

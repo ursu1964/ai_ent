@@ -643,10 +643,15 @@ def test_implementation_plan_dependency_graph_is_acyclic_and_complete() -> None:
 
 
 def test_implementation_plan_classifies_trace_warnings() -> None:
-    plan = generate_implementation_plan(Path("manifest/project/ai-ent"))
+    root = Path("manifest/project/ai-ent")
+    plan = generate_implementation_plan(root)
+    trace = validate_traces(root)
 
-    assert len(plan.warning_classifications) == 44
+    assert len(plan.warning_classifications) == trace.warning_count
     assert {warning.classification for warning in plan.warning_classifications} == {"PLANNING_RELEVANT"}
+    assert {"DATA-004", "OPS-004", "OPS-005", "OPS-006"} <= {
+        warning.subject_id for warning in plan.warning_classifications
+    }
 
 
 def test_implementation_plan_writes_repeatable_artifacts(tmp_path: Path) -> None:
@@ -1001,6 +1006,54 @@ def test_write_dry_run_plan_does_not_freeze_lock(tmp_path: Path) -> None:
 
     assert (tmp_path / "compiled" / "implementation-dry-run.json").exists()
     assert not (tmp_path / "compiled" / "implementation-plan.lock").exists()
+
+
+def test_operation_source_refs_reject_requirement_id_namespace(tmp_path: Path) -> None:
+    source = Path("manifest/project/ai-ent")
+    target = tmp_path / "manifest"
+    _copy_manifest(source, target)
+    operations = target / "operations.yaml"
+    operations.write_text(
+        operations.read_text(encoding="utf-8").replace(
+            "source_refs: [BEAG-001, R17, R20, R21, R22]",
+            "source_refs: [OPS-004]",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = validate_project_manifest(target)
+
+    assert not result.ok
+    assert any("unresolved source_ref OPS-004" in error for error in result.validation_errors)
+
+
+def test_operation_source_refs_preserve_exact_source_corpus_provenance() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+    operations = {str(operation["id"]): operation for operation in compiled.operations}
+
+    assert operations["OP-003"]["source_refs"] == ["BEAG-001", "R17", "R20", "R21", "R22"]
+    assert operations["OP-004"]["source_refs"] == ["BEAG-001", "R17", "R20", "R22"]
+    assert operations["OP-005"]["source_refs"] == ["BEAG-001", "R17", "R22"]
+
+
+def test_operation_source_refs_serialize_readback_deterministically(tmp_path: Path) -> None:
+    first = write_compiled_project(Path("manifest/project/ai-ent"), tmp_path / "first")
+    second = write_compiled_project(Path("manifest/project/ai-ent"), tmp_path / "second")
+    first_ops = first.compiled.as_dict()["operations"]
+    second_ops = second.compiled.as_dict()["operations"]
+
+    assert first.lock.compiled_hash == second.lock.compiled_hash
+    assert first_ops == second_ops
+    assert {
+        operation["id"]: operation["source_refs"]
+        for operation in first_ops
+        if operation["id"] in {"OP-003", "OP-004", "OP-005"}
+    } == {
+        "OP-003": ["BEAG-001", "R17", "R20", "R21", "R22"],
+        "OP-004": ["BEAG-001", "R17", "R20", "R22"],
+        "OP-005": ["BEAG-001", "R17", "R22"],
+    }
 
 
 def _generated_test_task(

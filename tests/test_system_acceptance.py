@@ -60,7 +60,10 @@ def test_saag_accepts_complete_system_with_all_proofs(tmp_path: Path, monkeypatc
         assert len(result.negative_tests) == 6
         assert all(proof.ok for proof in result.proofs)
         assert all(proof.ok for proof in result.negative_tests)
-        assert result.requirement_coverage["covered_requirements"] == 23
+        assert (
+            result.requirement_coverage["covered_requirements"]
+            == result.requirement_coverage["normative_requirements"]
+        )
         assert result.pir_002["residual_gap_count"] == 0
         assert session.scalar(select(func.count()).select_from(Project).where(Project.id == SAAG_PROJECT_ID)) == 0
 
