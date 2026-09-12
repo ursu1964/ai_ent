@@ -1,0 +1,207 @@
+{
+  "phase": "ENV-RESTORE-003",
+  "title": "Restore Docker + Existing PostgreSQL Authority for PRF-008 Verification",
+  "result": "ENVIRONMENT_RESTORED",
+  "generated_at": "2026-09-12T22:23:56Z",
+  "scope": {
+    "environment_recovery_only": true,
+    "product_task_requeued": false,
+    "product_task_executed": false,
+    "execution_created_by_env_restore": false,
+    "lease_created_by_env_restore": false,
+    "worktree_created_by_env_restore": false,
+    "candidate_created_by_env_restore": false,
+    "verification_result_created_by_env_restore": false,
+    "commit_created_by_env_restore": false,
+    "gates_approved": false,
+    "decisions_resolved": false,
+    "frozen_plan_modified": false,
+    "prf_008_modified_files_preserved": true
+  },
+  "docker": {
+    "initial_state": {
+      "docker_service": "inactive",
+      "daemon_socket": "absent",
+      "docker_api": "unavailable"
+    },
+    "restore_action": "started existing docker.service and existing aient-postgres container",
+    "docker_service": "active",
+    "daemon_socket": "/var/run/docker.sock",
+    "docker_ps": "CONTAINER ID   IMAGE         COMMAND                  CREATED      STATUS         PORTS                      NAMES\n6c9004146ce8   postgres:17   \"docker-entrypoint.s...\"   3 days ago   Up 2 minutes   127.0.0.1:5432->5432/tcp   aient-postgres",
+    "compose_version": "Docker Compose version v5.5.1",
+    "authority_container": {
+      "name": "aient-postgres",
+      "id": "6c9004146ce85fec42fbda43b1593b664edf8832582547071af81bd4c28f59a8",
+      "image": "postgres:17",
+      "status": "running",
+      "started_at": "2026-09-12T22:21:50.297695347Z",
+      "ports": "127.0.0.1:5432->5432/tcp",
+      "compose_labels": {}
+    },
+    "authority_volume": {
+      "name": "aient-postgres-data",
+      "driver": "local",
+      "mountpoint": "/var/lib/docker/volumes/aient-postgres-data/_data",
+      "mounted_at": "/var/lib/postgresql/data",
+      "preserved": true
+    },
+    "replacement_container_created": false,
+    "replacement_volume_created": false
+  },
+  "postgresql": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "database": "ai_ent",
+    "safe_url": "postgresql+psycopg://ai_ent:***@localhost:5432/ai_ent",
+    "pg_isready": "127.0.0.1:5432 - accepting connections",
+    "psql_select_1": 1,
+    "sqlalchemy_select_1": 1,
+    "existing_authority_store_confirmed": true,
+    "replacement_database_created": false
+  },
+  "alembic": {
+    "command": "./aient/bin/python -m alembic current",
+    "result": "PASS",
+    "current": "0020 (head)",
+    "unexpected_migrations_applied": false
+  },
+  "runtime_product_state": {
+    "postgresql_authority": {
+      "backend": "postgresql",
+      "status": "active",
+      "run_id": "run-phi-product-plan-7b0342fb7fd5-v1"
+    },
+    "plan_import": {
+      "id": "phi-product-plan-7b0342fb7fd5-v1",
+      "plan_project_id": "PRJ-AI-ENT",
+      "plan_id": "PRODUCT-PLAN-7b0342fb7fd5",
+      "plan_version": "1",
+      "status": "imported",
+      "task_count": 25,
+      "dependency_count": 51,
+      "human_gate_count": 8,
+      "effective_concurrency": 1,
+      "task_fingerprint_hash": "6b1efd5cdc345c1a14578ce49284e973e5afc2623ff621c0580d7a03fd54f190"
+    },
+    "completed_product_tasks": 17,
+    "remaining_product_tasks": 8,
+    "status_counts": {
+      "passed": 17,
+      "pending": 7,
+      "blocked": 1
+    },
+    "readiness_categories": {
+      "BLOCKED_DEPENDENCY": [
+        "PRD-TASK-025"
+      ],
+      "NOT_SCHEDULABLE": [
+        "PRD-TASK-016",
+        "PRD-TASK-018",
+        "PRD-TASK-019",
+        "PRD-TASK-020"
+      ],
+      "TERMINAL": [
+        "PRD-TASK-001",
+        "PRD-TASK-002",
+        "PRD-TASK-003",
+        "PRD-TASK-004",
+        "PRD-TASK-005",
+        "PRD-TASK-006",
+        "PRD-TASK-007",
+        "PRD-TASK-008",
+        "PRD-TASK-009",
+        "PRD-TASK-010",
+        "PRD-TASK-011",
+        "PRD-TASK-012",
+        "PRD-TASK-013",
+        "PRD-TASK-014",
+        "PRD-TASK-015",
+        "PRD-TASK-017",
+        "PRD-TASK-021",
+        "PRD-TASK-022"
+      ],
+      "WAITING_DEPENDENCIES": [
+        "PRD-TASK-023",
+        "PRD-TASK-024"
+      ]
+    },
+    "active_leases": 0,
+    "nonterminal_executions": 0,
+    "recovery": {
+      "action": "READY_TO_CONTINUE",
+      "stage": "BETWEEN_TASKS",
+      "safe_to_continue": true,
+      "interrupted_task_id": null,
+      "remaining_blocker": null
+    },
+    "decisions": {
+      "PRD-DEC-002": "unresolved",
+      "PRD-DEC-003": "unresolved"
+    },
+    "human_gates": {
+      "approved": 4,
+      "pending": 4
+    }
+  },
+  "prd_task_022": {
+    "status": "blocked",
+    "readiness": "TERMINAL",
+    "ready": false,
+    "reasons": [
+      "task_blocked"
+    ],
+    "dependencies": [
+      "PRD-TASK-004",
+      "PRD-TASK-021"
+    ],
+    "attempts": [
+      1,
+      2
+    ],
+    "next_authoritative_attempt": 3,
+    "executions": [
+      {
+        "id": "execution-2b6148d6d55c4845b14eb11bd90d2183",
+        "attempt": 1,
+        "status": "failed",
+        "terminal_state": "failure",
+        "error_classification": "verification_failed",
+        "created_at": "2026-09-12T06:43:15.339914+00:00",
+        "updated_at": "2026-09-12T06:55:23.686950+00:00",
+        "commit_hash": null,
+        "candidate_tree_hash": "e6a99cdece8aca2295748560b8c0dda340c6f819"
+      },
+      {
+        "id": "execution-f4f07c51f43b4f9eb1218a632d11762d",
+        "attempt": 2,
+        "status": "failed",
+        "terminal_state": "failure",
+        "error_classification": "verification_failed",
+        "created_at": "2026-09-12T06:55:23.704895+00:00",
+        "updated_at": "2026-09-12T07:07:37.363127+00:00",
+        "commit_hash": null,
+        "candidate_tree_hash": "6fd6b4c76eea37a8e4f77c24d861ff636ec9fe4f"
+      }
+    ]
+  },
+  "preserved_prf_008_files": {
+    "scripts/bootstrap.py": "a85e929312c1d4aba9702f1fde2d8d989e4a5514b8867dfce39ba49e0cb7adec",
+    "src/ai_ent/runtime_operations.py": "8ee9ef14be7fa73352a16236711181ce90f16ee3a2da966893d9947bee7760a3",
+    "tests/test_runtime_operations.py": "cf9460eb1a93e2d5a628649943d538d723a61dbbcdfb8e39ba177f9d2dfecf05",
+    "artifacts/prf-008/PRF-008.json": "891c317bc8f315f9341f07b1e68638bea4e9ef5bd2f0aeafa26999f2e6465dff",
+    "artifacts/prf-008/PRF-008.md": "c5dc8724be393a3709c5175d8594beeeea197014471cf1a4d50c54e5f4dd0947"
+  },
+  "git": {
+    "head": "c6f02304fe65916ee40b861fb8385dcbffc2334e",
+    "branch": "task/PRF-008/execution-remediation",
+    "commit_created_by_env_restore": false,
+    "modified_files_before_env_restore_artifacts": [
+      "artifacts/prf-008/PRF-008.json",
+      "artifacts/prf-008/PRF-008.md",
+      "scripts/bootstrap.py",
+      "src/ai_ent/runtime_operations.py",
+      "tests/test_runtime_operations.py"
+    ]
+  },
+  "return_status": "ENVIRONMENT_RESTORED"
+}

@@ -236,11 +236,21 @@ class MigrationCheckResult:
 
 
 class MigrationSafetyChecker:
-    def check(self, session: Session, *, project_id: str | None = None) -> MigrationCheckResult:
+    def check(
+        self,
+        session: Session,
+        *,
+        project_id: str | None = None,
+        require_postgresql_dialect: bool = False,
+    ) -> MigrationCheckResult:
         try:
             checks = (
                 self._schema_tables_check(session),
-                self._authority_check(session, project_id),
+                self._authority_check(
+                    session,
+                    project_id,
+                    require_postgresql_dialect=require_postgresql_dialect,
+                ),
                 self._human_gate_check(session),
                 self._verification_profile_check(session),
             )
@@ -259,10 +269,22 @@ class MigrationSafetyChecker:
             return MigrationCheck("schema_tables", "fail", f"missing tables: {', '.join(missing)}")
         return MigrationCheck("schema_tables", "pass", "all mapped tables present")
 
-    def _authority_check(self, session: Session, project_id: str | None) -> MigrationCheck:
+    def _authority_check(
+        self,
+        session: Session,
+        project_id: str | None,
+        *,
+        require_postgresql_dialect: bool,
+    ) -> MigrationCheck:
         bind = session.get_bind()
         dialect_name = getattr(getattr(bind, "dialect", None), "name", "unknown")
         if project_id is None:
+            if require_postgresql_dialect and dialect_name != "postgresql":
+                return MigrationCheck(
+                    "control_plane_authority",
+                    "fail",
+                    f"fallback/non-authoritative database dialect={dialect_name}",
+                )
             missing = sorted(CONTROL_PLANE_TABLES - set(Base.metadata.tables))
             if missing:
                 return MigrationCheck(
@@ -277,21 +299,22 @@ class MigrationSafetyChecker:
             )
         authority = BootstrapRunRepository().get_active_authority(session, project_id)
         if authority is None:
-            stale = session.scalars(
+            marker = session.scalars(
                 select(BootstrapStateAuthority)
                 .where(BootstrapStateAuthority.project_id == project_id)
                 .order_by(BootstrapStateAuthority.updated_at.desc(), BootstrapStateAuthority.id)
             ).first()
-            detail = "active postgresql authority marker missing"
-            if stale is not None:
-                detail = (
-                    "active postgresql authority marker missing; "
-                    f"latest backend={stale.backend} status={stale.status}"
-                )
+            detail = _missing_authority_detail(marker, dialect_name)
             return MigrationCheck(
                 "control_plane_authority",
                 "fail",
                 detail,
+            )
+        if require_postgresql_dialect and dialect_name != "postgresql":
+            return MigrationCheck(
+                "control_plane_authority",
+                "fail",
+                f"active postgresql authority marker is not enough on fallback/non-authoritative dialect={dialect_name}",
             )
         return MigrationCheck(
             "control_plane_authority",
@@ -422,6 +445,20 @@ def _sanitize_error(exc: BaseException) -> str:
     if "password" in message.lower():
         return "database operation failed"
     return message.splitlines()[0] if message else "database operation failed"
+
+
+def _missing_authority_detail(marker: BootstrapStateAuthority | None, dialect_name: str) -> str:
+    if marker is None:
+        return f"unknown authority: active postgresql authority marker missing; dialect={dialect_name}"
+    if marker.backend != "postgresql":
+        return (
+            "fallback/non-authoritative authority marker present; "
+            f"backend={marker.backend} status={marker.status}; dialect={dialect_name}"
+        )
+    return (
+        "postgresql authority configured but unavailable/inactive; "
+        f"backend={marker.backend} status={marker.status}; dialect={dialect_name}"
+    )
 
 
 def _rowcount(result: object) -> int:

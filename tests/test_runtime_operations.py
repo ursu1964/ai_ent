@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ai_ent.persistence.models import (
     Base,
     BootstrapCheckpoint,
+    BootstrapStateAuthority,
     RuntimeHumanGate,
     RuntimePlanImport,
     RuntimeTaskPlanBinding,
@@ -326,6 +327,91 @@ def test_migration_check_blocks_missing_postgresql_authority() -> None:
 
         assert not result.ok
         assert "control_plane_authority" in [failure.name for failure in result.failures]
+
+
+def test_migration_check_distinguishes_sqlite_fallback_from_production_authority() -> None:
+    factory = session_factory()
+    with factory() as session:
+        seed_task(session)
+        bootstrap = BootstrapRunRepository()
+        bootstrap.create_run(
+            session,
+            run_id="run-1",
+            project_id="project-1",
+            manifest_ref="manifest/project/ai-ent",
+        )
+        bootstrap.activate_postgresql_authority(session, project_id="project-1", run_id="run-1")
+
+        result = MigrationSafetyChecker().check(
+            session,
+            project_id="project-1",
+            require_postgresql_dialect=True,
+        )
+
+        assert not result.ok
+        authority_failure = next(failure for failure in result.failures if failure.name == "control_plane_authority")
+        assert "fallback/non-authoritative" in authority_failure.detail
+        assert "dialect=sqlite" in authority_failure.detail
+
+
+def test_migration_check_distinguishes_local_json_fallback_marker() -> None:
+    factory = session_factory()
+    with factory() as session:
+        seed_task(session)
+        bootstrap = BootstrapRunRepository()
+        bootstrap.create_run(
+            session,
+            run_id="run-1",
+            project_id="project-1",
+            manifest_ref="manifest/project/ai-ent",
+        )
+        session.add(
+            BootstrapStateAuthority(
+                id="project-1",
+                project_id="project-1",
+                run_id="run-1",
+                backend="local_json",
+                status="active",
+            )
+        )
+        session.flush()
+
+        result = MigrationSafetyChecker().check(session, project_id="project-1")
+
+        assert not result.ok
+        authority_failure = next(failure for failure in result.failures if failure.name == "control_plane_authority")
+        assert "fallback/non-authoritative authority marker present" in authority_failure.detail
+        assert "backend=local_json status=active" in authority_failure.detail
+
+
+def test_migration_check_distinguishes_stale_postgresql_authority_marker() -> None:
+    factory = session_factory()
+    with factory() as session:
+        seed_task(session)
+        bootstrap = BootstrapRunRepository()
+        bootstrap.create_run(
+            session,
+            run_id="run-1",
+            project_id="project-1",
+            manifest_ref="manifest/project/ai-ent",
+        )
+        session.add(
+            BootstrapStateAuthority(
+                id="project-1",
+                project_id="project-1",
+                run_id="run-1",
+                backend="postgresql",
+                status="pending",
+            )
+        )
+        session.flush()
+
+        result = MigrationSafetyChecker().check(session, project_id="project-1")
+
+        assert not result.ok
+        authority_failure = next(failure for failure in result.failures if failure.name == "control_plane_authority")
+        assert "postgresql authority configured but unavailable/inactive" in authority_failure.detail
+        assert "backend=postgresql status=pending" in authority_failure.detail
 
 
 def test_backup_guidance_and_verification_commands_do_not_render_secret_values() -> None:

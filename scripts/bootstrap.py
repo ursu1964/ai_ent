@@ -290,7 +290,11 @@ def migration_check(args: argparse.Namespace) -> int:
 
     try:
         with database.session() as session:
-            result = MigrationSafetyChecker().check(session, project_id=args.project)
+            result = MigrationSafetyChecker().check(
+                session,
+                project_id=args.project,
+                require_postgresql_dialect=True,
+            )
             for check in result.checks:
                 print(f"{check.status.upper()} {check.name}: {check.detail}")
             return 0 if result.ok else 1
