@@ -159,6 +159,41 @@ def test_preflight_failure_stops_before_recovery_or_scheduling() -> None:
     assert bounded.calls == 0
 
 
+def test_product_routing_mismatch_stops_before_recovery_or_scheduling() -> None:
+    from ai_ent.persistence.models import Project
+    from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
+    from tests.test_product_runtime_handoff import session_factory
+
+    factory = session_factory()
+    with factory() as session:
+        session.add(Project(id="ai-ent", name="Bootstrap"))
+        session.flush()
+        recovery = FakeRecovery(clean_recovery())
+        readiness = FakeReadiness(("TASK-0001",))
+        bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
+        runner = make_runner(recovery=recovery, readiness=readiness, bounded=bounded)
+
+        result = runner.run(
+            session,
+            GuardedRunConfig(
+                project_id="ai-ent",
+                execution_mode="product",
+                expected_project_id=DEFAULT_RUNTIME_PROJECT_ID,
+                expected_plan_id="PRODUCT-PLAN-7b0342fb7fd5",
+                expected_plan_version="1",
+                task_id_prefix="PRD-TASK-",
+            ),
+        )
+
+    assert result.stop_reason == "BLOCKED"
+    assert result.human_action_required
+    assert "PROJECT_PLAN_ROUTING_MISMATCH" in result.blockers[0]
+    assert "requested_project_mismatch" in result.blockers[0]
+    assert recovery.calls == 0
+    assert readiness.calls == 0
+    assert bounded.calls == 0
+
+
 def test_codex_not_configured_stops_safely_without_scheduling() -> None:
     bounded = FakeBoundedRunner(bounded_result("NO_READY_TASK"))
     runner = make_runner(

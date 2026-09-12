@@ -21,6 +21,9 @@ from ai_ent.bootstrap.state_reconciliation import BootstrapStateReconciler
 from ai_ent.bootstrap.verifier import verify_task
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
+from ai_ent.post_implementation import PRIOR_RUNTIME_PLAN_ID
+from ai_ent.product_runtime_handoff import PRODUCT_PLAN_ID, PRODUCT_PLAN_VERSION
+from ai_ent.residual_runtime_handoff import RESIDUAL_PLAN_ID, RESIDUAL_PLAN_VERSION
 from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID, build_runtime_manifest_tasks
 from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
@@ -31,6 +34,7 @@ from ai_ent.scheduler.iteration import (
     ExecutionTimeoutPolicy,
     SchedulerIterationService,
 )
+from ai_ent.scheduler.readiness import TaskReadinessService
 from ai_ent.scheduler.repair import RepairExecutionService, RepairPlanner, RepairPolicy
 
 
@@ -199,8 +203,14 @@ def guarded_run(args: argparse.Namespace) -> int:
 
     try:
         with database.session() as session:
+            routing = _guarded_routing_defaults(args)
             config = GuardedRunConfig(
                 project_id=args.project,
+                execution_mode=args.execution_mode,
+                expected_project_id=routing["expected_project_id"],
+                expected_plan_id=routing["expected_plan_id"],
+                expected_plan_version=routing["expected_plan_version"],
+                task_id_prefix=routing["task_id_prefix"],
                 max_tasks_per_run=args.max_tasks,
                 max_wall_clock_seconds=args.max_seconds,
                 max_failures_per_run=args.max_failures,
@@ -214,17 +224,49 @@ def guarded_run(args: argparse.Namespace) -> int:
         database.dispose()
 
 
+def _guarded_routing_defaults(args: argparse.Namespace) -> dict[str, str | None]:
+    if args.execution_mode == "bootstrap":
+        return {
+            "expected_project_id": args.project,
+            "expected_plan_id": None,
+            "expected_plan_version": None,
+            "task_id_prefix": args.task_prefix or "TASK-",
+        }
+    if args.execution_mode == "original":
+        return {
+            "expected_project_id": args.project,
+            "expected_plan_id": args.plan_id or PRIOR_RUNTIME_PLAN_ID,
+            "expected_plan_version": args.plan_version or "1",
+            "task_id_prefix": args.task_prefix or "IMPL-",
+        }
+    if args.execution_mode == "residual":
+        return {
+            "expected_project_id": args.project,
+            "expected_plan_id": args.plan_id or RESIDUAL_PLAN_ID,
+            "expected_plan_version": args.plan_version or RESIDUAL_PLAN_VERSION,
+            "task_id_prefix": args.task_prefix or "RES-",
+        }
+    return {
+        "expected_project_id": DEFAULT_RUNTIME_PROJECT_ID,
+        "expected_plan_id": args.plan_id or PRODUCT_PLAN_ID,
+        "expected_plan_version": args.plan_version or PRODUCT_PLAN_VERSION,
+        "task_id_prefix": args.task_prefix or "PRD-TASK-",
+    }
+
+
 def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedAutonomousRunner:
     codex_config = CodexConfig.for_scheduler_from_env()
     timeout_policy = ExecutionTimeoutPolicy.for_codex_default(codex_config.default_timeout_seconds)
-    if session is not None and config.project_id == DEFAULT_RUNTIME_PROJECT_ID:
+    if session is not None and config.execution_mode != "bootstrap":
         manifest_tasks = build_runtime_manifest_tasks(session, config.project_id)
     else:
         manifest_tasks = load_tasks()
     repair_policy = RepairPolicy(max_autonomous_repair_attempts=config.max_repairs_per_task)
     execution_runner = ClaimedExecutionRunner(config=codex_config)
     finalizer = ExecutionFinalizer(manifest_tasks=manifest_tasks)
+    readiness = TaskReadinessService(task_id_prefix=config.task_id_prefix)
     scheduler = SchedulerIterationService(
+        readiness=readiness,
         package_factory=ExecutionPackageFactory(
             manifest_tasks=manifest_tasks,
             timeout_policy=timeout_policy,
@@ -250,7 +292,7 @@ def _build_guarded_runner(config: GuardedRunConfig, *, session=None) -> GuardedA
             repair_policy=repair_policy,
         ),
     )
-    return GuardedAutonomousRunner(bounded_runner=bounded, codex_config=codex_config)
+    return GuardedAutonomousRunner(bounded_runner=bounded, readiness=readiness, codex_config=codex_config)
 
 
 def _print_guarded_result(result: GuardedRunResult) -> None:
@@ -327,7 +369,15 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.set_defaults(func=state_reconcile)
 
     guarded_parser = subparsers.add_parser("guarded-run")
-    guarded_parser.add_argument("--project", default="ai-ent")
+    guarded_parser.add_argument("--project", default=DEFAULT_RUNTIME_PROJECT_ID)
+    guarded_parser.add_argument(
+        "--execution-mode",
+        choices=["bootstrap", "original", "residual", "product"],
+        default="product",
+    )
+    guarded_parser.add_argument("--plan-id")
+    guarded_parser.add_argument("--plan-version")
+    guarded_parser.add_argument("--task-prefix")
     guarded_parser.add_argument("--max-tasks", type=int, default=1)
     guarded_parser.add_argument("--max-seconds", type=float, default=900.0)
     guarded_parser.add_argument("--max-failures", type=int, default=1)

@@ -8,17 +8,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ai_ent.bootstrap.codex import CodexConfig
 from ai_ent.bootstrap.paths import ROOT, VENV_PYTHON
+from ai_ent.persistence.models import Project, RuntimePlanImport, RuntimeTaskPlanBinding, Task
 from ai_ent.persistence.repositories.bootstrap import BootstrapRunRepository
 from ai_ent.scheduler.bounded import BoundedRunResult, BoundedSchedulerRunner
 from ai_ent.scheduler.readiness import TaskReadinessService
 from ai_ent.scheduler.recovery import RecoveryResult, SchedulerRecoveryService
 
 AutonomyLevel = Literal["bootstrap"]
+ExecutionMode = Literal["unrestricted", "bootstrap", "original", "residual", "product"]
 GuardedStopReason = Literal[
     "COMPLETED_BOUND",
     "NO_READY_TASK",
@@ -35,6 +38,11 @@ GuardedStopReason = Literal[
 @dataclass(frozen=True)
 class GuardedRunConfig:
     project_id: str = "ai-ent"
+    execution_mode: ExecutionMode = "unrestricted"
+    expected_project_id: str | None = None
+    expected_plan_id: str | None = None
+    expected_plan_version: str | None = None
+    task_id_prefix: str | None = None
     max_tasks_per_run: int = 1
     max_wall_clock_seconds: float = 900.0
     max_failures_per_run: int = 1
@@ -53,6 +61,12 @@ class GuardedPreflightResult:
 
 @dataclass(frozen=True)
 class PostgresAuthorityResult:
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class RoutingValidationResult:
     ok: bool
     detail: str
 
@@ -133,6 +147,20 @@ class GuardedAutonomousRunner:
                 started_at,
                 "RUNTIME_ERROR",
                 blockers=(f"postgresql_authority_required:{authority.detail}",),
+            )
+
+        routing = validate_guarded_routing(session, config)
+        if not routing.ok:
+            return self._record_summary(
+                session,
+                self._result(
+                    run_id,
+                    config,
+                    started_at,
+                    "BLOCKED",
+                    human_action_required=True,
+                    blockers=(routing.detail,),
+                ),
             )
 
         recovery = self.recovery.recover_project(session, project_id=config.project_id)
@@ -315,6 +343,153 @@ def require_postgresql_authority(session: Session, project_id: str) -> PostgresA
     if authority is None:
         return PostgresAuthorityResult(False, "active postgresql authority marker missing")
     return PostgresAuthorityResult(True, f"postgresql authority active for run {authority.run_id}")
+
+
+def validate_guarded_routing(session: Session, config: GuardedRunConfig) -> RoutingValidationResult:
+    """Validate project/plan/namespace routing before scheduler readiness or claim."""
+
+    if config.execution_mode == "unrestricted":
+        return RoutingValidationResult(True, "routing validation not requested")
+
+    project = session.get(Project, config.project_id)
+    if project is None:
+        return _routing_mismatch(config, reason="project_missing")
+
+    if config.expected_project_id is not None and config.project_id != config.expected_project_id:
+        return _routing_mismatch(
+            config,
+            reason="requested_project_mismatch",
+            actual_project_id=config.project_id,
+        )
+
+    prefix = _expected_task_prefix(config)
+    if config.execution_mode == "bootstrap":
+        return _validate_bootstrap_routing(session, config, prefix)
+    return _validate_runtime_plan_routing(session, config, prefix)
+
+
+def _validate_bootstrap_routing(
+    session: Session,
+    config: GuardedRunConfig,
+    prefix: str | None,
+) -> RoutingValidationResult:
+    imports = _runtime_import_summaries(session, project_id=config.project_id)
+    if imports:
+        return _routing_mismatch(
+            config,
+            reason="bootstrap_project_has_runtime_plan_binding",
+            actual_plan=", ".join(imports),
+        )
+
+    if prefix is not None:
+        mismatches = _task_namespace_mismatches(session, project_id=config.project_id, prefix=prefix)
+        if mismatches:
+            return _routing_mismatch(
+                config,
+                reason="task_namespace_mismatch",
+                actual_namespace=", ".join(mismatches[:5]),
+            )
+    return RoutingValidationResult(True, "bootstrap routing validated")
+
+
+def _validate_runtime_plan_routing(
+    session: Session,
+    config: GuardedRunConfig,
+    prefix: str | None,
+) -> RoutingValidationResult:
+    if config.expected_plan_id is None:
+        return _routing_mismatch(config, reason="expected_plan_required")
+
+    plan_query = (
+        select(RuntimePlanImport)
+        .where(RuntimePlanImport.project_id == config.project_id)
+        .where(RuntimePlanImport.plan_id == config.expected_plan_id)
+        .where(RuntimePlanImport.status == "imported")
+    )
+    if config.expected_plan_version is not None:
+        plan_query = plan_query.where(RuntimePlanImport.plan_version == config.expected_plan_version)
+    plan_import = session.scalars(plan_query.order_by(RuntimePlanImport.imported_at.desc())).first()
+    if plan_import is None:
+        return _routing_mismatch(
+            config,
+            reason="runtime_plan_binding_missing",
+            actual_plan=", ".join(_runtime_import_summaries(session, project_id=config.project_id)) or "none",
+        )
+
+    if prefix is not None:
+        binding_task_ids = tuple(
+            session.scalars(
+                select(RuntimeTaskPlanBinding.task_id)
+                .where(RuntimeTaskPlanBinding.import_id == plan_import.id)
+                .order_by(RuntimeTaskPlanBinding.task_id)
+            ).all()
+        )
+        if not binding_task_ids:
+            return _routing_mismatch(config, reason="runtime_plan_has_no_task_bindings")
+        mismatches = tuple(task_id for task_id in binding_task_ids if not task_id.startswith(prefix))
+        if mismatches:
+            return _routing_mismatch(
+                config,
+                reason="task_namespace_mismatch",
+                actual_namespace=", ".join(mismatches[:5]),
+            )
+
+    return RoutingValidationResult(True, "runtime plan routing validated")
+
+
+def _expected_task_prefix(config: GuardedRunConfig) -> str | None:
+    if config.task_id_prefix is not None:
+        return config.task_id_prefix
+    return {
+        "bootstrap": "TASK-",
+        "original": "IMPL-",
+        "residual": "RES-",
+        "product": "PRD-TASK-",
+    }.get(config.execution_mode)
+
+
+def _task_namespace_mismatches(session: Session, *, project_id: str, prefix: str) -> tuple[str, ...]:
+    return tuple(
+        session.scalars(
+            select(Task.id)
+            .where(Task.project_id == project_id)
+            .where(Task.id.not_like(f"{prefix}%"))
+            .order_by(Task.id)
+        ).all()
+    )
+
+
+def _runtime_import_summaries(session: Session, *, project_id: str) -> tuple[str, ...]:
+    imports = session.scalars(
+        select(RuntimePlanImport)
+        .where(RuntimePlanImport.project_id == project_id)
+        .order_by(RuntimePlanImport.plan_id, RuntimePlanImport.plan_version)
+    ).all()
+    return tuple(f"{row.plan_id}/v{row.plan_version}:{row.status}" for row in imports)
+
+
+def _routing_mismatch(
+    config: GuardedRunConfig,
+    *,
+    reason: str,
+    actual_project_id: str | None = None,
+    actual_plan: str | None = None,
+    actual_namespace: str | None = None,
+) -> RoutingValidationResult:
+    detail = {
+        "reason": reason,
+        "requested_project": config.project_id,
+        "expected_project": config.expected_project_id,
+        "execution_mode": config.execution_mode,
+        "expected_plan": config.expected_plan_id,
+        "expected_plan_version": config.expected_plan_version,
+        "expected_namespace": _expected_task_prefix(config),
+        "actual_project": actual_project_id,
+        "actual_plan": actual_plan,
+        "actual_namespace": actual_namespace,
+    }
+    rendered = ";".join(f"{key}={value}" for key, value in detail.items() if value is not None)
+    return RoutingValidationResult(False, f"PROJECT_PLAN_ROUTING_MISMATCH;{rendered}")
 
 
 def _stop_reason_for_recovery(recovery: RecoveryResult) -> GuardedStopReason:

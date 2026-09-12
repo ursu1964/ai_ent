@@ -62,8 +62,9 @@ class _ProjectGraph:
 class TaskReadinessService:
     """Derived PostgreSQL-backed readiness policy for scheduler selection."""
 
-    def __init__(self, tasks: TaskRepository | None = None) -> None:
+    def __init__(self, tasks: TaskRepository | None = None, *, task_id_prefix: str | None = None) -> None:
         self.tasks = tasks or TaskRepository()
+        self.task_id_prefix = task_id_prefix
 
     def evaluate_task(self, session: Session, task_id: str) -> ReadinessDecision:
         task = self.tasks.get(session, task_id)
@@ -85,6 +86,8 @@ class TaskReadinessService:
         graph = self._load_project_graph(session, project_id)
         ready: list[Task] = []
         for task in sorted(graph.tasks.values(), key=lambda item: (item.created_at, item.id)):
+            if self.task_id_prefix is not None and not task.id.startswith(self.task_id_prefix):
+                continue
             if self._evaluate_loaded(task.id, graph).ready:
                 ready.append(task)
                 if limit is not None and len(ready) >= limit:
