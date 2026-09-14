@@ -1,0 +1,52 @@
+package:
+  id: DEP-PKG-LOCAL-DOCKER-001
+  name: Local Docker host deployment package
+  classification: NORMATIVE
+  target: local_docker_host
+  source_refs:
+    - R12
+    - R20
+    - R21
+    - R22
+    - BEAG-001
+
+decision_dependencies:
+  - PRD-DEC-002
+  - PRD-DEC-003
+
+authority:
+  control_plane_backend: postgresql
+  control_plane_source: manifest/project/ai-ent/project.yaml
+  operator_invocation_required: true
+  completion_authority: bootstrap_acceptance_gate
+
+human_gates:
+  - id: HG-LOCAL-001
+    action: guarded_autonomous_run
+    required: true
+  - id: HG-LOCAL-002
+    action: migration_or_restore
+    required: true
+  - id: HG-LOCAL-003
+    action: cloud_target_selection
+    required: true
+
+migration_boundaries:
+  - id: MB-LOCAL-001
+    boundary: docker_host_only
+    future_cloud_status: deferred
+  - id: MB-LOCAL-002
+    boundary: package_must_not_redefine_control_plane_authority
+    future_cloud_status: decision_required
+
+verification:
+  independent_verification_mandatory: true
+  commands:
+    - /home/user/projects/ai_ent/aient/bin/python -m pytest -q
+    - /home/user/projects/ai_ent/aient/bin/python -m ruff check .
+    - /home/user/projects/ai_ent/aient/bin/python -m pyright
+
+secret_policy:
+  embedded_secret_values_allowed: false
+  operator_provided_environment:
+    - AIENT_DB_PASSWORD

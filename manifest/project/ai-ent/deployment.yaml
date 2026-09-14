@@ -3,4 +3,14 @@ deployment:
   classification: FUTURE/DEFERRED
   source_refs: [R12, R20]
   current_mode: local_development
+  package_refs:
+    - DEP-PKG-LOCAL-DOCKER-001
+  local_docker_package:
+    path: deployment/local-docker
+    portability_contract: deployment/local-docker/portability.yaml
+    compose_file: deployment/local-docker/compose.yaml
+    private_environment_boundary: operator_supplied_runtime_values
+    decision_dependencies:
+      - PRD-DEC-002
+      - PRD-DEC-003
   next_required_decision: production hosting target

@@ -1,0 +1,42 @@
+name: ai-ent-local
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${AIENT_DB_NAME:-ai_ent}
+      POSTGRES_USER: ${AIENT_DB_USER:-ai_ent}
+      POSTGRES_PASSWORD: ${AIENT_DB_PASSWORD:?set AIENT_DB_PASSWORD in the operator environment}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  operator:
+    build:
+      context: ../..
+      dockerfile: deployment/local-docker/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIENT_DB_HOST: postgres
+      AIENT_DB_PORT: "5432"
+      AIENT_DB_NAME: ${AIENT_DB_NAME:-ai_ent}
+      AIENT_DB_USER: ${AIENT_DB_USER:-ai_ent}
+      AIENT_DB_PASSWORD: ${AIENT_DB_PASSWORD:?set AIENT_DB_PASSWORD in the operator environment}
+    profiles:
+      - operator
+    command:
+      - python
+      - scripts/bootstrap.py
+      - status
+
+volumes:
+  postgres-data: {}

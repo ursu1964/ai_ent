@@ -5,6 +5,8 @@ deployment:
   topology: modular_monolith_first
   database: postgresql
   runtime_mode: guarded_operator_invoked
+  local_package_ref: DEP-PKG-LOCAL-DOCKER-001
+  migration_boundary: local_docker_host_only_until_cloud_target_decisions
   deferred:
     - distributed_workers
     - production_cloud_deployment

@@ -24,3 +24,8 @@ operations:
     classification: NORMATIVE
     source_refs: [BEAG-001, R17, R22]
     command: ./aient/bin/python scripts/bootstrap.py maintenance backup-guidance
+  - id: OP-006
+    name: Deployment portability validation
+    classification: NORMATIVE
+    source_refs: [BEAG-001, R12, R20, R21, R22]
+    command: ./aient/bin/python scripts/deployment_portability.py validate
