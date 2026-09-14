@@ -9,6 +9,7 @@ from typing import Literal
 
 from sqlalchemy.orm import Session
 
+from ai_ent.scheduler.durability import persist_execution_ownership
 from ai_ent.scheduler.execution import ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer, SuccessfulFinalizationKind
 from ai_ent.scheduler.iteration import SchedulerIterationResult, SchedulerIterationService
@@ -163,6 +164,7 @@ class BoundedSchedulerRunner:
                 stop_reason = "RUNTIME_ERROR"
                 break
 
+            self._persist_claim_boundary(session, scheduled)
             tasks_attempted += 1
             last_task_id = scheduled.package.task_id
             last_execution_id = scheduled.package.execution_id
@@ -292,6 +294,17 @@ class BoundedSchedulerRunner:
         commit = getattr(session, "commit", None)
         if callable(commit):
             commit()
+
+    def _persist_claim_boundary(self, session: Session, scheduled: SchedulerIterationResult) -> None:
+        if scheduled.task is None or scheduled.execution is None or scheduled.lease is None:
+            return
+        persist_execution_ownership(
+            session,
+            task_id=scheduled.task.id,
+            execution_id=scheduled.execution.id,
+            lease_id=scheduled.lease.id,
+            owner_id=self.scheduler.owner_id,
+        )
 
     def _record_executor_failure(
         self,

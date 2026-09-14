@@ -17,6 +17,7 @@ from ai_ent.persistence.repositories.checkpoints import CheckpointRepository
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.persistence.repositories.tasks import TaskRepository
 from ai_ent.scheduler.claiming import TaskClaimingService, database_now
+from ai_ent.scheduler.durability import persist_execution_ownership
 from ai_ent.scheduler.execution import ClaimedExecutionResult, ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizationResult, ExecutionFinalizer
 
@@ -350,6 +351,13 @@ class RepairExecutionService:
                 reason=decision.action,
             )
 
+        if decision.next_execution is not None:
+            persist_execution_ownership(
+                session,
+                task_id=decision.task.id,
+                execution_id=decision.next_execution.id,
+                owner_id=self.owner_id,
+            )
         executed = self.runner.run_claimed(
             session,
             package=decision.next_package,

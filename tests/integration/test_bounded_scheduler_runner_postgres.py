@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import unittest
@@ -15,16 +16,18 @@ from sqlalchemy import select
 
 from ai_ent.bootstrap.codex import CodexConfig
 from ai_ent.bootstrap.git import require_git
-from ai_ent.bootstrap.models import BootstrapTask, VerificationSpec
+from ai_ent.bootstrap.models import BootstrapTask, ExecutionPackage, VerificationSpec
+from ai_ent.bootstrap.worktree import create_execution_worktree
 from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
 from ai_ent.persistence.database import Database
 from ai_ent.persistence.migrations import build_alembic_config
 from ai_ent.persistence.models import Checkpoint, Execution, Task, TaskLease
 from ai_ent.persistence.repositories import ProjectRepository, TaskRepository
 from ai_ent.scheduler.bounded import BoundedRunLimits, BoundedSchedulerRunner
-from ai_ent.scheduler.execution import ClaimedExecutionRunner
+from ai_ent.scheduler.execution import ClaimedExecutionResult, ClaimedExecutionRunner
 from ai_ent.scheduler.finalization import ExecutionFinalizer
 from ai_ent.scheduler.iteration import ExecutionPackageFactory, SchedulerIterationService
+from ai_ent.scheduler.recovery import SchedulerRecoveryService
 from ai_ent.scheduler.repair import RepairExecutionService, RepairPlanner, RepairPolicy
 from tests.integration.helpers import clean_test_tables, make_test_project_id, make_test_suffix
 
@@ -359,5 +362,102 @@ def test_postgres_terminal_failure_survives_outer_stop_path_rollback(tmp_path: P
         with database.session() as session:
             executions = session.scalars(select(Execution).where(Execution.task_id.in_([task_a.id, task_b.id]))).all()
             remove_task_worktrees(root, (task_a.id, task_b.id), executions)
+        clean_test_tables(database)
+        database.dispose()
+
+
+def test_postgres_claim_survives_interruption_after_worktree_side_effect(tmp_path: Path) -> None:
+    class InterruptAfterWorktreeRunner:
+        def __init__(self, database: Database, worktree_root: Path) -> None:
+            self.database = database
+            self.worktree_root = worktree_root
+            self.worktree_path: Path | None = None
+
+        def run_claimed(self, session: object, *, package: ExecutionPackage, owner_id: str) -> ClaimedExecutionResult:
+            with self.database.session() as check_session:
+                assert check_session.get(Execution, package.execution_id) is not None
+                lease = check_session.scalars(
+                    select(TaskLease).where(
+                        TaskLease.task_id == package.task_id,
+                        TaskLease.execution_id == package.execution_id,
+                        TaskLease.status == "active",
+                    )
+                ).one_or_none()
+                assert lease is not None
+
+            self.worktree_path = create_execution_worktree(
+                package.task_id,
+                package.execution_id,
+                base_ref=require_git(["rev-parse", "HEAD"], cwd=Path.cwd()),
+                root=Path.cwd(),
+                worktree_root=self.worktree_root,
+            )
+            (self.worktree_path / "tests" / "fixtures").mkdir(parents=True, exist_ok=True)
+            (self.worktree_path / "tests" / "fixtures" / "interrupted.txt").write_text(
+                "after durable claim\n",
+                encoding="utf-8",
+            )
+            raise RuntimeError("simulated interruption after worktree side effect")
+
+    database = integration_database()
+    clean_test_tables(database)
+    suffix = make_test_suffix(uuid.uuid4().hex[:8])
+    project_id = make_test_project_id(suffix)
+    task = proof_task(f"TEST-BOUND-DURABLE-{suffix}", "durable_claim.txt", "AIENT_DURABLE_CLAIM=1")
+    manifest_tasks = {task.id: task}
+    root = Path.cwd()
+    worktree_root = tmp_path / "worktrees"
+    interrupting_runner = InterruptAfterWorktreeRunner(database, worktree_root)
+
+    try:
+        with database.session() as session:
+            ProjectRepository().create(session, project_id=project_id, name=f"Project {project_id}")
+            TaskRepository().create(session, task_id=task.id, project_id=project_id, title=task.title)
+
+        try:
+            with database.session() as session:
+                scheduler = SchedulerIterationService(
+                    package_factory=ExecutionPackageFactory(manifest_tasks=manifest_tasks, timeout_seconds=60),
+                    owner_id="worker-1",
+                    lease_duration=timedelta(minutes=10),
+                )
+                BoundedSchedulerRunner(
+                    scheduler=scheduler,
+                    execution_runner=interrupting_runner,  # type: ignore[arg-type]
+                    finalizer=ExecutionFinalizer(manifest_tasks=manifest_tasks),
+                    repair_runner=RepairExecutionService(
+                        planner=RepairPlanner(manifest_tasks=manifest_tasks),
+                        runner=ClaimedExecutionRunner(
+                            config=CodexConfig(command=(sys.executable, "-c", "raise SystemExit(0)")),
+                            repository_path=root,
+                            worktree_root=worktree_root,
+                        ),
+                        finalizer=ExecutionFinalizer(manifest_tasks=manifest_tasks),
+                        repository_path=root,
+                        worktree_root=worktree_root,
+                    ),
+                    limits=BoundedRunLimits(max_tasks_per_run=1, max_failures_per_run=1, max_repairs_per_task=0),
+                ).run(session, project_id=project_id)
+        except RuntimeError as exc:
+            assert str(exc) == "simulated interruption after worktree side effect"
+
+        with database.session() as session:
+            executions = session.scalars(select(Execution).where(Execution.task_id == task.id)).all()
+            leases = session.scalars(select(TaskLease).where(TaskLease.task_id == task.id)).all()
+            recovery = SchedulerRecoveryService(worktree_root=worktree_root).recover_project(session, project_id=project_id)
+
+            assert [execution.status for execution in executions] == ["running"]
+            assert [lease.status for lease in leases] == ["active"]
+            assert session.get(Task, task.id).status == "running"  # type: ignore[union-attr]
+            assert interrupting_runner.worktree_path is not None
+            assert interrupting_runner.worktree_path.exists()
+            assert recovery.remaining_blocker == "running_task_present"
+            assert recovery.execution_id == executions[0].id
+    finally:
+        with database.session() as session:
+            executions = session.scalars(select(Execution).where(Execution.task_id == task.id)).all()
+            remove_task_worktrees(root, (task.id,), executions)
+        if worktree_root.exists():
+            shutil.rmtree(worktree_root, ignore_errors=True)
         clean_test_tables(database)
         database.dispose()
