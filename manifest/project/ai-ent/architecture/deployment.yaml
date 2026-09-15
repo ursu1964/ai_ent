@@ -6,6 +6,31 @@ deployment:
   database: postgresql
   runtime_mode: guarded_operator_invoked
   local_package_ref: DEP-PKG-LOCAL-DOCKER-001
+  access_profile:
+    id: ACCESS-ARCH-LOCAL-LAN-001
+    classification: NORMATIVE
+    source_refs: [R12, R20]
+    local:
+      bind_address: 127.0.0.1
+      port: 8000
+      reverse_proxy_enabled: false
+      tls_enabled: false
+    lan:
+      bind_address: 0.0.0.0
+      enabled: false
+      required_decision: DECISION_REQUIRED:PRD-DEC-002
+      human_gate: GATE-PRD-LAN-ACCESS
+      tls_required: true
+      reverse_proxy_required: true
+    firewall_assumptions:
+      host_firewall_managed_externally: true
+      inbound_lan_ports_allowed: []
+      inbound_public_ports_allowed: []
+      operator_confirmation_required_for_changes: true
+    safeguards:
+      control_plane_authority: preserved
+      independent_verification_required: true
+      credential_values_exposed: false
   migration_boundary: local_docker_host_only_until_cloud_target_decisions
   deferred:
     - distributed_workers

@@ -10,6 +10,20 @@ package:
     - R22
     - BEAG-001
 
+package_files:
+  - path: deployment/local-docker/README.md
+    role: operator_instructions
+    classification: NORMATIVE
+  - path: deployment/local-docker/Dockerfile
+    role: operator_image
+    classification: NORMATIVE
+  - path: deployment/local-docker/compose.yaml
+    role: local_host_orchestration
+    classification: NORMATIVE
+  - path: deployment/local-docker/portability.yaml
+    role: portability_contract
+    classification: NORMATIVE
+
 decision_dependencies:
   - PRD-DEC-002
   - PRD-DEC-003

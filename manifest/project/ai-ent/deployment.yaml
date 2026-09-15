@@ -14,3 +14,35 @@ deployment:
       - PRD-DEC-002
       - PRD-DEC-003
   next_required_decision: production hosting target
+  access_profile:
+    id: ACCESS-LOCAL-LAN-001
+    classification: NORMATIVE
+    source_refs: [R12, R20]
+    active_profile: local_loopback
+    configured_profiles: [local_loopback, lan_gated]
+    binding:
+      bind_address: 127.0.0.1
+      port: 8000
+      lan_bind_address: 0.0.0.0
+      lan_access_enabled: false
+      blocked_by_decisions: [DECISION_REQUIRED:PRD-DEC-002]
+    reverse_proxy:
+      enabled: false
+      provider: none
+      allowed_providers: [caddy, nginx]
+      decision_dependency: DECISION_REQUIRED:PRD-DEC-002
+    tls:
+      enabled: false
+      mode: disabled_for_loopback
+      required_for_lan: true
+      certificate_material: not_configured_until_decision
+    firewall_assumptions:
+      host_firewall_managed_externally: true
+      inbound_lan_ports_allowed: []
+      inbound_public_ports_allowed: []
+      operator_confirmation_required_for_changes: true
+    safeguards:
+      control_plane_authority: preserved
+      human_gate: GATE-PRD-LAN-ACCESS
+      independent_verification_required: true
+      credential_values_exposed: false

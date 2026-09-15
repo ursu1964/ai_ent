@@ -16,6 +16,7 @@ from ai_ent.e2e_application_proof import (
     run_first_application_creation_proof,
     write_first_application_creation_proof,
 )
+from ai_ent.external_project import MANDATORY_VERIFICATION_COMMANDS
 from ai_ent.persistence.models import Base, RuntimePlanImport, RuntimeTaskPlanBinding
 from tests.test_post_implementation import (
     import_residual_plan,
@@ -66,8 +67,13 @@ def test_e2e_001_generates_runnable_team_work_tracker(
         assert result.result == "ACCEPTED_WITH_LIMITATIONS"
         assert result.target_project_id == TARGET_PROJECT_ID
         assert result.application_commit
-        runtime_proof = next(proof for proof in result.proofs if proof.proof_id == "I")
+        runtime_proof = _proof(result, "I")
         runtime_import = runtime_proof.details["runtime_import"]
+        functional_proof = _proof(result, "K")
+        provenance_proof = _proof(result, "M")
+        app_source = (
+            tmp_path / "team-work-tracker" / "src" / "team_work_tracker" / "app.py"
+        ).read_text(encoding="utf-8")
         assert all(proof.status in {"PASS", "SKIPPED"} for proof in result.proofs)
         assert runtime_import["status"] == "IMPORTED"
         assert runtime_import["control_plane_authority"] == "existing_ai_enterprise_control_plane"
@@ -75,10 +81,63 @@ def test_e2e_001_generates_runnable_team_work_tracker(
         assert runtime_import["verifier_bypass_authority"] is False
         assert runtime_import["implicit_human_gate_approval"] is False
         assert runtime_import["independent_verification_required"] is True
+        assert runtime_import["mandatory_verification_commands"] == list(
+            MANDATORY_VERIFICATION_COMMANDS
+        )
+        assert runtime_proof.details["scope_checked"] is True
+        assert runtime_proof.details["independent_verification"] is True
+        assert runtime_proof.details["effective_concurrency"] == 1
+        assert runtime_proof.details["implementation_tasks_completed"] == 6
+        assert runtime_import["runtime_ready_tasks"] == ["TWT-001-MANIFEST"]
+        assert runtime_import["gated_not_ready_tasks"] == []
+        assert runtime_import["human_gates_bound"] == 0
+        assert runtime_import["human_gate_bindings"] == []
+        assert runtime_import["runtime_binding"]["pending_human_gates"] == []
+        assert runtime_import["runtime_binding"]["approved_human_gates"] == []
+        assert runtime_import["blockers"] == []
+
+        journey = functional_proof.details["journey"]
+        assert journey["updated_status"] == "in_progress"
+        assert journey["project_detail"] == "Website Refresh"
+        assert journey["task_detail"] == "Draft homepage copy"
+        assert journey["filtered_count"] == 1
+        assert journey["member_visible_tasks"] == 1
+        assert journey["audit_events"] >= 4
+        assert functional_proof.details["persisted_after_restart"] == {
+            "done": 0,
+            "in_progress": 1,
+            "projects_total": 1,
+            "tasks_total": 1,
+            "todo": 0,
+        }
+        assert functional_proof.details["restart_persistence"] is True
+
+        assert "<h1>Team Work Tracker</h1>" in app_source
+        assert 'parsed.path == "/"' in app_source
+        assert 'parsed.path == "/api/projects"' in app_source
+        assert 'parsed.path == "/api/tasks"' in app_source
+        assert 'parsed.path == "/api/dashboard"' in app_source
+
+        provenance = provenance_proof.details
+        assert provenance["request_to_requirements"] is True
+        assert provenance["requirements_to_architecture"] is True
+        assert provenance["architecture_to_tasks"] is True
+        assert provenance["tasks_to_generated_source"] is True
+        assert provenance["verification_to_commit"] is True
+        assert provenance["application_commit"] == result.application_commit
+        assert provenance["target_plan_hash"] == result.target_plan_hash
+        assert provenance["artifact_evidence_graph_role"] == (
+            "NON_AUTHORITATIVE provenance/index"
+        )
         assert session.get(RuntimePlanImport, "rhi-plan-e2e-team-work-tracker-v1") is not None
         assert session.get(RuntimeTaskPlanBinding, "TWT-006-TEST-E2E") is not None
         assert (tmp_path / "team-work-tracker" / "src" / "team_work_tracker" / "app.py").exists()
         assert (tmp_path / "team-work-tracker" / ".ai-enterprise" / "manifest" / "implementation-plan.json").exists()
+        rendered_result = str(result.as_dict())
+        assert "admin-pass" not in rendered_result
+        assert "member-pass" not in rendered_result
+        assert "admin_token" not in rendered_result
+        assert "tok_" not in rendered_result
 
 
 def test_e2e_001_writer_is_deterministic_for_same_inputs(
@@ -129,8 +188,12 @@ def test_acceptance_hash_changes_for_material_runtime_and_proof_changes() -> Non
 
 
 def _runtime_import_status(result: E2EApplicationProofResult) -> str:
-    proof = next(proof for proof in result.proofs if proof.proof_id == "I")
+    proof = _proof(result, "I")
     return str(proof.details["runtime_import"]["status"])
+
+
+def _proof(result: E2EApplicationProofResult, proof_id: str) -> E2EProof:
+    return next(proof for proof in result.proofs if proof.proof_id == proof_id)
 
 
 def _hash_for_runtime_import_status(

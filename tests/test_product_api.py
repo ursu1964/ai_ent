@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -20,14 +20,17 @@ from ai_ent.persistence.models import (
 )
 from ai_ent.product_plan_final_acceptance import PRODUCT_PLAN_ID
 from ai_ent.product_runtime_handoff import ProductRuntimePlanImporter
+from ai_ent.project_manifest import PROJECT_MANIFEST_ROOT as MANIFEST_ROOT
 from ai_ent_product_api import PRODUCT_API_PREFIX, create_app
 from ai_ent_product_api.errors import (
     ProductApiError,
     validation_error_response,
 )
 from ai_ent_product_api.schemas import (
+    PRODUCT_API_ACCESS_DECISION_DEPENDENCIES,
     PRODUCT_API_DECISION_DEPENDENCIES,
     GovernanceValidationRequest,
+    RuntimeComponentStatus,
 )
 from ai_ent_product_api.services import (
     GovernanceValidationService,
@@ -35,8 +38,14 @@ from ai_ent_product_api.services import (
     ProductBoundaryService,
     ProductHumanApprovalService,
     ProductRuntimeSnapshotService,
+    RuntimeProbeProvider,
+    RuntimeStatusService,
 )
 from tests import test_product_runtime_handoff as runtime_handoff_tests
+
+type ComponentName = Literal["readiness", "recovery", "docker", "codex", "postgresql"]
+type ComponentState = Literal["available", "unavailable", "unknown"]
+type ComponentProbe = Callable[[], RuntimeComponentStatus]
 
 
 def test_boundary_snapshot_preserves_control_plane_authority_and_gates() -> None:
@@ -45,24 +54,71 @@ def test_boundary_snapshot_preserves_control_plane_authority_and_gates() -> None
 
     assert snapshot.control_plane_authority == CONTROL_PLANE_AUTHORITY
     assert snapshot.authority_mode == "facade_only"
+    assert snapshot.operation_mode == "read_only_projection"
     assert snapshot.grants_control_plane_authority is False
     assert snapshot.gate_approval_authority is False
     assert snapshot.verifier_bypass_authority is False
     assert snapshot.commit_boundary_bypass_authority is False
     assert snapshot.scheduling_authority is False
     assert snapshot.runtime_execution_authority is False
+    assert snapshot.repair_execution_authority is False
+    assert snapshot.artifact_authority is False
     assert snapshot.policy_weakening_authority is False
+    assert snapshot.mutating_operations_exposed is False
     assert snapshot.implicit_human_gate_approval is False
     assert snapshot.independent_verification_required is True
     assert snapshot.mandatory_verification_commands == MANDATORY_VERIFICATION_COMMANDS
     assert snapshot.decision_dependencies == PRODUCT_API_DECISION_DEPENDENCIES
     assert "DECISION_REQUIRED:PRD-DEC-001" in snapshot.decision_dependencies
+    assert "read_artifact_metadata" in snapshot.allowed_operations
+    assert "query_provenance" in snapshot.allowed_operations
     assert "read_human_gate_review" in snapshot.allowed_operations
     assert "validate_human_gate_evidence" in snapshot.allowed_operations
     assert "submit_human_gate_decision" in snapshot.allowed_operations
     assert "approve_gate" in snapshot.denied_operations
+    assert "claim_task" in snapshot.denied_operations
+    assert "execute_repair" in snapshot.denied_operations
+    assert "record_evidence" in snapshot.denied_operations
     assert "schedule_execution" in snapshot.denied_operations
     assert snapshot.secret_values_exposed is False
+
+
+def test_access_profile_is_explicit_local_first_and_decision_gated() -> None:
+    services = ProductApiServices.defaults()
+    snapshot = services.access_profile()
+
+    assert snapshot.profile_id == "ACCESS-LOCAL-LAN-001"
+    assert snapshot.active_profile == "local_loopback"
+    assert snapshot.configured_profiles == ("local_loopback", "lan_gated")
+    assert snapshot.binding.bind_address == "127.0.0.1"
+    assert snapshot.binding.port == 8000
+    assert snapshot.binding.lan_bind_address == "0.0.0.0"
+    assert snapshot.binding.effective_bind_address == "127.0.0.1"
+    assert snapshot.binding.network_scope == "local_loopback"
+    assert snapshot.binding.lan_access_enabled is False
+    assert snapshot.binding.blocked_by_decisions == PRODUCT_API_ACCESS_DECISION_DEPENDENCIES
+    assert snapshot.reverse_proxy.enabled is False
+    assert snapshot.reverse_proxy.provider == "none"
+    assert snapshot.reverse_proxy.allowed_providers == ("caddy", "nginx")
+    assert snapshot.reverse_proxy.decision_dependency == "DECISION_REQUIRED:PRD-DEC-002"
+    assert snapshot.tls.enabled is False
+    assert snapshot.tls.mode == "disabled_for_loopback"
+    assert snapshot.tls.required_for_lan is True
+    assert snapshot.firewall_assumptions.host_firewall_managed_externally is True
+    assert snapshot.firewall_assumptions.inbound_lan_ports_allowed == ()
+    assert snapshot.firewall_assumptions.operator_confirmation_required_for_changes is True
+    assert snapshot.explicit_human_review_required is True
+    assert snapshot.human_gate_id == "GATE-PRD-LAN-ACCESS"
+    assert snapshot.independent_verification_required is True
+    assert snapshot.mandatory_verification_commands == MANDATORY_VERIFICATION_COMMANDS
+    assert snapshot.decision_dependencies == PRODUCT_API_ACCESS_DECISION_DEPENDENCIES
+    assert snapshot.grants_control_plane_authority is False
+    assert snapshot.gate_approval_authority is False
+    assert snapshot.verifier_bypass_authority is False
+    assert snapshot.scheduling_authority is False
+    assert snapshot.runtime_execution_authority is False
+    assert snapshot.credential_values_exposed is False
+    assert snapshot.authority.grants_control_plane_authority is False
 
 
 def test_governance_validation_service_reuses_existing_contract_boundaries() -> None:
@@ -102,6 +158,8 @@ def test_api_shell_exposes_only_versioned_non_authorizing_routes() -> None:
     route_paths = {route.path for route in app.routes}
 
     assert route_paths == {
+        f"{PRODUCT_API_PREFIX}/access-profile",
+        f"{PRODUCT_API_PREFIX}/artifacts/metadata",
         f"{PRODUCT_API_PREFIX}/boundary",
         f"{PRODUCT_API_PREFIX}/governance/requests/validate",
         f"{PRODUCT_API_PREFIX}/health",
@@ -114,9 +172,21 @@ def test_api_shell_exposes_only_versioned_non_authorizing_routes() -> None:
         f"{PRODUCT_API_PREFIX}/openapi.json",
         f"{PRODUCT_API_PREFIX}/plans/generated",
         f"{PRODUCT_API_PREFIX}/plans/generated/dag",
+        f"{PRODUCT_API_PREFIX}/provenance/requirements/{{requirement_id}}",
+        f"{PRODUCT_API_PREFIX}/projects/current",
+        f"{PRODUCT_API_PREFIX}/projects/current/architecture",
+        f"{PRODUCT_API_PREFIX}/projects/current/capabilities/review",
+        f"{PRODUCT_API_PREFIX}/projects/current/intake",
+        f"{PRODUCT_API_PREFIX}/projects/current/requirements",
         f"{PRODUCT_API_PREFIX}/runtime/executions",
+        f"{PRODUCT_API_PREFIX}/runtime/codex",
+        f"{PRODUCT_API_PREFIX}/runtime/docker",
+        f"{PRODUCT_API_PREFIX}/runtime/postgresql",
+        f"{PRODUCT_API_PREFIX}/runtime/readiness",
+        f"{PRODUCT_API_PREFIX}/runtime/recovery",
         f"{PRODUCT_API_PREFIX}/runtime/repairs",
         f"{PRODUCT_API_PREFIX}/runtime/state",
+        f"{PRODUCT_API_PREFIX}/runtime/status",
         f"{PRODUCT_API_PREFIX}/runtime/tasks",
     }
     assert all(path.startswith(PRODUCT_API_PREFIX) for path in route_paths)
@@ -129,6 +199,32 @@ def test_api_shell_exposes_only_versioned_non_authorizing_routes() -> None:
     assert "approve_gate" in boundary["denied_operations"]
 
 
+def test_access_profile_route_uses_versioned_schema_envelope() -> None:
+    result = create_app().get(f"{PRODUCT_API_PREFIX}/access-profile")
+
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload["api_version"] == "v1"
+    assert payload["schema_version"] == "ai-ent-product-api-v1.0"
+    assert payload["data"]["contract_version"] == "prd-task-011.1"
+    assert payload["data"]["binding"] == {
+        "bind_address": "127.0.0.1",
+        "blocked_by_decisions": ["DECISION_REQUIRED:PRD-DEC-002"],
+        "effective_bind_address": "127.0.0.1",
+        "lan_bind_address": "0.0.0.0",
+        "lan_access_enabled": False,
+        "network_scope": "local_loopback",
+        "port": 8000,
+    }
+    assert payload["data"]["reverse_proxy"]["enabled"] is False
+    assert payload["data"]["reverse_proxy"]["provider"] == "none"
+    assert payload["data"]["tls"]["required_for_lan"] is True
+    assert payload["data"]["firewall_assumptions"]["inbound_lan_ports_allowed"] == []
+    assert payload["data"]["decision_dependencies"] == ["DECISION_REQUIRED:PRD-DEC-002"]
+    assert payload["data"]["authority"]["gate_approval_authority"] is False
+    assert payload["data"]["authority"]["independent_verification_required"] is True
+
+
 def test_boundary_response_uses_versioned_schema_envelope() -> None:
     result = create_app().get(f"{PRODUCT_API_PREFIX}/boundary")
 
@@ -136,12 +232,60 @@ def test_boundary_response_uses_versioned_schema_envelope() -> None:
     payload = result.json()
     assert payload["api_version"] == "v1"
     assert payload["schema_version"] == "ai-ent-product-api-v1.0"
-    assert payload["data"]["contract_version"] == "prd-task-009.1"
+    assert payload["data"]["contract_version"] == "prd-task-011.1"
     assert payload["data"]["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
     assert payload["data"]["mandatory_verification_commands"] == list(
         MANDATORY_VERIFICATION_COMMANDS
     )
     assert payload["data"]["decision_dependencies"] == ["DECISION_REQUIRED:PRD-DEC-001"]
+
+
+def test_project_review_endpoints_expose_bounded_manifest_sections() -> None:
+    app = create_app()
+    project = app.get(f"{PRODUCT_API_PREFIX}/projects/current").json()["data"]
+    intake = app.get(f"{PRODUCT_API_PREFIX}/projects/current/intake").json()["data"]
+    requirements = app.get(
+        f"{PRODUCT_API_PREFIX}/projects/current/requirements"
+    ).json()["data"]
+    architecture = app.get(
+        f"{PRODUCT_API_PREFIX}/projects/current/architecture"
+    ).json()["data"]
+
+    assert project["project_id"] == "PRJ-AI-ENT"
+    assert project["project"]["id"] == "PRJ-AI-ENT"
+    assert project["project"]["source_manifest_file"] == "project.yaml"
+    assert len(project["project_hash"]) == 64
+    assert len(project["source_compiled_hash"]) == 64
+    assert intake["project_id"] == "PRJ-AI-ENT"
+    assert intake["intake"]["source_manifest_file"] == "intake.yaml"
+    assert len(intake["intake_hash"]) == 64
+    assert requirements["requirements_count"] == len(requirements["requirements"])
+    assert any(item["id"] == "FR-002" for item in requirements["requirements"])
+    assert len(requirements["requirements_hash"]) == 64
+    assert architecture["component_count"] == len(architecture["architecture"]["components"])
+    assert architecture["interface_count"] == len(architecture["architecture"]["interfaces"])
+    assert architecture["data_object_count"] == len(architecture["architecture"]["data_objects"])
+    assert len(architecture["architecture_hash"]) == 64
+    for payload in (project, intake, requirements, architecture):
+        _assert_bounded_review(payload["review_boundary"])
+
+
+def test_capability_review_requires_independent_verification() -> None:
+    result = create_app().get(
+        f"{PRODUCT_API_PREFIX}/projects/current/capabilities/review"
+    )
+
+    assert result.status_code == 200
+    payload = result.json()["data"]
+    _assert_bounded_review(payload["review_boundary"])
+    assert payload["project_id"] == "PRJ-AI-ENT"
+    assert payload["independent_verification_required"] is True
+    assert payload["mandatory_verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+    assert payload["capability_count"] == len(payload["capabilities"])
+    assert len(payload["capability_resolution_hash"]) == 64
+    assert set(payload["blocked_capabilities"]).issubset(
+        {item["capability_id"] for item in payload["capabilities"]}
+    )
 
 
 def test_generated_plan_and_dag_routes_expose_read_only_product_artifacts() -> None:
@@ -155,7 +299,10 @@ def test_generated_plan_and_dag_routes_expose_read_only_product_artifacts() -> N
     assert plan["task_count"] == 25
     assert plan["dependency_edge_count"] == 51
     assert plan["human_gate_count"] == 8
+    assert plan["authority"]["operation_mode"] == "read_only_projection"
+    assert plan["authority"]["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
     assert plan["authority"]["grants_control_plane_authority"] is False
+    assert plan["authority"]["mutating_operations_exposed"] is False
     assert plan["authority"]["runtime_execution_authority"] is False
     assert plan["authority"]["repair_execution_authority"] is False
     assert plan["authority"]["implicit_human_gate_approval"] is False
@@ -170,6 +317,108 @@ def test_generated_plan_and_dag_routes_expose_read_only_product_artifacts() -> N
         "task_id": "PRD-TASK-002",
     }
     assert dag["human_gates"][0]["status"] == "PENDING_NOT_APPROVED"
+
+
+def test_health_response_includes_runtime_status_dependency() -> None:
+    result = create_app(_services_with_runtime_probes()).get(f"{PRODUCT_API_PREFIX}/health")
+
+    assert result.status_code == 200
+    dependencies = result.json()["data"]["dependencies"]
+    assert {
+        "name": "runtime_status",
+        "boundary": "read-only runtime component status facade",
+        "status": "wired",
+    } in dependencies
+
+
+def test_runtime_status_preserves_authority_gates_and_verification_requirements() -> None:
+    result = create_app(_services_with_runtime_probes()).get(f"{PRODUCT_API_PREFIX}/runtime/status")
+
+    assert result.status_code == 200
+    data = result.json()["data"]
+    assert data["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+    assert data["authority_mode"] == "facade_only"
+    assert data["operation_mode"] == "read_only_projection"
+    assert data["grants_control_plane_authority"] is False
+    assert data["gate_approval_authority"] is False
+    assert data["verifier_bypass_authority"] is False
+    assert data["commit_boundary_bypass_authority"] is False
+    assert data["scheduling_authority"] is False
+    assert data["runtime_execution_authority"] is False
+    assert data["repair_execution_authority"] is False
+    assert data["artifact_authority"] is False
+    assert data["policy_weakening_authority"] is False
+    assert data["mutating_operations_exposed"] is False
+    assert data["implicit_human_gate_approval"] is False
+    assert data["independent_verification_required"] is True
+    assert data["mandatory_verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+    assert data["decision_dependencies"] == ["DECISION_REQUIRED:PRD-DEC-001"]
+    assert data["secret_values_exposed"] is False
+
+    for component_name in ("readiness", "recovery", "docker", "codex", "postgresql"):
+        component = data[component_name]
+        assert component["passive_probe"] is True
+        assert component["actions_performed"] is False
+        assert component["grants_control_plane_authority"] is False
+        assert component["gate_approval_authority"] is False
+        assert component["verifier_bypass_authority"] is False
+        assert component["runtime_execution_authority"] is False
+        assert component["secret_values_exposed"] is False
+
+
+def test_runtime_component_routes_return_deterministic_component_statuses() -> None:
+    app = create_app(_services_with_runtime_probes())
+
+    readiness = app.get(f"{PRODUCT_API_PREFIX}/runtime/readiness").json()["data"]
+    recovery = app.get(f"{PRODUCT_API_PREFIX}/runtime/recovery").json()["data"]
+
+    assert readiness["status"] == "available"
+    assert recovery["status"] == "available"
+    assert app.get(f"{PRODUCT_API_PREFIX}/runtime/docker").json()["data"]["details"] == {
+        "docker_command_available": True,
+        "docker_compose_command_available": False,
+    }
+    assert app.get(f"{PRODUCT_API_PREFIX}/runtime/codex").json()["data"]["details"] == {
+        "codex_command_available": True
+    }
+    assert app.get(f"{PRODUCT_API_PREFIX}/runtime/postgresql").json()["data"]["details"] == {
+        "configured": True,
+        "health": "ok",
+    }
+
+
+def test_runtime_status_redacts_probe_details_and_suppresses_probe_exceptions() -> None:
+    def docker_with_secret_details() -> RuntimeComponentStatus:
+        return _component(
+            "docker",
+            "available",
+            details={
+                "api_token": "token-value",
+                "message": "Bearer nested-secret-token",
+                "nested": {"password": "password-value", "safe": "visible"},
+            },
+        )
+
+    def codex_raises_with_secret() -> RuntimeComponentStatus:
+        raise RuntimeError("Bearer secret-token")
+
+    services = _services_with_runtime_probes(
+        docker=docker_with_secret_details,
+        codex=codex_raises_with_secret,
+    )
+
+    payload = create_app(services).get(f"{PRODUCT_API_PREFIX}/runtime/status").json()
+
+    assert "token-value" not in str(payload)
+    assert "password-value" not in str(payload)
+    assert "nested-secret-token" not in str(payload)
+    assert "Bearer secret-token" not in str(payload)
+    assert payload["data"]["docker"]["details"]["api_token"] == "<redacted>"
+    assert payload["data"]["docker"]["details"]["message"] == "<redacted>"
+    assert payload["data"]["docker"]["details"]["nested"]["password"] == "<redacted>"
+    assert payload["data"]["docker"]["details"]["nested"]["safe"] == "visible"
+    assert payload["data"]["codex"]["status"] == "unknown"
+    assert payload["data"]["codex"]["details"] == {"error": "status probe failed"}
 
 
 def test_runtime_task_execution_repair_and_state_routes_are_observational() -> None:
@@ -218,6 +467,84 @@ def test_runtime_task_execution_repair_and_state_routes_are_observational() -> N
     assert state["active_leases"] == 1
     assert state["authority"]["gate_approval_authority"] is False
     assert state["authority"]["scheduling_authority"] is False
+    for collection in (tasks, executions, repairs, state):
+        assert collection["authority"]["operation_mode"] == "read_only_projection"
+        assert collection["authority"]["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+        assert collection["authority"]["mutating_operations_exposed"] is False
+        assert collection["authority"]["independent_verification_required"] is True
+        assert collection["authority"]["secret_values_exposed"] is False
+        assert "claim_task" in collection["authority"]["denied_operations"]
+        assert "execute_runtime" in collection["authority"]["denied_operations"]
+        assert "execute_repair" in collection["authority"]["denied_operations"]
+
+
+def test_artifact_metadata_and_provenance_routes_are_redacted_and_non_authoritative() -> None:
+    app = _seeded_product_runtime_app()
+
+    metadata = app.get(f"{PRODUCT_API_PREFIX}/artifacts/metadata").json()["data"]
+    provenance = app.get(
+        f"{PRODUCT_API_PREFIX}/provenance/requirements/NFR-002"
+    ).json()["data"]
+
+    checkpoint_artifact = next(
+        artifact
+        for artifact in metadata["artifacts"]
+        if artifact["source"] == "execution-checkpoint"
+        and artifact["task_id"] == "PRD-TASK-008"
+    )
+    service_boundaries = {
+        boundary["service"]: boundary["interface_id"]
+        for boundary in metadata["service_boundaries"]
+    }
+
+    assert metadata["contract_version"] == "prd-task-011.1"
+    assert metadata["graph_available"] is True
+    assert metadata["output_authority_state"] == "NON_AUTHORITATIVE"
+    assert metadata["payloads_redacted"] is True
+    assert metadata["secret_values_exposed"] is False
+    assert metadata["summary"]["output_authority_state"] == "NON_AUTHORITATIVE"
+    assert metadata["summary"]["artifact_record_count"] == len(metadata["artifacts"])
+    assert checkpoint_artifact["kind"] == "execution_evidence"
+    assert checkpoint_artifact["execution_id"] == "execution-product-api-1"
+    assert checkpoint_artifact["payload_redacted"] is True
+    assert "payload" not in checkpoint_artifact
+    assert len(checkpoint_artifact["payload_hash"]) == 64
+    assert {
+        "artifact-evidence-graph",
+        "deterministic-validator",
+        "project-memory",
+        "runtime-kernel",
+    } <= set(service_boundaries)
+    assert metadata["authority"]["artifact_authority"] is False
+    assert metadata["authority"]["gate_approval_authority"] is False
+    assert metadata["authority"]["independent_verification_required"] is True
+    assert metadata["authority"]["mandatory_verification_commands"] == list(
+        MANDATORY_VERIFICATION_COMMANDS
+    )
+    assert "record_evidence" in metadata["authority"]["denied_operations"]
+
+    assert provenance["query_kind"] == "requirement"
+    assert provenance["requirement_id"] == "NFR-002"
+    assert provenance["requirement_node_id"] == "requirement:NFR-002"
+    assert provenance["output_authority_state"] == "NON_AUTHORITATIVE"
+    assert provenance["payloads_redacted"] is True
+    assert provenance["secret_values_exposed"] is False
+    assert provenance["authority"]["artifact_authority"] is False
+    assert provenance["authority"]["verifier_bypass_authority"] is False
+    assert "record_evidence" in provenance["authority"]["denied_operations"]
+    assert provenance["summary"]["node_count"] == len(provenance["nodes"])
+    assert provenance["summary"]["edge_count"] == len(provenance["edges"])
+    assert provenance["summary"]["edge_count"] > 0
+    assert any(
+        node["node_id"] == "requirement:NFR-002" and node["payload_redacted"] is True
+        for node in provenance["nodes"]
+    )
+    assert all("payload" not in node for node in provenance["nodes"])
+    assert "token-value" not in str(metadata)
+    assert "password-value" not in str(metadata)
+    assert "owner-token-value" not in str(metadata)
+    assert "token-value" not in str(provenance)
+    assert "password-value" not in str(provenance)
 
 
 def test_runtime_task_readiness_projection_distinguishes_pending_human_gate() -> None:
@@ -317,6 +644,8 @@ def test_human_gate_review_and_evidence_routes_are_explicit_and_non_authorizing(
     assert validation["valid"] is True
     assert validation["missing_expected_evidence"] == []
     assert validation["missing_mandatory_verification_commands"] == []
+    assert validation["allowed_scope_task_ids"][0] == "PRD-TASK-008"
+    assert "PRD-TASK-008" in validation["allowed_scope_task_ids"]
     assert validation["applies_runtime_gate_mutation"] is False
     assert validation["grants_gate_approval_authority"] is False
     assert validation["verifier_bypass_granted"] is False
@@ -356,9 +685,13 @@ def test_human_gate_approval_rejection_and_scoped_decisions_do_not_mutate_runtim
     assert approval["decision_status"] == "CONTROL_PLANE_REVIEW_REQUIRED"
     assert len(approval["decision_request_hash"]) == 64
     assert approval["scope_task_ids"] == ["PRD-TASK-008"]
+    assert approval["allowed_scope_task_ids"][0] == "PRD-TASK-008"
     assert approval["runtime_gate_status_before"] == "pending"
     assert approval["runtime_gate_status_after"] == "pending"
+    assert approval["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+    assert approval["control_plane_review_required"] is True
     assert approval["applied_to_runtime"] is False
+    assert approval["runtime_mutation_allowed"] is False
     assert approval["grants_gate_approval_authority"] is False
     assert approval["verifier_bypass_granted"] is False
     assert approval["scheduling_authority_granted"] is False
@@ -393,6 +726,7 @@ def test_human_gate_decision_requires_mandatory_verification_and_valid_scope() -
         MANDATORY_VERIFICATION_COMMANDS
     )
     assert result["unknown_scope_task_ids"] == ["PRD-TASK-999"]
+    assert result["allowed_scope_task_ids"][0] == "PRD-TASK-008"
     assert result["runtime_gate_status_after"] == "pending"
 
     rejection = app.post(
@@ -496,6 +830,17 @@ def test_unknown_routes_do_not_reflect_potentially_sensitive_paths() -> None:
     assert "token-value" not in str(payload)
 
 
+def test_unknown_provenance_requirement_does_not_reflect_query_text() -> None:
+    result = _seeded_product_runtime_app().get(
+        f"{PRODUCT_API_PREFIX}/provenance/requirements/token-value"
+    )
+    payload = result.json()
+
+    assert result.status_code == 404
+    assert payload["error"]["code"] == "PROVENANCE_REQUIREMENT_NOT_FOUND"
+    assert "token-value" not in str(payload)
+
+
 def test_request_validation_errors_redact_secret_values() -> None:
     result = create_app().post(
         f"{PRODUCT_API_PREFIX}/governance/requests/validate",
@@ -510,6 +855,30 @@ def test_request_validation_errors_redact_secret_values() -> None:
     assert result.status_code == 422
     assert "token-value" not in str(payload)
     assert "<redacted>" in str(payload)
+
+
+def test_human_gate_decision_submissions_require_explicit_actor_and_rationale() -> None:
+    result = create_app().post(
+        f"{PRODUCT_API_PREFIX}/human-gates/GATE-PRD-RUNTIME-CONTROL/approve",
+        json_payload={
+            "actor_id": "",
+            "rationale": "",
+            "evidence_refs": [],
+            "verification_commands": list(MANDATORY_VERIFICATION_COMMANDS),
+        },
+    )
+    payload = result.json()
+
+    assert result.status_code == 422
+    assert payload["error"]["code"] == "REQUEST_VALIDATION_FAILED"
+    assert any(
+        error["loc"] == ["actor_id"] and error["type"] == "string_too_short"
+        for error in payload["error"]["details"]["errors"]
+    )
+    assert any(
+        error["loc"] == ["rationale"] and error["type"] == "string_too_short"
+        for error in payload["error"]["details"]["errors"]
+    )
 
 
 def test_validation_errors_redact_sensitive_extra_inputs_by_loc() -> None:
@@ -787,9 +1156,91 @@ def _by_id(items: list[dict[str, Any]], key: str, value: str) -> dict[str, Any]:
     raise AssertionError(f"missing {key}={value}")
 
 
+def _services_with_runtime_probes(
+    *,
+    docker: ComponentProbe | None = None,
+    codex: ComponentProbe | None = None,
+    postgresql: ComponentProbe | None = None,
+) -> ProductApiServices:
+    probes = RuntimeProbeProvider(
+        readiness=lambda: _component("readiness", "available"),
+        recovery=lambda: _component("recovery", "available"),
+        docker=docker
+        or (
+            lambda: _component(
+                "docker",
+                "available",
+                details={
+                    "docker_command_available": True,
+                    "docker_compose_command_available": False,
+                },
+            )
+        ),
+        codex=codex
+        or (
+            lambda: _component(
+                "codex",
+                "available",
+                details={"codex_command_available": True},
+            )
+        ),
+        postgresql=postgresql
+        or (
+            lambda: _component(
+                "postgresql",
+                "available",
+                details={"configured": True, "health": "ok"},
+            )
+        ),
+    )
+    return ProductApiServices(
+        boundary_service=ProductBoundaryService(),
+        governance_service=GovernanceValidationService(),
+        runtime_service=ProductRuntimeSnapshotService(),
+        status_service=RuntimeStatusService(probes=probes),
+    )
+
+
+def _component(
+    name: ComponentName,
+    status: ComponentState,
+    *,
+    details: dict[str, Any] | None = None,
+) -> RuntimeComponentStatus:
+    return RuntimeComponentStatus(
+        name=name,
+        boundary=f"{name} test probe",
+        status=status,
+        summary=f"{name} status",
+        details=details or {},
+    )
+
+
 def _validation_errors(payload: dict[str, Any]) -> list[Any]:
     try:
         GovernanceValidationRequest.model_validate(payload)
     except ValidationError as exc:
         return exc.errors()
     raise AssertionError("expected validation error")
+
+
+def _assert_bounded_review(boundary: Mapping[str, Any]) -> None:
+    assert boundary["source_authority"] == str(MANIFEST_ROOT)
+    assert boundary["control_plane_authority"] == CONTROL_PLANE_AUTHORITY
+    assert boundary["authority_mode"] == "facade_only"
+    assert boundary["grants_control_plane_authority"] is False
+    assert boundary["gate_approval_authority"] is False
+    assert boundary["verifier_bypass_authority"] is False
+    assert boundary["commit_boundary_bypass_authority"] is False
+    assert boundary["scheduling_authority"] is False
+    assert boundary["runtime_execution_authority"] is False
+    assert boundary["policy_weakening_authority"] is False
+    assert boundary["implicit_human_gate_approval"] is False
+    assert boundary["human_gate_policy"] == "explicit_control_plane_gate_required"
+    assert boundary["independent_verification_required"] is True
+    assert boundary["mandatory_verification_commands"] == list(MANDATORY_VERIFICATION_COMMANDS)
+    assert boundary["decision_dependencies"] == ["DECISION_REQUIRED:PRD-DEC-001"]
+    assert boundary["secret_values_exposed"] is False
+    assert "approve_gate" in boundary["denied_operations"]
+    assert "bypass_verifier" in boundary["denied_operations"]
+    assert "schedule_execution" in boundary["denied_operations"]

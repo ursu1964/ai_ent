@@ -5,9 +5,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from types import FrameType
+from typing import Any, Literal
 
-from sqlalchemy import delete, inspect, select
+from sqlalchemy import delete, func, inspect, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -323,18 +324,36 @@ class MigrationSafetyChecker:
         )
 
     def _human_gate_check(self, session: Session) -> MigrationCheck:
-        invalid = tuple(
+        invalid_statuses = tuple(
             session.scalars(
                 select(RuntimeHumanGate.id)
                 .where(RuntimeHumanGate.status.not_in(("pending", "approved", "rejected")))
                 .order_by(RuntimeHumanGate.id)
             ).all()
         )
-        if invalid:
+        if invalid_statuses:
             return MigrationCheck(
                 "human_gates",
                 "fail",
-                f"runtime human gates have invalid explicit statuses: {', '.join(invalid[:5])}",
+                f"runtime human gates have invalid explicit statuses: {', '.join(invalid_statuses[:5])}",
+            )
+        implicit_boundaries = tuple(
+            session.scalars(
+                select(RuntimeHumanGate.id)
+                .where(
+                    (func.trim(RuntimeHumanGate.reason) == "")
+                    | (func.trim(RuntimeHumanGate.approval_boundary) == "")
+                    | (func.trim(RuntimeHumanGate.resume_semantics) == "")
+                )
+                .order_by(RuntimeHumanGate.id)
+            ).all()
+        )
+        if implicit_boundaries:
+            gate_ids = ", ".join(implicit_boundaries[:5])
+            return MigrationCheck(
+                "human_gates",
+                "fail",
+                f"runtime human gates missing explicit operator boundaries: {gate_ids}",
             )
         return MigrationCheck("human_gates", "pass", "runtime human gates remain explicit")
 
@@ -342,7 +361,7 @@ class MigrationSafetyChecker:
         missing = tuple(
             session.scalars(
                 select(RuntimeTaskPlanBinding.task_id)
-                .where(RuntimeTaskPlanBinding.verification_profile == "")
+                .where(func.trim(RuntimeTaskPlanBinding.verification_profile) == "")
                 .order_by(RuntimeTaskPlanBinding.task_id)
             ).all()
         )
@@ -365,6 +384,7 @@ class BackupGuidance:
     verify_command: str
     restore_drill_command: str
     notes: tuple[str, ...]
+    verification_commands: tuple[str, ...] = MANDATORY_VERIFICATION_COMMANDS
 
     def as_lines(self) -> tuple[str, ...]:
         return (
@@ -372,6 +392,7 @@ class BackupGuidance:
             f"- dump: {self.dump_command}",
             f"- verify: {self.verify_command}",
             f"- restore drill: {self.restore_drill_command}",
+            *(f"- independent verification: {command}" for command in self.verification_commands),
             *(f"- note: {note}" for note in self.notes),
         )
 
@@ -409,6 +430,7 @@ class GracefulShutdownController:
     def __init__(self) -> None:
         self._requested = False
         self._signals: list[str] = []
+        self._previous_handlers: dict[int, Any] = {}
 
     @property
     def requested(self) -> bool:
@@ -418,7 +440,7 @@ class GracefulShutdownController:
     def signals(self) -> tuple[str, ...]:
         return tuple(self._signals)
 
-    def request_shutdown(self, signum: int | None = None, _frame: object | None = None) -> None:
+    def request_shutdown(self, signum: int | None = None, _frame: FrameType | None = None) -> None:
         self._requested = True
         if signum is not None:
             try:
@@ -429,7 +451,14 @@ class GracefulShutdownController:
 
     def install_signal_handlers(self, signals: tuple[int, ...] = (signal.SIGINT, signal.SIGTERM)) -> None:
         for signum in signals:
+            if signum not in self._previous_handlers:
+                self._previous_handlers[signum] = signal.getsignal(signum)
             signal.signal(signum, self.request_shutdown)
+
+    def restore_signal_handlers(self) -> None:
+        for signum, handler in self._previous_handlers.items():
+            signal.signal(signum, handler)
+        self._previous_handlers.clear()
 
 
 def mandatory_verification_commands() -> tuple[str, ...]:

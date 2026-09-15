@@ -19,6 +19,12 @@ REQUIRED_VERIFICATION_COMMANDS = (
     "/home/user/projects/ai_ent/aient/bin/python -m ruff check .",
     "/home/user/projects/ai_ent/aient/bin/python -m pyright",
 )
+REQUIRED_PACKAGE_FILE_PATHS = (
+    "deployment/local-docker/README.md",
+    "deployment/local-docker/Dockerfile",
+    "deployment/local-docker/compose.yaml",
+    "deployment/local-docker/portability.yaml",
+)
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,7 @@ def validate_deployment_portability(
         return PortabilityValidationResult(tuple(errors), tuple(warnings))
 
     _validate_package(package, errors)
+    _validate_package_inventory(package, errors)
     _validate_compose(compose, errors)
     _validate_manifest_boundaries(project, deployment, architecture, operations, errors)
     _validate_no_embedded_secret_values(
@@ -127,6 +134,41 @@ def _validate_package(package_document: Mapping[str, Any], errors: list[str]) ->
     secret_policy = _mapping(package_document.get("secret_policy"))
     if secret_policy.get("embedded_secret_values_allowed") is not False:
         errors.append("secret_policy.embedded_secret_values_allowed must be false")
+
+
+def _validate_package_inventory(package_document: Mapping[str, Any], errors: list[str]) -> None:
+    entries = [_mapping(item) for item in _sequence(package_document.get("package_files"))]
+    paths = tuple(str(entry.get("path", "")) for entry in entries)
+    path_set = set(paths)
+
+    if len(paths) != len(path_set):
+        errors.append("package_files must not contain duplicate paths")
+
+    missing_paths = sorted(set(REQUIRED_PACKAGE_FILE_PATHS) - path_set)
+    if missing_paths:
+        errors.append("package_files missing required paths: " + ", ".join(missing_paths))
+
+    extra_paths = sorted(path for path in path_set if path not in REQUIRED_PACKAGE_FILE_PATHS)
+    if extra_paths:
+        errors.append(
+            "package_files contains paths outside the local Docker package: "
+            + ", ".join(extra_paths)
+        )
+
+    for entry in entries:
+        raw_path = str(entry.get("path", ""))
+        path = Path(raw_path)
+        if path.is_absolute() or ".." in path.parts:
+            errors.append(f"package file path must be repository-relative: {raw_path}")
+            continue
+        if path.name == ".env" or path.name.startswith(".env."):
+            errors.append(f"package file path must not include environment files: {raw_path}")
+        if entry.get("classification") != "NORMATIVE":
+            errors.append(f"package file {raw_path or '<unknown>'} must be classified NORMATIVE")
+        if not entry.get("role"):
+            errors.append(f"package file {raw_path or '<unknown>'} must declare a role")
+        if not raw_path or not path.exists():
+            errors.append(f"package file does not exist: {raw_path or '<unknown>'}")
 
 
 def _validate_compose(compose: Mapping[str, Any], errors: list[str]) -> None:
@@ -219,7 +261,18 @@ def _walk_sensitive_values(value: Any, path: str = "") -> tuple[tuple[str, str],
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.lower()
-    return any(marker in normalized for marker in ("password", "token", "credential"))
+    return any(
+        marker in normalized
+        for marker in (
+            "password",
+            "token",
+            "credential",
+            "secret",
+            "api_key",
+            "access_key",
+            "private_key",
+        )
+    )
 
 
 def _is_allowed_secret_reference(value: str) -> bool:

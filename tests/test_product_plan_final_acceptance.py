@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from ai_ent.product_dry_run import write_product_dry_run
 from ai_ent.product_plan_final_acceptance import (
@@ -102,6 +103,10 @@ def _acceptance(tmp_path: Path, **snapshot_overrides: object):
     )
 
 
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(json.dumps(value, sort_keys=True), encoding="utf-8")
+
+
 def test_ppg_001_accepts_frozen_product_plan_with_affected_decisions(tmp_path: Path) -> None:
     gate = _acceptance(tmp_path)
 
@@ -174,6 +179,207 @@ def test_ppg_001_accepts_security_rbac_surfaces_and_runtime_boundaries(
     assert gate.docker_boundary["unrestricted_daemon_control"] == "DENIED"
     assert gate.recovery_compatibility["result"] == "PASS"
     assert gate.import_compatibility["result"] == "PASS"
+
+
+def test_ppg_001_records_control_plane_authority_and_coexisting_plan_boundaries(
+    tmp_path: Path,
+) -> None:
+    gate = _acceptance(tmp_path)
+
+    assert gate.runtime_snapshot["postgresql_authority"] == "active"
+    assert gate.runtime_snapshot["prior_plan_13_passed"] is True
+    assert gate.runtime_snapshot["residual_plan_7_passed"] is True
+    assert gate.runtime_snapshot["product_active_leases"] == 0
+    assert gate.import_compatibility["coexists_with"] == [
+        "PLAN-1a75a2e3c5a7 v1",
+        "RESIDUAL-PLAN-a918c449cfe5 v1",
+    ]
+    assert gate.import_compatibility["idempotency_requirements"] == {
+        "duplicates": "denied",
+        "exact_repeat_import": "ALREADY_IMPORTED / IN_SYNC",
+        "material_mismatch": "CONFLICT",
+        "partial_failure": "rollback",
+    }
+
+
+def test_ppg_001_rejects_if_human_gate_boundary_is_implicitly_approved(
+    tmp_path: Path,
+) -> None:
+    (
+        plan_path,
+        ppa_path,
+        pfe_path,
+        decision_path,
+        pdf_path,
+        lock_path,
+        import_preview_path,
+        plan_hash,
+        ppa_hash,
+        pfe_hash,
+        decision_hash,
+        pdf_hash,
+    ) = _ppg_inputs(tmp_path)
+    lock = json.loads(lock_path.read_text())
+    lock["human_gate_definitions"][0]["status"] = "APPROVED_WITHOUT_OPERATOR"
+    _write_json(lock_path, lock)
+
+    gate = evaluate_frozen_product_plan_acceptance(
+        plan_path=plan_path,
+        ppa_path=ppa_path,
+        pfe_path=pfe_path,
+        decision_path=decision_path,
+        pdf_path=pdf_path,
+        lock_path=lock_path,
+        import_preview_path=import_preview_path,
+        repository_root=tmp_path,
+        expected_product_plan_hash=plan_hash,
+        expected_ppa_hash=ppa_hash,
+        expected_pfe_hash=pfe_hash,
+        expected_decision_hash=decision_hash,
+        expected_pdf_hash=pdf_hash,
+        generated_at="2026-09-10T12:00:00Z",
+        runtime_snapshot_override=_runtime_snapshot(),
+    )
+
+    assert gate.result == "REJECTED"
+    assert "human_gates_pending" in gate.blockers
+    assert gate.validations["human_gates_pending"] == "FAIL"
+
+
+def test_ppg_001_rejects_if_independent_verification_contract_is_removed(
+    tmp_path: Path,
+) -> None:
+    (
+        plan_path,
+        ppa_path,
+        pfe_path,
+        decision_path,
+        pdf_path,
+        lock_path,
+        import_preview_path,
+        plan_hash,
+        ppa_hash,
+        pfe_hash,
+        decision_hash,
+        pdf_hash,
+    ) = _ppg_inputs(tmp_path)
+    preview = json.loads(import_preview_path.read_text())
+    preview["task_import_preview"][0]["verification_profile"] = ""
+    _write_json(import_preview_path, preview)
+
+    gate = evaluate_frozen_product_plan_acceptance(
+        plan_path=plan_path,
+        ppa_path=ppa_path,
+        pfe_path=pfe_path,
+        decision_path=decision_path,
+        pdf_path=pdf_path,
+        lock_path=lock_path,
+        import_preview_path=import_preview_path,
+        repository_root=tmp_path,
+        expected_product_plan_hash=plan_hash,
+        expected_ppa_hash=ppa_hash,
+        expected_pfe_hash=pfe_hash,
+        expected_decision_hash=decision_hash,
+        expected_pdf_hash=pdf_hash,
+        generated_at="2026-09-10T12:00:00Z",
+        runtime_snapshot_override=_runtime_snapshot(),
+    )
+
+    assert gate.result == "REJECTED"
+    assert "task_contracts_complete" in gate.blockers
+    assert "runtime_import_compatibility" in gate.blockers
+    assert gate.import_compatibility["result"] == "FAIL"
+
+
+def test_ppg_001_rejects_lan_readiness_if_prd_dec_002_gate_is_relaxed(
+    tmp_path: Path,
+) -> None:
+    (
+        plan_path,
+        ppa_path,
+        pfe_path,
+        decision_path,
+        pdf_path,
+        lock_path,
+        import_preview_path,
+        plan_hash,
+        ppa_hash,
+        pfe_hash,
+        decision_hash,
+        pdf_hash,
+    ) = _ppg_inputs(tmp_path)
+    pdf = json.loads(pdf_path.read_text())
+    pdf["docker_network_secrets_dry_run"]["networking"]["lan"] = "ALLOWED"
+    _write_json(pdf_path, pdf)
+
+    gate = evaluate_frozen_product_plan_acceptance(
+        plan_path=plan_path,
+        ppa_path=ppa_path,
+        pfe_path=pfe_path,
+        decision_path=decision_path,
+        pdf_path=pdf_path,
+        lock_path=lock_path,
+        import_preview_path=import_preview_path,
+        repository_root=tmp_path,
+        expected_product_plan_hash=plan_hash,
+        expected_ppa_hash=ppa_hash,
+        expected_pfe_hash=pfe_hash,
+        expected_decision_hash=decision_hash,
+        expected_pdf_hash=pdf_hash,
+        generated_at="2026-09-10T12:00:00Z",
+        runtime_snapshot_override=_runtime_snapshot(),
+    )
+
+    assert gate.result == "REJECTED"
+    assert "networking_policy" in gate.blockers
+    assert gate.networking_policy["lan"] == "ALLOWED"
+
+
+def test_ppg_001_rejects_when_security_boundary_or_secret_artifact_policy_fails(
+    tmp_path: Path,
+) -> None:
+    (
+        plan_path,
+        ppa_path,
+        pfe_path,
+        decision_path,
+        pdf_path,
+        lock_path,
+        import_preview_path,
+        plan_hash,
+        ppa_hash,
+        pfe_hash,
+        decision_hash,
+        pdf_hash,
+    ) = _ppg_inputs(tmp_path)
+    pdf = json.loads(pdf_path.read_text())
+    pdf["security_dry_run"]["checks"]["api_cannot_bypass_control_plane"] = "FAIL"
+    pdf["docker_network_secrets_dry_run"]["secrets"]["secret_values_in_artifacts"] = "ALLOWED"
+    _write_json(pdf_path, pdf)
+
+    gate = evaluate_frozen_product_plan_acceptance(
+        plan_path=plan_path,
+        ppa_path=ppa_path,
+        pfe_path=pfe_path,
+        decision_path=decision_path,
+        pdf_path=pdf_path,
+        lock_path=lock_path,
+        import_preview_path=import_preview_path,
+        repository_root=tmp_path,
+        expected_product_plan_hash=plan_hash,
+        expected_ppa_hash=ppa_hash,
+        expected_pfe_hash=pfe_hash,
+        expected_decision_hash=decision_hash,
+        expected_pdf_hash=pdf_hash,
+        generated_at="2026-09-10T12:00:00Z",
+        runtime_snapshot_override=_runtime_snapshot(),
+    )
+
+    assert gate.result == "REJECTED"
+    assert "security_acceptance" in gate.blockers
+    assert "secrets_policy" in gate.blockers
+    assert gate.security_acceptance["checks"]["api_cannot_bypass_control_plane"] == "FAIL"
+    assert gate.secrets_policy["secret_values_in_artifacts"] == "ALLOWED"
 
 
 def test_ppg_001_rejects_if_product_runtime_already_started(tmp_path: Path) -> None:

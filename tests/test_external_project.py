@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tarfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,12 +12,15 @@ from ai_ent.external_project import (
     CONTROL_PLANE_AUTHORITY,
     DEFAULT_PROHIBITED_PATHS,
     EXTERNAL_PROJECT_LIFECYCLE,
+    GENERATED_APP_OPERATION_KINDS,
     MANDATORY_VERIFICATION_COMMANDS,
     WORKSPACE_MARKER_PATH,
     ExternalProject,
     ExternalProjectFrozenPlan,
     ExternalProjectRuntimeTask,
     ExternalProjectServiceError,
+    GeneratedAppOperationController,
+    GeneratedAppOperationRequest,
     GeneratedAppWorkspaceManager,
     GeneratedArtifact,
     ProjectPlan,
@@ -538,6 +542,186 @@ def test_workspace_marker_path_is_scoped_under_workspace(tmp_path: Path) -> None
 
     assert marker_path == Path(prepared.root_path) / WORKSPACE_MARKER_PATH
     assert marker_path.resolve().is_relative_to(Path(prepared.root_path).resolve())
+
+
+def test_generated_app_operation_plans_all_controls_without_control_authority(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    manager = GeneratedAppWorkspaceManager(tmp_path / "generated-apps")
+    prepared = manager.prepare_workspace(project)
+    controller = GeneratedAppOperationController(tmp_path / "generated-apps")
+
+    plans = tuple(
+        controller.plan(
+            prepared.project,
+            GeneratedAppOperationRequest(
+                operation=operation,
+                actor_id="operator-1",
+                human_gate_id="GATE-001",
+                human_gate_confirmed=True,
+            ),
+        )
+        for operation in GENERATED_APP_OPERATION_KINDS
+    )
+
+    assert tuple(plan.operation for plan in plans) == GENERATED_APP_OPERATION_KINDS
+    assert {plan.status for plan in plans} == {"planned"}
+    assert all(plan.workspace_root == prepared.root_path for plan in plans)
+    assert all(plan.control_plane_authority == CONTROL_PLANE_AUTHORITY for plan in plans)
+    assert all(plan.grants_control_plane_authority is False for plan in plans)
+    assert all(plan.verifier_bypass_authority is False for plan in plans)
+    assert all(plan.independent_verification_required is True for plan in plans)
+    assert all(
+        plan.mandatory_verification_commands == MANDATORY_VERIFICATION_COMMANDS
+        for plan in plans
+    )
+    assert all(plan.secret_values_exposed is False for plan in plans)
+    assert plans[0].command_plan[0].args == (
+        "docker",
+        "compose",
+        "--project-name",
+        "ai-ent-ext-customer-portal",
+        "build",
+    )
+
+
+def test_generated_app_operation_blocks_mutation_without_explicit_gate(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], Path]] = []
+
+    def runner(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n")
+
+    project = service_project(tmp_path, remote_url=None)
+    prepared = GeneratedAppWorkspaceManager(tmp_path / "generated-apps").prepare_workspace(project)
+    controller = GeneratedAppOperationController(
+        tmp_path / "generated-apps",
+        command_runner=runner,
+    )
+
+    result = controller.run(
+        prepared.project,
+        GeneratedAppOperationRequest(operation="start", actor_id="operator-1"),
+    )
+
+    assert result.status == "blocked"
+    assert result.blocked_reason == "explicit_generated_app_operation_human_gate_required"
+    assert calls == []
+
+
+def test_generated_app_log_operation_is_scoped_and_redacts_secret_output(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], Path]] = []
+
+    def runner(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="ready\ntoken=SUPERSECRET\nAuthorization: Bearer VERYSECRET\n",
+        )
+
+    project = service_project(tmp_path, remote_url=None)
+    prepared = GeneratedAppWorkspaceManager(tmp_path / "generated-apps").prepare_workspace(project)
+    controller = GeneratedAppOperationController(
+        tmp_path / "generated-apps",
+        command_runner=runner,
+    )
+
+    result = controller.run(
+        prepared.project,
+        GeneratedAppOperationRequest(operation="log", actor_id="operator-1", tail_lines=5),
+    )
+
+    assert result.status == "succeeded"
+    assert calls == [
+        (
+            [
+                "docker",
+                "compose",
+                "--project-name",
+                "ai-ent-ext-customer-portal",
+                "logs",
+                "--no-color",
+                "--tail",
+                "5",
+            ],
+            Path(prepared.root_path),
+        )
+    ]
+    rendered = json.dumps(result.as_dict(), sort_keys=True)
+    assert "SUPERSECRET" not in rendered
+    assert "VERYSECRET" not in rendered
+    assert "token=<redacted>" in rendered
+    assert "Bearer <redacted>" in rendered
+
+
+def test_generated_app_restart_runs_stop_then_start_under_owned_workspace(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[list[str], Path]] = []
+
+    def runner(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="ok\n")
+
+    project = service_project(tmp_path, remote_url=None)
+    prepared = GeneratedAppWorkspaceManager(tmp_path / "generated-apps").prepare_workspace(project)
+    controller = GeneratedAppOperationController(
+        tmp_path / "generated-apps",
+        command_runner=runner,
+    )
+
+    result = controller.run(
+        prepared.project,
+        GeneratedAppOperationRequest(
+            operation="restart",
+            actor_id="operator-1",
+            human_gate_id="GATE-001",
+            human_gate_confirmed=True,
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert [call[0][-1] for call in calls] == ["stop", "-d"]
+    assert all(call[1] == Path(prepared.root_path) for call in calls)
+
+
+def test_generated_app_archive_excludes_prohibited_and_secret_named_paths(
+    tmp_path: Path,
+) -> None:
+    project = service_project(tmp_path, remote_url=None)
+    prepared = GeneratedAppWorkspaceManager(tmp_path / "generated-apps").prepare_workspace(project)
+    workspace_root = Path(prepared.root_path)
+    (workspace_root / "src" / "main.txt").write_text("hello\n", encoding="utf-8")
+    (workspace_root / ".env").write_text("PASSWORD=SUPERSECRET\n", encoding="utf-8")
+    (workspace_root / ".build").mkdir()
+    (workspace_root / ".build" / "cache.txt").write_text("cache\n", encoding="utf-8")
+    (workspace_root / "src" / "password.txt").write_text("SUPERSECRET\n", encoding="utf-8")
+    controller = GeneratedAppOperationController(tmp_path / "generated-apps")
+
+    result = controller.run(
+        prepared.project,
+        GeneratedAppOperationRequest(
+            operation="archive",
+            actor_id="operator-1",
+            human_gate_id="GATE-001",
+            human_gate_confirmed=True,
+        ),
+    )
+
+    assert result.status == "succeeded"
+    assert result.archive_path is not None
+    with tarfile.open(result.archive_path, "r:gz") as archive:
+        names = tuple(sorted(archive.getnames()))
+    assert f"{project.project_id}/src/main.txt" in names
+    assert not any(name.endswith(".env") for name in names)
+    assert not any("/.build/" in name for name in names)
+    assert not any("password" in name for name in names)
 
 
 def frozen_plan_project(

@@ -63,3 +63,11 @@ class DuplicateBootstrapCheckpointError(RepositoryError):
 
 class MissingBootstrapCheckpointError(RepositoryError):
     """Raised when a bootstrap checkpoint is required but missing."""
+
+
+class DuplicateProductOperationalEventError(RepositoryError):
+    """Raised when a product operational event identity conflicts."""
+
+
+class MissingProductOperationalEventError(RepositoryError):
+    """Raised when a product operational event is required but missing."""

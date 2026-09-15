@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from ai_ent_product_api.errors import ProductApiError, validation_error_response
 from ai_ent_product_api.schemas import (
+    PRODUCT_API_ACCESS_DECISION_DEPENDENCIES,
     PRODUCT_API_CONTRACT_VERSION,
     PRODUCT_API_DECISION_DEPENDENCIES,
     PRODUCT_API_PREFIX,
@@ -51,12 +52,70 @@ class ProductApiApp:
         self.routes = (
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/health", "GET", "health"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/boundary", "GET", "boundary"),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/access-profile",
+                "GET",
+                "access_profile",
+            ),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/projects/current", "GET", "project"),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/projects/current/intake",
+                "GET",
+                "project_intake",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/projects/current/requirements",
+                "GET",
+                "project_requirements",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/projects/current/architecture",
+                "GET",
+                "project_architecture",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/projects/current/capabilities/review",
+                "GET",
+                "capability_review",
+            ),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/plans/generated", "GET", "generated_plan"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/plans/generated/dag", "GET", "generated_dag"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/tasks", "GET", "tasks"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/executions", "GET", "executions"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/repairs", "GET", "repairs"),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/state", "GET", "runtime_state"),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/runtime/status", "GET", "runtime_status"),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/runtime/readiness",
+                "GET",
+                "runtime_readiness_status",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/runtime/recovery",
+                "GET",
+                "runtime_recovery_status",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/runtime/docker",
+                "GET",
+                "runtime_docker_status",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/runtime/codex",
+                "GET",
+                "runtime_codex_status",
+            ),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/runtime/postgresql",
+                "GET",
+                "runtime_postgresql_status",
+            ),
+            ProductApiRoute(f"{PRODUCT_API_PREFIX}/artifacts/metadata", "GET", "artifact_metadata"),
+            ProductApiRoute(
+                f"{PRODUCT_API_PREFIX}/provenance/requirements/{{requirement_id}}",
+                "GET",
+                "requirement_provenance",
+            ),
             ProductApiRoute(f"{PRODUCT_API_PREFIX}/human-gates/reviews", "GET", "gate_reviews"),
             ProductApiRoute(
                 f"{PRODUCT_API_PREFIX}/human-gates/{{gate_id}}/review",
@@ -166,6 +225,18 @@ class ProductApiApp:
             return response(self._services.health()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/boundary":
             return response(self._services.boundary()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/access-profile":
+            return response(self._services.access_profile()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/projects/current":
+            return response(self._services.project()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/projects/current/intake":
+            return response(self._services.intake()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/projects/current/requirements":
+            return response(self._services.requirements()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/projects/current/architecture":
+            return response(self._services.architecture()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/projects/current/capabilities/review":
+            return response(self._services.capabilities_review()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/plans/generated":
             return response(self._services.generated_plan()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/plans/generated/dag":
@@ -178,6 +249,23 @@ class ProductApiApp:
             return response(self._services.repairs()).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/state":
             return response(self._services.runtime_state()).model_dump(mode="json")
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/runtime/status":
+            return response(self._services.runtime_status()).model_dump(mode="json")
+        if method == "GET" and path.startswith(f"{PRODUCT_API_PREFIX}/runtime/"):
+            component = path.removeprefix(f"{PRODUCT_API_PREFIX}/runtime/")
+            if component in {"readiness", "recovery", "docker", "codex", "postgresql"}:
+                return response(self._services.runtime_component_status(component)).model_dump(
+                    mode="json"
+                )
+        if method == "GET" and path == f"{PRODUCT_API_PREFIX}/artifacts/metadata":
+            return response(self._services.artifact_metadata()).model_dump(mode="json")
+        provenance_prefix = f"{PRODUCT_API_PREFIX}/provenance/requirements/"
+        if method == "GET" and path.startswith(provenance_prefix):
+            requirement_id = path.removeprefix(provenance_prefix)
+            if requirement_id:
+                return response(
+                    self._services.requirement_provenance(requirement_id)
+                ).model_dump(mode="json")
         if method == "GET" and path == f"{PRODUCT_API_PREFIX}/human-gates/reviews":
             return response(self._services.human_gate_reviews()).model_dump(mode="json")
         if (gate_id := _gate_route(path, "review")) and method == "GET":
@@ -269,6 +357,7 @@ def _contract_document() -> dict[str, Any]:
         "api_version": PRODUCT_API_VERSION,
         "contract_version": PRODUCT_API_CONTRACT_VERSION,
         "decision_dependencies": list(PRODUCT_API_DECISION_DEPENDENCIES),
+        "access_decision_dependencies": list(PRODUCT_API_ACCESS_DECISION_DEPENDENCIES),
         "openapi": "3.1.0",
         "schema_version": PRODUCT_API_SCHEMA_VERSION,
         "info": {
@@ -278,6 +367,24 @@ def _contract_document() -> dict[str, Any]:
         "paths": {
             f"{PRODUCT_API_PREFIX}/health": {"get": {"operationId": "health"}},
             f"{PRODUCT_API_PREFIX}/boundary": {"get": {"operationId": "boundary"}},
+            f"{PRODUCT_API_PREFIX}/access-profile": {
+                "get": {"operationId": "accessProfile"}
+            },
+            f"{PRODUCT_API_PREFIX}/projects/current": {
+                "get": {"operationId": "getCurrentProject"}
+            },
+            f"{PRODUCT_API_PREFIX}/projects/current/intake": {
+                "get": {"operationId": "getCurrentProjectIntake"}
+            },
+            f"{PRODUCT_API_PREFIX}/projects/current/requirements": {
+                "get": {"operationId": "getCurrentProjectRequirements"}
+            },
+            f"{PRODUCT_API_PREFIX}/projects/current/architecture": {
+                "get": {"operationId": "getCurrentProjectArchitecture"}
+            },
+            f"{PRODUCT_API_PREFIX}/projects/current/capabilities/review": {
+                "get": {"operationId": "reviewCurrentProjectCapabilities"}
+            },
             f"{PRODUCT_API_PREFIX}/plans/generated": {
                 "get": {"operationId": "generatedPlan"}
             },
@@ -292,6 +399,28 @@ def _contract_document() -> dict[str, Any]:
                 "get": {"operationId": "runtimeRepairs"}
             },
             f"{PRODUCT_API_PREFIX}/runtime/state": {"get": {"operationId": "runtimeState"}},
+            f"{PRODUCT_API_PREFIX}/runtime/status": {"get": {"operationId": "runtimeStatus"}},
+            f"{PRODUCT_API_PREFIX}/runtime/readiness": {
+                "get": {"operationId": "runtimeReadinessStatus"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/recovery": {
+                "get": {"operationId": "runtimeRecoveryStatus"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/docker": {
+                "get": {"operationId": "runtimeDockerStatus"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/codex": {
+                "get": {"operationId": "runtimeCodexStatus"}
+            },
+            f"{PRODUCT_API_PREFIX}/runtime/postgresql": {
+                "get": {"operationId": "runtimePostgresqlStatus"}
+            },
+            f"{PRODUCT_API_PREFIX}/artifacts/metadata": {
+                "get": {"operationId": "artifactMetadata"}
+            },
+            f"{PRODUCT_API_PREFIX}/provenance/requirements/{{requirement_id}}": {
+                "get": {"operationId": "requirementProvenance"}
+            },
             f"{PRODUCT_API_PREFIX}/human-gates/reviews": {
                 "get": {"operationId": "humanGateReviews"}
             },

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, cast
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ai_ent.external_project import (
@@ -15,6 +18,13 @@ from ai_ent.external_project import (
     MANDATORY_VERIFICATION_COMMANDS,
 )
 from ai_ent.governance_contract import validate_governance_evolution_request
+from ai_ent.knowledge_graph import (
+    ARTIFACT_EVIDENCE_GRAPH_OUTPUT_AUTHORITY_STATE,
+    ArtifactEvidenceGraph,
+    ArtifactEvidenceGraphService,
+)
+from ai_ent.persistence.config import DatabaseConfigError, load_database_settings
+from ai_ent.persistence.database import Database
 from ai_ent.persistence.models import (
     Checkpoint,
     Execution,
@@ -30,14 +40,32 @@ from ai_ent.product_runtime_handoff import (
     ProductRuntimeHandoffArtifacts,
     load_product_runtime_handoff_artifacts,
 )
+from ai_ent.project_manifest import (
+    PROJECT_MANIFEST_ROOT,
+    canonical_bytes,
+    compile_project_manifest,
+    resolve_compiled_capabilities,
+)
 from ai_ent.runtime_handoff import DEFAULT_RUNTIME_PROJECT_ID
 from ai_ent.scheduler.readiness import TaskReadinessService
 from ai_ent.scheduler.repair import FailureClassifier, RepairPolicy
-from ai_ent_product_api.errors import ProductApiError
+from ai_ent_product_api.errors import (
+    REDACTED,
+    ProductApiError,
+    is_secret_field_name,
+    redact_secret_details,
+)
 from ai_ent_product_api.schemas import (
+    PRODUCT_API_ACCESS_DECISION_DEPENDENCIES,
+    AccessBindingProfile,
+    ArtifactEvidenceServiceBoundarySnapshot,
+    ArtifactMetadataSnapshot,
+    ArtifactRecordMetadataSnapshot,
     BoundarySnapshot,
+    CapabilityReview,
     ExecutionCollectionSnapshot,
     ExecutionSnapshot,
+    FirewallAssumptionConfig,
     GeneratedDagEdge,
     GeneratedDagSnapshot,
     GeneratedHumanGateSnapshot,
@@ -54,18 +82,33 @@ from ai_ent_product_api.schemas import (
     HumanGateReviewCollectionSnapshot,
     HumanGateReviewSnapshot,
     HumanGateScopedDecisionRequest,
+    ProductAccessProfileSnapshot,
+    ProjectArchitectureReview,
+    ProjectIntakeReview,
+    ProjectRequirementsReview,
+    ProjectReview,
+    ProvenanceEdgeSnapshot,
+    ProvenanceNodeSnapshot,
+    ProvenanceTraceSnapshot,
     RepairCollectionSnapshot,
     RepairSnapshot,
+    ReverseProxyAccessConfig,
+    ReviewBoundarySnapshot,
     RuntimeAuthoritySnapshot,
+    RuntimeComponentStatus,
     RuntimeHumanGateStateSnapshot,
     RuntimeStateSnapshot,
+    RuntimeStatus,
     ServiceDependencyStatus,
     TaskCollectionSnapshot,
     TaskSnapshot,
+    TlsAccessConfig,
 )
 
 ArtifactsLoader = Callable[[], ProductRuntimeHandoffArtifacts]
 SessionFactory = Callable[[], Session]
+type RuntimeComponentName = Literal["readiness", "recovery", "docker", "codex", "postgresql"]
+type RuntimeProbe = Callable[[], RuntimeComponentStatus]
 
 
 @dataclass(frozen=True)
@@ -76,6 +119,9 @@ class ProductBoundaryService:
             mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS,
             allowed_operations=(
                 "observe_boundary",
+                "query_provenance",
+                "read_artifact_metadata",
+                "read_artifact_provenance",
                 "validate_governance_request",
                 "read_human_gate_review",
                 "validate_human_gate_evidence",
@@ -90,6 +136,7 @@ class ProductBoundaryService:
                 "execute_repair",
                 "execute_runtime",
                 "push",
+                "record_evidence",
                 "schedule_execution",
                 "weaken_policy",
             ),
@@ -100,6 +147,43 @@ class ProductBoundaryService:
         return ServiceDependencyStatus(
             name="product_boundary",
             boundary="existing control-plane authority projection",
+            status="wired",
+        )
+
+
+@dataclass(frozen=True)
+class ProductAccessProfileService:
+    bind_address: str = "127.0.0.1"
+    port: int = 8000
+    lan_bind_address: str = "0.0.0.0"
+
+    def profile(self) -> ProductAccessProfileSnapshot:
+        return ProductAccessProfileSnapshot(
+            profile_id="ACCESS-LOCAL-LAN-001",
+            active_profile="local_loopback",
+            configured_profiles=("local_loopback", "lan_gated"),
+            binding=AccessBindingProfile(
+                bind_address=self.bind_address,
+                port=self.port,
+                lan_bind_address=self.lan_bind_address,
+                effective_bind_address=self.bind_address,
+                network_scope="local_loopback",
+                blocked_by_decisions=PRODUCT_API_ACCESS_DECISION_DEPENDENCIES,
+            ),
+            reverse_proxy=ReverseProxyAccessConfig(
+                forwards_to_bind_address=self.bind_address,
+                forwards_to_port=self.port,
+            ),
+            tls=TlsAccessConfig(),
+            firewall_assumptions=FirewallAssumptionConfig(),
+            mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS,
+            authority=_runtime_authority(),
+        )
+
+    def dependency_status(self) -> ServiceDependencyStatus:
+        return ServiceDependencyStatus(
+            name="product_access_profile",
+            boundary="read-only local and LAN access profile projection",
             status="wired",
         )
 
@@ -135,6 +219,185 @@ class GovernanceValidationService:
         return ServiceDependencyStatus(
             name="governance_validation",
             boundary="ai_ent.governance_contract.validate_governance_evolution_request",
+            status="wired",
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeProbeProvider:
+    readiness: RuntimeProbe
+    recovery: RuntimeProbe
+    docker: RuntimeProbe
+    codex: RuntimeProbe
+    postgresql: RuntimeProbe
+
+    @classmethod
+    def passive_defaults(cls) -> RuntimeProbeProvider:
+        return cls(
+            readiness=_readiness_status,
+            recovery=_recovery_status,
+            docker=_docker_status,
+            codex=_codex_status,
+            postgresql=_postgresql_status,
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeStatusService:
+    probes: RuntimeProbeProvider
+
+    @classmethod
+    def defaults(cls) -> RuntimeStatusService:
+        return cls(probes=RuntimeProbeProvider.passive_defaults())
+
+    def status(self) -> RuntimeStatus:
+        readiness = self.component_status("readiness")
+        recovery = self.component_status("recovery")
+        docker = self.component_status("docker")
+        codex = self.component_status("codex")
+        postgresql = self.component_status("postgresql")
+        components = (readiness, recovery, docker, codex, postgresql)
+        return RuntimeStatus(
+            status=(
+                "degraded"
+                if any(component.status == "unavailable" for component in components)
+                else "ok"
+            ),
+            control_plane_authority=CONTROL_PLANE_AUTHORITY,
+            mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS,
+            readiness=readiness,
+            recovery=recovery,
+            docker=docker,
+            codex=codex,
+            postgresql=postgresql,
+        )
+
+    def component_status(self, name: str) -> RuntimeComponentStatus:
+        try:
+            probe = _component_probe(self.probes, name)
+            return _safe_component_status(probe())
+        except (RuntimeError, OSError, ValueError, SQLAlchemyError):
+            return RuntimeComponentStatus(
+                name=_component_name(name),
+                boundary=f"{name} passive status probe",
+                status="unknown",
+                summary="status probe failed without exposing diagnostic details",
+                details={"error": "status probe failed"},
+            )
+
+    def dependency_status(self) -> ServiceDependencyStatus:
+        return ServiceDependencyStatus(
+            name="runtime_status",
+            boundary="read-only runtime component status facade",
+            status="wired",
+        )
+
+
+@dataclass(frozen=True)
+class ProjectReviewService:
+    manifest_root: Path = PROJECT_MANIFEST_ROOT
+
+    def project(self) -> ProjectReview:
+        compilation = compile_project_manifest(self.manifest_root)
+        project = compilation.compiled.project
+        return ProjectReview(
+            project_id=str(project["id"]),
+            source_compiled_hash=compilation.lock.compiled_hash,
+            project_hash=_hash_payload(project),
+            project=project,
+            review_boundary=self.review_boundary(),
+        )
+
+    def intake(self) -> ProjectIntakeReview:
+        compilation = compile_project_manifest(self.manifest_root)
+        intake = compilation.compiled.intake
+        return ProjectIntakeReview(
+            project_id=compilation.lock.project_id,
+            source_compiled_hash=compilation.lock.compiled_hash,
+            intake_hash=_hash_payload(intake),
+            intake=intake,
+            review_boundary=self.review_boundary(),
+        )
+
+    def requirements(self) -> ProjectRequirementsReview:
+        compilation = compile_project_manifest(self.manifest_root)
+        requirements = compilation.compiled.requirements
+        return ProjectRequirementsReview(
+            project_id=compilation.lock.project_id,
+            source_compiled_hash=compilation.lock.compiled_hash,
+            requirements_hash=_hash_payload(list(requirements)),
+            requirements_count=len(requirements),
+            requirements=requirements,
+            review_boundary=self.review_boundary(),
+        )
+
+    def architecture(self) -> ProjectArchitectureReview:
+        compilation = compile_project_manifest(self.manifest_root)
+        architecture = compilation.compiled.architecture
+        components = architecture.get("components", [])
+        interfaces = architecture.get("interfaces", [])
+        data_objects = architecture.get("data_objects", [])
+        return ProjectArchitectureReview(
+            project_id=compilation.lock.project_id,
+            source_compiled_hash=compilation.lock.compiled_hash,
+            architecture_hash=_hash_payload(architecture),
+            component_count=len(components) if isinstance(components, list) else 0,
+            interface_count=len(interfaces) if isinstance(interfaces, list) else 0,
+            data_object_count=len(data_objects) if isinstance(data_objects, list) else 0,
+            architecture=architecture,
+            review_boundary=self.review_boundary(),
+        )
+
+    def capabilities_review(self) -> CapabilityReview:
+        compilation = compile_project_manifest(self.manifest_root)
+        resolution = resolve_compiled_capabilities(compilation)
+        return CapabilityReview(
+            project_id=compilation.lock.project_id,
+            source_compiled_hash=resolution.source_compiled_hash,
+            capability_resolution_hash=resolution.capability_resolution_hash,
+            capability_count=len(resolution.capabilities),
+            capabilities=tuple(capability.as_dict() for capability in resolution.capabilities),
+            required_capabilities=resolution.required_capabilities,
+            satisfied_capabilities=resolution.satisfied_capabilities,
+            partially_satisfied_capabilities=resolution.partially_satisfied_capabilities,
+            unsatisfied_capabilities=resolution.unsatisfied_capabilities,
+            deferred_capabilities=resolution.deferred_capabilities,
+            blocked_capabilities=resolution.blocked_capabilities,
+            mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS,
+            review_boundary=self.review_boundary(),
+        )
+
+    def review_boundary(self) -> ReviewBoundarySnapshot:
+        return ReviewBoundarySnapshot(
+            source_authority=str(self.manifest_root),
+            control_plane_authority=CONTROL_PLANE_AUTHORITY,
+            mandatory_verification_commands=MANDATORY_VERIFICATION_COMMANDS,
+            allowed_operations=(
+                "observe_project",
+                "observe_intake",
+                "observe_requirements",
+                "observe_architecture",
+                "review_capabilities",
+            ),
+            denied_operations=(
+                "approve_gate",
+                "bypass_commit_boundary",
+                "bypass_verifier",
+                "claim_task",
+                "commit",
+                "execute_repair",
+                "execute_runtime",
+                "push",
+                "schedule_execution",
+                "weaken_policy",
+            ),
+            prohibited_paths=DEFAULT_PROHIBITED_PATHS,
+        )
+
+    def dependency_status(self) -> ServiceDependencyStatus:
+        return ServiceDependencyStatus(
+            name="project_review",
+            boundary="ai_ent.project_manifest bounded read-only facade",
             status="wired",
         )
 
@@ -652,7 +915,8 @@ class ProductHumanApprovalService:
     ) -> HumanGateEvidenceValidationResponse:
         provided_evidence = set(evidence_refs)
         provided_commands = set(verification_commands)
-        allowed_scope = {review.task_id, *review.downstream_task_ids}
+        allowed_scope_task_ids = _allowed_scope_task_ids(review)
+        allowed_scope = set(allowed_scope_task_ids)
         missing_evidence = tuple(
             evidence for evidence in review.expected_evidence if evidence not in provided_evidence
         )
@@ -670,6 +934,7 @@ class ProductHumanApprovalService:
             missing_expected_evidence=missing_evidence,
             missing_mandatory_verification_commands=missing_commands,
             unknown_scope_task_ids=unknown_scope,
+            allowed_scope_task_ids=allowed_scope_task_ids,
             authority=_runtime_authority(),
         )
 
@@ -712,10 +977,107 @@ class ProductHumanApprovalService:
                 evidence.missing_mandatory_verification_commands
             ),
             unknown_scope_task_ids=evidence.unknown_scope_task_ids,
+            allowed_scope_task_ids=evidence.allowed_scope_task_ids,
             runtime_gate_status_before=review.status,
             runtime_gate_status_after=review.status,
+            control_plane_authority=CONTROL_PLANE_AUTHORITY,
             authority=_runtime_authority(),
         )
+
+
+@dataclass(frozen=True)
+class ProductArtifactEvidenceService:
+    artifacts_loader: ArtifactsLoader = load_product_runtime_handoff_artifacts
+    session_factory: SessionFactory | None = None
+    evidence_graphs: ArtifactEvidenceGraphService = field(
+        default_factory=ArtifactEvidenceGraphService
+    )
+    project_id: str = DEFAULT_RUNTIME_PROJECT_ID
+
+    def artifact_metadata(self) -> ArtifactMetadataSnapshot:
+        artifacts = self.artifacts_loader()
+        lock = artifacts.lock
+        graph = self._graph()
+        if graph is None:
+            return ArtifactMetadataSnapshot(
+                project_id=self.project_id,
+                product_plan_id=str(lock.get("product_plan_id", PRODUCT_PLAN_ID)),
+                plan_version=str(lock.get("plan_version", PRODUCT_PLAN_VERSION)),
+                graph_available=False,
+                graph_id=None,
+                artifact_graph_contract_version=None,
+                artifact_graph_schema_version=None,
+                evidence_graph_hash=None,
+                source_knowledge_graph_hash=None,
+                source_project_memory_hash=None,
+                requirements_covered=(),
+                capabilities_covered=(),
+                service_boundaries=(),
+                artifacts=(),
+                summary={
+                    "artifact_record_count": 0,
+                    "edge_count": 0,
+                    "node_count": 0,
+                    "runtime_task_count": 0,
+                    "human_gate_count": 0,
+                    "output_authority_state": ARTIFACT_EVIDENCE_GRAPH_OUTPUT_AUTHORITY_STATE,
+                },
+                authority=_runtime_authority(),
+            )
+        return _artifact_metadata_snapshot(
+            graph,
+            product_plan_id=str(lock.get("product_plan_id", PRODUCT_PLAN_ID)),
+            plan_version=str(lock.get("plan_version", PRODUCT_PLAN_VERSION)),
+        )
+
+    def requirement_provenance(self, requirement_id: str) -> ProvenanceTraceSnapshot:
+        artifacts = self.artifacts_loader()
+        lock = artifacts.lock
+        graph = self._graph()
+        requirement_node_id = (
+            requirement_id
+            if requirement_id.startswith("requirement:")
+            else f"requirement:{requirement_id}"
+        )
+        if graph is None:
+            raise ProductApiError(
+                status_code=404,
+                code="PROVENANCE_NOT_AVAILABLE",
+                message="artifact evidence graph is not available for this API instance",
+            )
+        if graph.node_by_id(requirement_node_id) is None:
+            raise ProductApiError(
+                status_code=404,
+                code="PROVENANCE_REQUIREMENT_NOT_FOUND",
+                message="requirement provenance is not available",
+            )
+        trace = graph.trace_for_requirement(requirement_id)
+        return ProvenanceTraceSnapshot(
+            project_id=graph.project_id,
+            product_plan_id=str(lock.get("product_plan_id", PRODUCT_PLAN_ID)),
+            plan_version=str(lock.get("plan_version", PRODUCT_PLAN_VERSION)),
+            query_id=requirement_id,
+            requirement_id=trace.requirement_id,
+            requirement_node_id=trace.requirement_node_id,
+            evidence_graph_hash=trace.evidence_graph_hash,
+            nodes=tuple(_provenance_node_snapshot(node) for node in trace.nodes),
+            edges=tuple(_provenance_edge_snapshot(edge) for edge in trace.edges),
+            summary=trace.as_dict()["summary"],
+            authority=_runtime_authority(),
+        )
+
+    def dependency_status(self) -> ServiceDependencyStatus:
+        return ServiceDependencyStatus(
+            name="artifact_evidence",
+            boundary="read-only non-authoritative artifact evidence graph projection",
+            status="wired",
+        )
+
+    def _graph(self) -> ArtifactEvidenceGraph | None:
+        if self.session_factory is None:
+            return None
+        with self.session_factory() as session:
+            return self.evidence_graphs.build(session, project_id=self.project_id)
 
 
 @dataclass(frozen=True)
@@ -723,36 +1085,67 @@ class ProductApiServices:
     boundary_service: ProductBoundaryService
     governance_service: GovernanceValidationService
     runtime_service: ProductRuntimeSnapshotService
+    status_service: RuntimeStatusService = field(default_factory=RuntimeStatusService.defaults)
+    project_review_service: ProjectReviewService = field(default_factory=ProjectReviewService)
+    access_profile_service: ProductAccessProfileService = field(
+        default_factory=ProductAccessProfileService
+    )
     human_approval_service: ProductHumanApprovalService = field(
         default_factory=ProductHumanApprovalService
     )
+    artifact_service: ProductArtifactEvidenceService | None = None
 
     @classmethod
     def defaults(cls) -> ProductApiServices:
         return cls(
             boundary_service=ProductBoundaryService(),
+            access_profile_service=ProductAccessProfileService(),
             governance_service=GovernanceValidationService(),
             runtime_service=ProductRuntimeSnapshotService(),
+            status_service=RuntimeStatusService.defaults(),
+            project_review_service=ProjectReviewService(),
             human_approval_service=ProductHumanApprovalService(),
         )
 
     def health(self) -> HealthStatus:
         dependencies = (
             self.boundary_service.dependency_status(),
+            self.access_profile_service.dependency_status(),
             self.governance_service.dependency_status(),
+            self.project_review_service.dependency_status(),
             self.runtime_service.dependency_status(),
+            self.status_service.dependency_status(),
             self.human_approval_service.dependency_status(),
+            self._artifact_service().dependency_status(),
         )
         return HealthStatus(dependencies=dependencies)
 
     def boundary(self) -> BoundarySnapshot:
         return self.boundary_service.boundary()
 
+    def access_profile(self) -> ProductAccessProfileSnapshot:
+        return self.access_profile_service.profile()
+
     def validate_governance_request(
         self,
         request: GovernanceValidationRequest,
     ) -> GovernanceValidationResponse:
         return self.governance_service.validate(request)
+
+    def project(self) -> ProjectReview:
+        return self.project_review_service.project()
+
+    def intake(self) -> ProjectIntakeReview:
+        return self.project_review_service.intake()
+
+    def requirements(self) -> ProjectRequirementsReview:
+        return self.project_review_service.requirements()
+
+    def architecture(self) -> ProjectArchitectureReview:
+        return self.project_review_service.architecture()
+
+    def capabilities_review(self) -> CapabilityReview:
+        return self.project_review_service.capabilities_review()
 
     def generated_plan(self) -> GeneratedPlanSnapshot:
         return self.runtime_service.generated_plan()
@@ -771,6 +1164,18 @@ class ProductApiServices:
 
     def runtime_state(self) -> RuntimeStateSnapshot:
         return self.runtime_service.runtime_state()
+
+    def runtime_status(self) -> RuntimeStatus:
+        return self.status_service.status()
+
+    def runtime_component_status(self, name: str) -> RuntimeComponentStatus:
+        return self.status_service.component_status(name)
+
+    def artifact_metadata(self) -> ArtifactMetadataSnapshot:
+        return self._artifact_service().artifact_metadata()
+
+    def requirement_provenance(self, requirement_id: str) -> ProvenanceTraceSnapshot:
+        return self._artifact_service().requirement_provenance(requirement_id)
 
     def human_gate_reviews(self) -> HumanGateReviewCollectionSnapshot:
         return self.human_approval_service.reviews()
@@ -805,6 +1210,232 @@ class ProductApiServices:
         request: HumanGateScopedDecisionRequest,
     ) -> HumanGateDecisionResponse:
         return self.human_approval_service.scoped_decision(gate_id, request)
+
+    def _artifact_service(self) -> ProductArtifactEvidenceService:
+        if self.artifact_service is not None:
+            return self.artifact_service
+        return ProductArtifactEvidenceService(
+            artifacts_loader=self.runtime_service.artifacts_loader,
+            session_factory=self.runtime_service.session_factory,
+        )
+
+
+def _artifact_metadata_snapshot(
+    graph: ArtifactEvidenceGraph,
+    *,
+    product_plan_id: str,
+    plan_version: str,
+) -> ArtifactMetadataSnapshot:
+    graph_payload = graph.as_dict()
+    return ArtifactMetadataSnapshot(
+        project_id=graph.project_id,
+        product_plan_id=product_plan_id,
+        plan_version=plan_version,
+        graph_available=True,
+        graph_id=graph.graph_id,
+        artifact_graph_contract_version=graph.contract_version,
+        artifact_graph_schema_version=graph.schema_version,
+        evidence_graph_hash=graph.evidence_graph_hash,
+        source_knowledge_graph_hash=graph.source_knowledge_graph_hash,
+        source_project_memory_hash=graph.source_project_memory_hash,
+        requirements_covered=graph.requirements_covered,
+        capabilities_covered=graph.capabilities_covered,
+        service_boundaries=tuple(
+            ArtifactEvidenceServiceBoundarySnapshot(
+                service=boundary.service,
+                interface_id=boundary.interface_id,
+                contract_version=boundary.contract_version,
+                schema_version=boundary.schema_version,
+            )
+            for boundary in graph.service_boundaries
+        ),
+        artifacts=tuple(
+            _artifact_record_metadata(node)
+            for node in graph.nodes
+            if node.node_type == "artifact_evidence_record"
+        ),
+        summary=graph_payload["summary"],
+        authority=_runtime_authority(),
+    )
+
+
+def _artifact_record_metadata(node: Any) -> ArtifactRecordMetadataSnapshot:
+    payload = _mapping(node.payload)
+    return ArtifactRecordMetadataSnapshot(
+        artifact_id=node.native_id,
+        node_id=node.node_id,
+        kind=_optional_str(payload.get("kind")),
+        source=node.source,
+        project_id=_optional_str(payload.get("project_id")),
+        task_id=_optional_str(payload.get("task_id")),
+        execution_id=_optional_str(payload.get("execution_id")),
+        commit_hash=_optional_str(payload.get("commit_hash")),
+        tree_hash=_optional_str(payload.get("tree_hash")),
+        payload_hash=node.payload_hash,
+    )
+
+
+def _provenance_node_snapshot(node: Any) -> ProvenanceNodeSnapshot:
+    return ProvenanceNodeSnapshot(
+        node_id=node.node_id,
+        node_type=node.node_type,
+        native_id=node.native_id,
+        source=node.source,
+        classification=node.classification,
+        payload_hash=node.payload_hash,
+    )
+
+
+def _provenance_edge_snapshot(edge: Any) -> ProvenanceEdgeSnapshot:
+    return ProvenanceEdgeSnapshot(
+        edge_id=edge.edge_id,
+        edge_type=edge.edge_type,
+        source_node_id=edge.source_node_id,
+        target_node_id=edge.target_node_id,
+        provenance_refs=edge.provenance_refs,
+        payload_hash=edge.payload_hash,
+    )
+
+
+def _readiness_status() -> RuntimeComponentStatus:
+    return RuntimeComponentStatus(
+        name="readiness",
+        boundary="ai_ent.scheduler.readiness.TaskReadinessService",
+        status="available",
+        summary="readiness policy is available for passive inspection",
+        details={"human_gates": "explicit_control_plane_gate_required"},
+    )
+
+
+def _recovery_status() -> RuntimeComponentStatus:
+    return RuntimeComponentStatus(
+        name="recovery",
+        boundary="ai_ent.scheduler.recovery.SchedulerRecoveryService",
+        status="available",
+        summary="recovery policy is available for passive inspection",
+        details={"actions_performed": False},
+    )
+
+
+def _docker_status() -> RuntimeComponentStatus:
+    docker_available = shutil.which("docker") is not None
+    compose_available = shutil.which("docker-compose") is not None
+    return RuntimeComponentStatus(
+        name="docker",
+        boundary="passive executable discovery",
+        status="available" if docker_available else "unavailable",
+        summary="Docker executable discovery completed",
+        details={
+            "docker_command_available": docker_available,
+            "docker_compose_command_available": compose_available,
+        },
+    )
+
+
+def _codex_status() -> RuntimeComponentStatus:
+    codex_available = shutil.which("codex") is not None
+    return RuntimeComponentStatus(
+        name="codex",
+        boundary="passive executable discovery",
+        status="available" if codex_available else "unavailable",
+        summary="Codex executable discovery completed",
+        details={"codex_command_available": codex_available},
+    )
+
+
+def _postgresql_status() -> RuntimeComponentStatus:
+    try:
+        settings = load_database_settings()
+    except DatabaseConfigError:
+        return RuntimeComponentStatus(
+            name="postgresql",
+            boundary="ai_ent.persistence.database.Database.health",
+            status="unknown",
+            summary="PostgreSQL configuration is incomplete",
+            details={"configured": False},
+        )
+
+    database = Database(settings)
+    try:
+        health = database.health()
+    finally:
+        database.dispose()
+    return RuntimeComponentStatus(
+        name="postgresql",
+        boundary="ai_ent.persistence.database.Database.health",
+        status="available" if health.ok else "unavailable",
+        summary="PostgreSQL health probe completed",
+        details={
+            "configured": True,
+            "driver": settings.driver,
+            "health": "ok" if health.ok else "failed",
+        },
+    )
+
+
+def _component_probe(probes: RuntimeProbeProvider, name: str) -> RuntimeProbe:
+    if name == "readiness":
+        return probes.readiness
+    if name == "recovery":
+        return probes.recovery
+    if name == "docker":
+        return probes.docker
+    if name == "codex":
+        return probes.codex
+    if name == "postgresql":
+        return probes.postgresql
+    raise ValueError(f"unknown runtime component: {name}")
+
+
+def _component_name(name: str) -> RuntimeComponentName:
+    if name in {"readiness", "recovery", "docker", "codex", "postgresql"}:
+        return cast(RuntimeComponentName, name)
+    return "readiness"
+
+
+def _safe_component_status(status: RuntimeComponentStatus) -> RuntimeComponentStatus:
+    return RuntimeComponentStatus(
+        name=status.name,
+        boundary=_safe_probe_text(status.boundary, fallback=f"{status.name} status probe"),
+        status=status.status,
+        summary=_safe_probe_text(status.summary, fallback="status detail redacted"),
+        details=_safe_component_details(status.details),
+        passive_probe=status.passive_probe,
+        actions_performed=False,
+        grants_control_plane_authority=False,
+        gate_approval_authority=False,
+        verifier_bypass_authority=False,
+        commit_boundary_bypass_authority=False,
+        scheduling_authority=False,
+        runtime_execution_authority=False,
+        policy_weakening_authority=False,
+        secret_values_exposed=False,
+    )
+
+
+def _safe_probe_text(value: str, *, fallback: str) -> str:
+    if is_secret_field_name(value):
+        return fallback
+    return value
+
+
+def _safe_component_details(value: object) -> dict[str, object]:
+    details = _redact_secret_text_values(redact_secret_details(value))
+    if isinstance(details, dict):
+        return details
+    return {}
+
+
+def _redact_secret_text_values(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _redact_secret_text_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_secret_text_values(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_secret_text_values(item) for item in value]
+    if isinstance(value, str) and is_secret_field_name(value):
+        return REDACTED
+    return value
 
 
 def _runtime_authority() -> RuntimeAuthoritySnapshot:
@@ -975,8 +1606,24 @@ def _json_string_tuple(value: str) -> tuple[str, ...]:
         return ()
 
 
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
+
+
 def _is_pending_gate_status(status: str) -> bool:
     return status in {"pending", "PENDING_NOT_APPROVED"}
+
+
+def _allowed_scope_task_ids(review: HumanGateReviewSnapshot) -> tuple[str, ...]:
+    scoped: list[str] = []
+    seen: set[str] = set()
+    for task_id in (review.task_id, *review.downstream_task_ids):
+        if task_id and task_id not in seen:
+            scoped.append(task_id)
+            seen.add(task_id)
+    return tuple(scoped)
 
 
 def _decision_hash(
@@ -991,6 +1638,10 @@ def _decision_hash(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _hash_payload(value: object) -> str:
+    return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
 def _int(value: object, default: int) -> int:

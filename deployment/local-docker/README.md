@@ -13,6 +13,11 @@ keeping future cloud deployment decisions outside the package boundary.
 - Cloud targets remain deferred behind `PRD-DEC-002` and `PRD-DEC-003`.
 - No credential values are stored in this package.
 
+## Inventory
+
+The normative package inventory is declared in `portability.yaml` and is limited
+to this README, the Dockerfile, the Compose file, and the portability contract.
+
 ## Local Use
 
 Set database values in the operator environment before invoking Docker Compose:

@@ -7,6 +7,7 @@ import yaml
 from ai_ent.project_manifest import write_compiled_project
 from scripts.deployment_portability import (
     PACKAGE_ID,
+    REQUIRED_PACKAGE_FILE_PATHS,
     REQUIRED_VERIFICATION_COMMANDS,
     validate_deployment_portability,
 )
@@ -75,7 +76,9 @@ def test_local_docker_package_deterministic_compile_and_generated_derivative_saf
 
 
 def test_portability_contract_keeps_human_gates_and_verification_explicit() -> None:
-    portability = yaml.safe_load(Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"))
+    portability = yaml.safe_load(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8")
+    )
 
     gates = portability["human_gates"]
     assert {gate["action"] for gate in gates} == {
@@ -88,8 +91,23 @@ def test_portability_contract_keeps_human_gates_and_verification_explicit() -> N
     assert tuple(portability["verification"]["commands"]) == REQUIRED_VERIFICATION_COMMANDS
 
 
+def test_portability_contract_declares_deterministic_package_inventory() -> None:
+    portability = yaml.safe_load(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8")
+    )
+
+    files = portability["package_files"]
+    assert tuple(file["path"] for file in files) == REQUIRED_PACKAGE_FILE_PATHS
+    assert all(file["classification"] == "NORMATIVE" for file in files)
+    assert all(file["role"] for file in files)
+    assert all(Path(file["path"]).exists() for file in files)
+    assert not any(Path(file["path"]).name.startswith(".env") for file in files)
+
+
 def test_compose_uses_operator_supplied_database_secret_only() -> None:
-    compose = yaml.safe_load(Path("deployment/local-docker/compose.yaml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load(
+        Path("deployment/local-docker/compose.yaml").read_text(encoding="utf-8")
+    )
     services = compose["services"]
 
     assert services["operator"]["command"] == ["python", "scripts/bootstrap.py", "status"]
@@ -104,6 +122,133 @@ def test_repeated_portability_validation_is_deterministic() -> None:
     second = validate_deployment_portability().as_dict()
 
     assert first == second
+
+
+def test_portability_validation_rejects_embedded_secret_literals(tmp_path: Path) -> None:
+    package = tmp_path / "portability.yaml"
+    package.write_text(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    loaded = yaml.safe_load(package.read_text(encoding="utf-8"))
+    loaded["secret_policy"]["api_token"] = "plain-text-token"
+    package.write_text(yaml.safe_dump(loaded, sort_keys=False), encoding="utf-8")
+
+    result = validate_deployment_portability(
+        package_path=package,
+        compose_path=Path("deployment/local-docker/compose.yaml"),
+        manifest_root=Path("manifest/project/ai-ent"),
+    )
+
+    assert not result.ok
+    assert any("embedded secret-like value" in error for error in result.errors)
+
+
+def test_portability_rejects_missing_lan_and_secret_decision_dependencies(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "portability.yaml"
+    package.write_text(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    document = yaml.safe_load(package.read_text(encoding="utf-8"))
+    document["decision_dependencies"] = []
+    package.write_text(yaml.safe_dump(document, sort_keys=True), encoding="utf-8")
+
+    result = validate_deployment_portability(
+        package_path=package,
+        compose_path=Path("deployment/local-docker/compose.yaml"),
+        manifest_root=Path("manifest/project/ai-ent"),
+    )
+
+    assert not result.ok
+    assert "missing decision dependencies: PRD-DEC-002, PRD-DEC-003" in result.errors
+
+
+def test_portability_rejects_redefined_control_plane_authority(tmp_path: Path) -> None:
+    package = tmp_path / "portability.yaml"
+    package.write_text(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    document = yaml.safe_load(package.read_text(encoding="utf-8"))
+    document["authority"]["control_plane_backend"] = "sqlite"
+    document["authority"]["operator_invocation_required"] = False
+    package.write_text(yaml.safe_dump(document, sort_keys=True), encoding="utf-8")
+
+    result = validate_deployment_portability(
+        package_path=package,
+        compose_path=Path("deployment/local-docker/compose.yaml"),
+        manifest_root=Path("manifest/project/ai-ent"),
+    )
+
+    assert not result.ok
+    assert "authority.control_plane_backend must remain postgresql" in result.errors
+    assert "authority.operator_invocation_required must be true" in result.errors
+
+
+def test_portability_rejects_optional_or_incomplete_independent_verification(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "portability.yaml"
+    package.write_text(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    document = yaml.safe_load(package.read_text(encoding="utf-8"))
+    document["verification"]["independent_verification_mandatory"] = False
+    document["verification"]["commands"] = list(REQUIRED_VERIFICATION_COMMANDS[:-1])
+    package.write_text(yaml.safe_dump(document, sort_keys=True), encoding="utf-8")
+
+    result = validate_deployment_portability(
+        package_path=package,
+        compose_path=Path("deployment/local-docker/compose.yaml"),
+        manifest_root=Path("manifest/project/ai-ent"),
+    )
+
+    assert not result.ok
+    assert "verification.independent_verification_mandatory must be true" in result.errors
+    assert (
+        f"missing required verification command: {REQUIRED_VERIFICATION_COMMANDS[-1]}"
+        in result.errors
+    )
+
+
+def test_portability_rejects_embedded_secret_values_in_package_or_compose(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "portability.yaml"
+    compose = tmp_path / "compose.yaml"
+    package.write_text(
+        Path("deployment/local-docker/portability.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    compose.write_text(
+        Path("deployment/local-docker/compose.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    package_document = yaml.safe_load(package.read_text(encoding="utf-8"))
+    package_document["secret_policy"]["admin_token"] = "plaintext-admin-token"
+    package.write_text(yaml.safe_dump(package_document, sort_keys=True), encoding="utf-8")
+    compose_document = yaml.safe_load(compose.read_text(encoding="utf-8"))
+    compose_document["services"]["operator"]["environment"]["AIENT_DB_PASSWORD"] = (
+        "plaintext-password"
+    )
+    compose.write_text(yaml.safe_dump(compose_document, sort_keys=True), encoding="utf-8")
+
+    result = validate_deployment_portability(
+        package_path=package,
+        compose_path=compose,
+        manifest_root=Path("manifest/project/ai-ent"),
+    )
+
+    assert not result.ok
+    assert "package.secret_policy.admin_token contains an embedded secret-like value" in result.errors
+    assert (
+        "compose.services.operator.environment.AIENT_DB_PASSWORD contains an embedded "
+        "secret-like value"
+    ) in result.errors
 
 
 def _copy_manifest(source: Path, target: Path) -> None:

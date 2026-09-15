@@ -199,19 +199,19 @@ def state_reconcile(_: argparse.Namespace) -> int:
 def guarded_run(args: argparse.Namespace) -> int:
     shutdown = GracefulShutdownController()
     shutdown.install_signal_handlers()
+    database: Database | None = None
     try:
-        database = Database(load_database_settings(Path(".env")))
-    except DatabaseConfigError as exc:
-        print(f"guarded_run: database configuration blocked: {exc}", file=sys.stderr)
-        return 2
+        try:
+            database = Database(load_database_settings(Path(".env")))
+        except DatabaseConfigError as exc:
+            print(f"guarded_run: database configuration blocked: {exc}", file=sys.stderr)
+            return 2
 
-    health = database.health()
-    if not health.ok:
-        print(f"guarded_run: postgresql unavailable: {health.detail}", file=sys.stderr)
-        database.dispose()
-        return 2
+        health = database.health()
+        if not health.ok:
+            print(f"guarded_run: postgresql unavailable: {health.detail}", file=sys.stderr)
+            return 2
 
-    try:
         with database.session() as session:
             routing = _guarded_routing_defaults(args)
             config = GuardedRunConfig(
@@ -236,7 +236,9 @@ def guarded_run(args: argparse.Namespace) -> int:
             successful_stops = {"NO_READY_TASK", "COMPLETED_BOUND", "TASK_LIMIT", "SHUTDOWN_REQUESTED"}
             return 0 if result.stop_reason in successful_stops else 1
     finally:
-        database.dispose()
+        shutdown.restore_signal_handlers()
+        if database is not None:
+            database.dispose()
 
 
 def cleanup(args: argparse.Namespace) -> int:

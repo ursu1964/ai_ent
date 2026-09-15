@@ -28,6 +28,7 @@ from ai_ent.persistence.models import (
 )
 from ai_ent.persistence.repositories.bootstrap import BootstrapRunRepository
 from ai_ent.product_dry_run import EXPECTED_PRD_DEC_001_HASH
+from ai_ent.product_observability import ProductObservabilityService
 from ai_ent.product_plan_acceptance import EXPECTED_PRODUCTIZATION_PLAN_HASH
 from ai_ent.product_plan_final_acceptance import EXPECTED_PRODUCT_DRY_RUN_HASH, PRODUCT_PLAN_ID
 from ai_ent.project_manifest import GENERATED_MARKER, canonical_bytes
@@ -338,6 +339,23 @@ class ProductRuntimePlanImporter:
                     resume_semantics=str(gate.get("resume_semantics", "explicit approval, then reevaluate readiness before claim")),
                 )
             )
+        session.flush()
+        task_ids = _product_task_ids(session, project_id)
+        buckets = _readiness_buckets(session, self.readiness, task_ids)
+        ProductObservabilityService().record_runtime_plan_import(
+            session,
+            project_id=project_id,
+            import_id=import_id,
+            tasks_imported=len(task_ids),
+            dependency_edges_imported=_dependency_count(session, task_ids),
+            human_gates_imported=_human_gate_count(session, import_id),
+            ready_tasks=buckets["READY"],
+            gated_tasks=buckets["GATED"],
+            waiting_tasks=buckets["WAITING"],
+            postgresql_authority="active"
+            if BootstrapRunRepository().get_active_authority(session, project_id)
+            else "inactive",
+        )
 
     def _preflight_blockers(
         self,

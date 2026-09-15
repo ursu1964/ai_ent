@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
+import re
 import subprocess
+import tarfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -34,6 +37,8 @@ ArtifactKind = Literal["source", "documentation", "log", "package", "evidence", 
 ArtifactAuthorityState = Literal["NON_AUTHORITATIVE", "VALIDATED"]
 ExternalProjectFindingSeverity = Literal["ERROR"]
 ExternalFrozenPlanFindingSeverity = Literal["ERROR"]
+GeneratedAppOperationKind = Literal["build", "test", "start", "stop", "restart", "log", "archive"]
+GeneratedAppOperationStatus = Literal["planned", "blocked", "succeeded", "failed"]
 
 EXTERNAL_PROJECT_LIFECYCLE: tuple[ExternalProjectLifecycleState, ...] = (
     "CREATE",
@@ -57,7 +62,28 @@ MANDATORY_VERIFICATION_COMMANDS = (
 DEFAULT_PROHIBITED_PATHS = (".bootstrap/**", ".build/**", ".env", ".env.*", "aient/**")
 SECRET_FIELD_MARKERS = ("secret", "token", "password", "credential", "private_key", "api_key")
 WORKSPACE_MARKER_PATH = ".ai-enterprise/workspace.json"
+GENERATED_APP_OPERATION_KINDS: tuple[GeneratedAppOperationKind, ...] = (
+    "build",
+    "test",
+    "start",
+    "stop",
+    "restart",
+    "log",
+    "archive",
+)
+GENERATED_APP_MUTATING_OPERATION_KINDS: tuple[GeneratedAppOperationKind, ...] = (
+    "build",
+    "test",
+    "start",
+    "stop",
+    "restart",
+    "archive",
+)
+GENERATED_APP_MUTATING_OPERATIONS: frozenset[GeneratedAppOperationKind] = frozenset(
+    GENERATED_APP_MUTATING_OPERATION_KINDS
+)
 GitCommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
+OperationCommandRunner = Callable[[list[str], Path], subprocess.CompletedProcess[str]]
 
 
 class ExternalProjectServiceError(RuntimeError):
@@ -442,6 +468,184 @@ class RepositoryProvisioningRecord:
         }
 
 
+@dataclass(frozen=True)
+class GeneratedAppOperationRequest:
+    operation: GeneratedAppOperationKind
+    actor_id: str
+    human_gate_id: str | None = None
+    human_gate_confirmed: bool = False
+    dry_run: bool = False
+    tail_lines: int = 200
+
+    def __post_init__(self) -> None:
+        if self.operation not in GENERATED_APP_OPERATION_KINDS:
+            raise ExternalProjectServiceError(
+                f"unsupported generated app operation: {self.operation}"
+            )
+        if not self.actor_id:
+            raise ExternalProjectServiceError("actor_id must be a non-empty string")
+        if self.tail_lines < 1:
+            raise ExternalProjectServiceError("tail_lines must be at least 1")
+
+
+@dataclass(frozen=True)
+class GeneratedAppOperationCommand:
+    args: tuple[str, ...]
+    cwd: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "args": [_redact_command_text(arg) for arg in self.args],
+            "cwd": self.cwd,
+        }
+
+
+@dataclass(frozen=True)
+class GeneratedAppOperationResult:
+    operation_id: str
+    project_id: str
+    operation: GeneratedAppOperationKind
+    status: GeneratedAppOperationStatus
+    workspace_root: str
+    command_plan: tuple[GeneratedAppOperationCommand, ...]
+    actor_id: str
+    requires_human_gate: bool
+    human_gate_id: str | None
+    human_gate_confirmed: bool
+    control_plane_authority: str = CONTROL_PLANE_AUTHORITY
+    grants_control_plane_authority: bool = False
+    verifier_bypass_authority: bool = False
+    independent_verification_required: bool = True
+    mandatory_verification_commands: tuple[str, ...] = MANDATORY_VERIFICATION_COMMANDS
+    archive_path: str | None = None
+    output: tuple[str, ...] = ()
+    blocked_reason: str | None = None
+    exit_code: int | None = None
+    secret_values_exposed: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "operation_id": self.operation_id,
+            "project_id": self.project_id,
+            "operation": self.operation,
+            "status": self.status,
+            "workspace_root": self.workspace_root,
+            "command_plan": [command.as_dict() for command in self.command_plan],
+            "actor_id": self.actor_id,
+            "requires_human_gate": self.requires_human_gate,
+            "human_gate_id": self.human_gate_id,
+            "human_gate_confirmed": self.human_gate_confirmed,
+            "control_plane_authority": self.control_plane_authority,
+            "grants_control_plane_authority": self.grants_control_plane_authority,
+            "verifier_bypass_authority": self.verifier_bypass_authority,
+            "independent_verification_required": self.independent_verification_required,
+            "mandatory_verification_commands": list(self.mandatory_verification_commands),
+            "archive_path": self.archive_path,
+            "output": list(self.output),
+            "blocked_reason": self.blocked_reason,
+            "exit_code": self.exit_code,
+            "secret_values_exposed": self.secret_values_exposed,
+        }
+
+
+class GeneratedAppOperationController:
+    """Scoped generated-app operation controls for owned external workspaces."""
+
+    def __init__(
+        self,
+        generated_apps_root: Path,
+        *,
+        control_plane_root: Path | None = None,
+        command_runner: OperationCommandRunner | None = None,
+    ) -> None:
+        self._workspace_manager = GeneratedAppWorkspaceManager(
+            generated_apps_root,
+            control_plane_root=control_plane_root,
+        )
+        self._command_runner = command_runner
+
+    def plan(
+        self,
+        project: ExternalProject,
+        request: GeneratedAppOperationRequest,
+    ) -> GeneratedAppOperationResult:
+        workspace_root = self._validated_workspace_root(project)
+        commands = _generated_app_operation_commands(project, request, workspace_root)
+        blocked_reason = _generated_app_operation_blocker(project, request)
+        return GeneratedAppOperationResult(
+            operation_id=_generated_app_operation_id(project, request, workspace_root),
+            project_id=project.project_id,
+            operation=request.operation,
+            status="blocked" if blocked_reason else "planned",
+            workspace_root=str(workspace_root),
+            command_plan=commands,
+            actor_id=request.actor_id,
+            requires_human_gate=request.operation in GENERATED_APP_MUTATING_OPERATIONS,
+            human_gate_id=request.human_gate_id,
+            human_gate_confirmed=request.human_gate_confirmed,
+            blocked_reason=blocked_reason,
+        )
+
+    def run(
+        self,
+        project: ExternalProject,
+        request: GeneratedAppOperationRequest,
+    ) -> GeneratedAppOperationResult:
+        planned = self.plan(project, request)
+        if planned.status == "blocked" or request.dry_run:
+            return planned
+        workspace_root = Path(planned.workspace_root)
+        if request.operation == "archive":
+            try:
+                archive_path = _write_generated_app_archive(project, workspace_root)
+            except OSError as exc:
+                return replace(
+                    planned,
+                    status="failed",
+                    exit_code=1,
+                    output=(_redact_command_text(str(exc)),),
+                )
+            return replace(
+                planned,
+                status="succeeded",
+                archive_path=str(archive_path),
+                output=(f"archive_path={archive_path}",),
+                exit_code=0,
+            )
+
+        output: list[str] = []
+        for command in planned.command_plan:
+            completed = self._run_command(list(command.args), cwd=workspace_root)
+            output.extend(_redacted_output_lines(completed.stdout))
+            if completed.returncode != 0:
+                return replace(
+                    planned,
+                    status="failed",
+                    output=tuple(output),
+                    exit_code=completed.returncode,
+                )
+        return replace(planned, status="succeeded", output=tuple(output), exit_code=0)
+
+    def _validated_workspace_root(self, project: ExternalProject) -> Path:
+        _require_service_safe_project(project)
+        workspace_root = self._workspace_manager._resolve_workspace_root(project)
+        _require_safe_workspace_target(workspace_root, self._workspace_manager.control_plane_root)
+        self._workspace_manager._require_workspace_marker(project, workspace_root)
+        return workspace_root
+
+    def _run_command(self, args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+        if self._command_runner is not None:
+            return self._command_runner(args, cwd)
+        return subprocess.run(
+            args,
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+
 class GeneratedAppWorkspaceManager:
     def __init__(
         self,
@@ -592,7 +796,11 @@ class GeneratedAppWorkspaceManager:
         _require_marker_value(payload, "repository_id", expected["repository_id"])
         _require_marker_value(payload, "plan_id", expected["plan_id"])
         _require_marker_value(payload, "plan_hash", expected["plan_hash"])
-        _require_marker_value(payload, "control_plane_authority", expected["control_plane_authority"])
+        _require_marker_value(
+            payload,
+            "control_plane_authority",
+            expected["control_plane_authority"],
+        )
         _require_marker_value(
             payload,
             "push_requires_human_gate",
@@ -1684,6 +1892,157 @@ def _validate_artifacts(
                 message=f"artifact metadata contains secret-bearing fields: {artifact.artifact_id}",
                 findings=findings,
             )
+
+
+def _generated_app_operation_blocker(
+    project: ExternalProject,
+    request: GeneratedAppOperationRequest,
+) -> str | None:
+    if request.operation not in GENERATED_APP_OPERATION_KINDS:
+        return f"unsupported_generated_app_operation:{request.operation}"
+    if request.operation not in GENERATED_APP_MUTATING_OPERATIONS:
+        return None
+    if not request.human_gate_id:
+        return "explicit_generated_app_operation_human_gate_required"
+    scoped_gates = set(project.plan.required_human_gates)
+    if request.human_gate_id not in scoped_gates:
+        return f"human_gate_not_plan_scoped:{request.human_gate_id}"
+    if request.human_gate_id not in set(project.runtime_binding.approved_human_gates):
+        return f"human_gate_not_approved:{request.human_gate_id}"
+    if not request.human_gate_confirmed:
+        return f"human_gate_confirmation_required:{request.human_gate_id}"
+    return None
+
+
+def _generated_app_operation_commands(
+    project: ExternalProject,
+    request: GeneratedAppOperationRequest,
+    workspace_root: Path,
+) -> tuple[GeneratedAppOperationCommand, ...]:
+    compose = ("docker", "compose", "--project-name", _compose_project_name(project.project_id))
+    cwd = str(workspace_root)
+    if request.operation == "build":
+        return (GeneratedAppOperationCommand((*compose, "build"), cwd),)
+    if request.operation == "test":
+        return (GeneratedAppOperationCommand((*compose, "run", "--rm", "app", "test"), cwd),)
+    if request.operation == "start":
+        return (GeneratedAppOperationCommand((*compose, "up", "-d"), cwd),)
+    if request.operation == "stop":
+        return (GeneratedAppOperationCommand((*compose, "stop"), cwd),)
+    if request.operation == "restart":
+        return (
+            GeneratedAppOperationCommand((*compose, "stop"), cwd),
+            GeneratedAppOperationCommand((*compose, "up", "-d"), cwd),
+        )
+    if request.operation == "log":
+        tail = str(request.tail_lines)
+        return (
+            GeneratedAppOperationCommand(
+                (*compose, "logs", "--no-color", "--tail", tail),
+                cwd,
+            ),
+        )
+    if request.operation == "archive":
+        archive_path = _generated_app_archive_path(project, workspace_root)
+        return (
+            GeneratedAppOperationCommand(
+                (
+                    "internal-archive",
+                    "--workspace",
+                    str(workspace_root),
+                    "--output",
+                    str(archive_path),
+                ),
+                cwd,
+            ),
+        )
+    raise ExternalProjectServiceError(f"unsupported generated app operation: {request.operation}")
+
+
+def _generated_app_operation_id(
+    project: ExternalProject,
+    request: GeneratedAppOperationRequest,
+    workspace_root: Path,
+) -> str:
+    digest = _hash(
+        {
+            "actor_id": request.actor_id,
+            "human_gate_confirmed": request.human_gate_confirmed,
+            "human_gate_id": request.human_gate_id,
+            "operation": request.operation,
+            "project_id": project.project_id,
+            "tail_lines": request.tail_lines,
+            "workspace_root": str(workspace_root),
+        }
+    )
+    return f"generated-app-operation-{digest[:16]}"
+
+
+def _compose_project_name(project_id: str) -> str:
+    return f"ai-ent-{_slug(project_id)}"[:63].rstrip("-")
+
+
+def _generated_app_archive_path(project: ExternalProject, workspace_root: Path) -> Path:
+    return workspace_root / ".ai-enterprise" / "archives" / f"{_slug(project.project_id)}.tar.gz"
+
+
+def _write_generated_app_archive(project: ExternalProject, workspace_root: Path) -> Path:
+    archive_path = _generated_app_archive_path(project, workspace_root)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    excluded_paths = (
+        *project.workspace.prohibited_paths,
+        ".git/**",
+        ".ai-enterprise/archives/**",
+    )
+    with (
+        archive_path.open("wb") as raw_archive,
+        gzip.GzipFile(fileobj=raw_archive, mode="wb", mtime=0) as gzip_archive,
+        tarfile.open(fileobj=gzip_archive, mode="w") as archive,
+    ):
+        for path in sorted(workspace_root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            relative_path = path.relative_to(workspace_root).as_posix()
+            if _matches_prohibited_path(relative_path, excluded_paths):
+                continue
+            if _text_has_secret_marker(relative_path):
+                continue
+            _add_deterministic_archive_file(
+                archive,
+                path,
+                f"{project.project_id}/{relative_path}",
+            )
+    return archive_path
+
+
+def _add_deterministic_archive_file(
+    archive: tarfile.TarFile,
+    path: Path,
+    arcname: str,
+) -> None:
+    info = archive.gettarinfo(str(path), arcname=arcname)
+    info.mtime = 0
+    info.uid = 0
+    info.gid = 0
+    info.uname = ""
+    info.gname = ""
+    with path.open("rb") as source:
+        archive.addfile(info, source)
+
+
+def _redacted_output_lines(output: str | None) -> tuple[str, ...]:
+    if not output:
+        return ()
+    return tuple(_redact_command_text(line) for line in output.splitlines())
+
+
+def _redact_command_text(value: str) -> str:
+    redacted = value
+    for marker in SECRET_FIELD_MARKERS:
+        pattern = re.compile(rf"(?i)({re.escape(marker)}[\w-]*\s*[:=]\s*)[^\s,;]+")
+        redacted = pattern.sub(r"\1<redacted>", redacted)
+    redacted = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", redacted)
+    return redacted
 
 
 def _append(

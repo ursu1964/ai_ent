@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import signal
 from datetime import UTC, datetime, timedelta
+from types import FrameType
 from typing import Any
 
 from sqlalchemy import create_engine, event
@@ -23,6 +25,7 @@ from ai_ent.persistence.repositories import (
     TaskRepository,
 )
 from ai_ent.runtime_operations import (
+    GracefulShutdownController,
     MigrationSafetyChecker,
     RetentionPolicy,
     RuntimeCleanupService,
@@ -300,7 +303,7 @@ def test_migration_checks_preserve_authority_and_verification_profiles() -> None
                 agent_role="implementer",
                 model_profile="codex",
                 executor="codex",
-                verification_profile="",
+                verification_profile="   ",
                 feasibility_status="feasible",
                 policy_decision="allowed",
                 implements_json="[]",
@@ -316,6 +319,69 @@ def test_migration_checks_preserve_authority_and_verification_profiles() -> None
         assert "control_plane_authority" not in [failure.name for failure in result.failures]
         assert [failure.name for failure in result.failures] == ["independent_verification"]
         assert "PRD-TASK-001" in result.failures[0].detail
+
+
+def test_migration_check_blocks_implicit_human_gate_boundaries() -> None:
+    factory = session_factory()
+    now = datetime(2026, 9, 12, 12, tzinfo=UTC)
+    with factory() as session:
+        seed_task(session)
+        bootstrap = BootstrapRunRepository()
+        bootstrap.create_run(
+            session,
+            run_id="run-1",
+            project_id="project-1",
+            manifest_ref="manifest/project/ai-ent",
+        )
+        bootstrap.activate_postgresql_authority(session, project_id="project-1", run_id="run-1")
+        session.add(
+            RuntimePlanImport(
+                id="import-1",
+                project_id="project-1",
+                plan_project_id="project-1",
+                plan_id="plan-1",
+                plan_version="1",
+                status="imported",
+                imported_at=now,
+                compiled_project_hash="a" * 64,
+                capability_resolution_hash="b" * 64,
+                trace_validation_hash="c" * 64,
+                implementation_plan_hash="d" * 64,
+                feasibility_hash="e" * 64,
+                dry_run_hash="f" * 64,
+                task_fingerprint_hash="1" * 64,
+                dependency_graph_hash="2" * 64,
+                importer_version="test",
+                task_count=1,
+                dependency_count=0,
+                human_gate_count=1,
+                effective_concurrency=1,
+            )
+        )
+        session.add(
+            RuntimeHumanGate(
+                id="gate-implicit",
+                import_id="import-1",
+                task_id="PRD-TASK-001",
+                plan_id="plan-1",
+                plan_version="1",
+                status="pending",
+                reason=" ",
+                risk_level="high",
+                approval_boundary="operator",
+                expected_evidence_json="[]",
+                downstream_task_ids_json="[]",
+                resume_semantics="resume after approval",
+            )
+        )
+        session.flush()
+
+        result = MigrationSafetyChecker().check(session, project_id="project-1")
+
+        assert not result.ok
+        assert [failure.name for failure in result.failures] == ["human_gates"]
+        assert "gate-implicit" in result.failures[0].detail
+        assert "explicit operator boundaries" in result.failures[0].detail
 
 
 def test_migration_check_blocks_missing_postgresql_authority() -> None:
@@ -421,8 +487,32 @@ def test_backup_guidance_and_verification_commands_do_not_render_secret_values()
     assert "AIENT_DB_PASSWORD" in rendered
     assert "secret-password" not in rendered
     assert "CHANGE_ME" not in rendered
+    assert guidance.verification_commands == mandatory_verification_commands()
+    for command in mandatory_verification_commands():
+        assert f"- independent verification: {command}" in rendered
     assert mandatory_verification_commands() == (
         "/home/user/projects/ai_ent/aient/bin/python -m pytest -q",
         "/home/user/projects/ai_ent/aient/bin/python -m ruff check .",
         "/home/user/projects/ai_ent/aient/bin/python -m pyright",
     )
+
+
+def test_graceful_shutdown_controller_records_signal_and_restores_handler() -> None:
+    signum = signal.SIGUSR1
+    original_handler = signal.getsignal(signum)
+
+    def previous_handler(_: int, __: FrameType | None) -> None:
+        return None
+
+    signal.signal(signum, previous_handler)
+    controller = GracefulShutdownController()
+    try:
+        controller.install_signal_handlers((signum,))
+        controller.request_shutdown(signum, None)
+        controller.restore_signal_handlers()
+
+        assert controller.requested
+        assert controller.signals == ("SIGUSR1",)
+        assert signal.getsignal(signum) == previous_handler
+    finally:
+        signal.signal(signum, original_handler)

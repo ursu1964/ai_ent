@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+import yaml
+
 from ai_ent.project_manifest import (
     EnvironmentProfile,
     GeneratedImplementationTask,
@@ -190,6 +192,58 @@ def test_compiled_project_retains_source_provenance() -> None:
     assert compiled.capabilities[0]["source_manifest_file"] == "capabilities.yaml"
     assert compiled.requirements[0]["source_manifest_file"].startswith("requirements/")
     assert compiled.project["source_manifest_file"] == "project.yaml"
+
+
+def test_access_profile_is_compiled_without_sensitive_marker_terms() -> None:
+    compiled = compile_project_manifest(Path("manifest/project/ai-ent")).compiled
+
+    profile = compiled.deployment["deployment"]["access_profile"]
+    assert profile["active_profile"] == "local_loopback"
+    assert profile["binding"] == {
+        "bind_address": "127.0.0.1",
+        "blocked_by_decisions": ["DECISION_REQUIRED:PRD-DEC-002"],
+        "lan_access_enabled": False,
+        "lan_bind_address": "0.0.0.0",
+        "port": 8000,
+    }
+    assert profile["reverse_proxy"]["enabled"] is False
+    assert profile["reverse_proxy"]["allowed_providers"] == ["caddy", "nginx"]
+    assert profile["tls"] == {
+        "certificate_material": "not_configured_until_decision",
+        "enabled": False,
+        "mode": "disabled_for_loopback",
+        "required_for_lan": True,
+    }
+    assert profile["firewall_assumptions"]["inbound_lan_ports_allowed"] == []
+    assert profile["safeguards"]["control_plane_authority"] == "preserved"
+    assert profile["safeguards"]["human_gate"] == "GATE-PRD-LAN-ACCESS"
+    assert profile["safeguards"]["independent_verification_required"] is True
+    assert profile["safeguards"]["credential_values_exposed"] is False
+    assert "secret" not in str(profile).lower()
+
+
+def test_deployment_access_profile_matches_local_first_gate_contract() -> None:
+    profile = yaml.safe_load(Path("deployment/access-profile.yaml").read_text(encoding="utf-8"))[
+        "access_profile"
+    ]
+
+    assert profile["active_profile"] == "local_loopback"
+    assert profile["configured_profiles"] == ["local_loopback", "lan_gated"]
+    assert profile["binding"]["bind_address"] == "127.0.0.1"
+    assert profile["binding"]["port"] == 8000
+    assert profile["binding"]["lan_access_enabled"] is False
+    assert profile["binding"]["blocked_by_decisions"] == ["DECISION_REQUIRED:PRD-DEC-002"]
+    assert profile["reverse_proxy"]["enabled"] is False
+    assert profile["reverse_proxy"]["provider"] == "none"
+    assert profile["tls"]["enabled"] is False
+    assert profile["tls"]["required_for_lan"] is True
+    assert profile["firewall_assumptions"]["inbound_lan_ports_allowed"] == []
+    assert profile["firewall_assumptions"]["operator_confirmation_required_for_changes"] is True
+    assert profile["safeguards"]["control_plane_authority"] == "preserved"
+    assert profile["safeguards"]["human_gate"] == "GATE-PRD-LAN-ACCESS"
+    assert profile["safeguards"]["independent_verification_required"] is True
+    assert profile["safeguards"]["credential_values_exposed"] is False
+    assert "secret" not in str(profile).lower()
 
 
 def test_compile_writes_generated_derivatives_without_secrets(tmp_path: Path) -> None:
