@@ -238,7 +238,7 @@ class ExecutionPlannerService:
             repository_path=repository_path,
             timeout_seconds=timeout_seconds,
             manifest_tasks=manifest_tasks,
-        ).build(task_row, execution_id=execution_id)
+        ).build(task_row, execution_id=execution_id, session=session, project_id=project_id)
         return WorkerPackagePlan(
             package=package,
             plan_id=binding.plan_id,

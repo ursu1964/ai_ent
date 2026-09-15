@@ -121,6 +121,23 @@ class ExecutionPackageFactory:
             raise ValueError(f"manifest/db execution class mismatch: {persisted_task.id}")
         if persisted_task.schedulable != manifest_task.schedulable:
             raise ValueError(f"manifest/db schedulable mismatch: {persisted_task.id}")
+        baseline_commit: str | None = None
+        baseline_tree: str | None = None
+        baseline_generation: int | None = None
+        if persisted_task.runtime_plan_binding is not None:
+            from ai_ent.scheduler.hardening_baseline import HardeningBaselineService
+
+            baseline_service = HardeningBaselineService()
+            if session is None:
+                if baseline_service.requires_policy(persisted_task.runtime_plan_binding):
+                    raise ValueError(f"runtime baseline binding requires a database session: {persisted_task.id}")
+            else:
+                baseline = baseline_service.current_for_binding(session, persisted_task.runtime_plan_binding)
+                if baseline is not None:
+                    baseline_commit = baseline.baseline_commit
+                    baseline_tree = baseline.baseline_tree
+                    baseline_generation = baseline.generation
+
         return build_execution_package(
             manifest_task,
             repository_path=self.repository_path,
@@ -131,6 +148,9 @@ class ExecutionPackageFactory:
                 if self.timeout_policy is not None
                 else CodexConfig.from_env().default_timeout_seconds
             ),
+            baseline_commit=baseline_commit,
+            baseline_tree=baseline_tree,
+            baseline_generation=baseline_generation,
         )
 
     def _manifest_tasks_for(
@@ -196,7 +216,13 @@ class SchedulerIterationService:
             status: SchedulerIterationStatus = (
                 "CLAIM_CONTENTION" if claim.status == "ALREADY_LEASED" else "BLOCKED"
             )
-            return SchedulerIterationResult(status=status, project_id=project_id, task=task, claim=claim, reason=claim.status)
+            return SchedulerIterationResult(
+                status=status,
+                project_id=project_id,
+                task=task,
+                claim=claim,
+                reason=claim.reason or claim.status,
+            )
         if claim.execution is None or claim.lease is None:
             return SchedulerIterationResult(
                 status="ERROR",

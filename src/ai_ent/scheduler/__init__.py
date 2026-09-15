@@ -16,6 +16,11 @@ from ai_ent.scheduler.guarded import (
     GuardedRunResult,
     PostgresAuthorityResult,
 )
+from ai_ent.scheduler.hardening_baseline import (
+    BaselineAdvanceResult,
+    HardeningBaselineService,
+    HardeningBaselineState,
+)
 from ai_ent.scheduler.iteration import (
     ExecutionPackageFactory,
     SchedulerIterationResult,
@@ -34,6 +39,7 @@ from ai_ent.scheduler.repair import (
 )
 
 __all__ = [
+    "BaselineAdvanceResult",
     "BoundedRunLimits",
     "BoundedRunResult",
     "BoundedSchedulerRunner",
@@ -49,6 +55,8 @@ __all__ = [
     "GuardedPreflightResult",
     "GuardedRunConfig",
     "GuardedRunResult",
+    "HardeningBaselineService",
+    "HardeningBaselineState",
     "LeaseActionResult",
     "PostgresAuthorityResult",
     "ReadinessDecision",

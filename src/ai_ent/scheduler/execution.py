@@ -131,7 +131,12 @@ class ClaimedExecutionRunner:
 
         try:
             require_git(["rev-parse", "--show-toplevel"], cwd=self.repository_path)
-            base_commit = require_git(["rev-parse", baseline_ref], cwd=self.repository_path)
+            requested_baseline = package.baseline_commit or baseline_ref
+            base_commit = require_git(["rev-parse", requested_baseline], cwd=self.repository_path)
+            if package.baseline_tree is not None:
+                base_tree = require_git(["rev-parse", f"{base_commit}^{{tree}}"], cwd=self.repository_path)
+                if base_tree != package.baseline_tree:
+                    raise RuntimeError("execution baseline tree mismatch")
             worktree = create_execution_worktree(
                 package.task_id,
                 execution.id,

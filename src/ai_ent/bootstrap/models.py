@@ -132,6 +132,9 @@ class ExecutionPackage:
     prohibited_paths: tuple[str, ...]
     python_path: Path
     timeout_seconds: int
+    baseline_commit: str | None = None
+    baseline_tree: str | None = None
+    baseline_generation: int | None = None
 
 
 @dataclass(frozen=True)

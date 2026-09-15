@@ -67,14 +67,29 @@ def build_execution_package(
     worktree_path: Path | None = None,
     execution_id: str | None = None,
     timeout_seconds: int = 900,
+    baseline_commit: str | None = None,
+    baseline_tree: str | None = None,
+    baseline_generation: int | None = None,
 ) -> ExecutionPackage:
     resolved_worktree = worktree_path or repository_path
+    baseline_parts = (
+        (
+            "Authoritative execution baseline:",
+            f"- commit: {baseline_commit}",
+            f"- tree: {baseline_tree}",
+            f"- generation: {baseline_generation}",
+            "Create the worktree from this exact baseline. Do not execute against ambient HEAD.",
+        )
+        if baseline_commit and baseline_tree and baseline_generation is not None
+        else ()
+    )
     instructions = "\n".join(
         part
         for part in (
             f"Task: {task.id}",
             f"Title: {task.title}",
             f"Objective: {task.objective}" if task.objective else "",
+            *baseline_parts,
             "Allowed paths:",
             *(f"- {path}" for path in task.allowed_paths),
             "Prohibited paths:",
@@ -99,6 +114,9 @@ def build_execution_package(
         prohibited_paths=task.prohibited_paths or PROHIBITED_PATHS,
         python_path=VENV_PYTHON,
         timeout_seconds=timeout_seconds,
+        baseline_commit=baseline_commit,
+        baseline_tree=baseline_tree,
+        baseline_generation=baseline_generation,
     )
 
 
@@ -185,6 +203,11 @@ class CodexExecutor:
                 "AIENT_PYTHON": str(package.python_path),
                 "AIENT_ALLOWED_PATHS": os.pathsep.join(package.allowed_paths),
                 "AIENT_PROHIBITED_PATHS": os.pathsep.join(package.prohibited_paths),
+                "AIENT_BASELINE_COMMIT": package.baseline_commit or "",
+                "AIENT_BASELINE_TREE": package.baseline_tree or "",
+                "AIENT_BASELINE_GENERATION": (
+                    str(package.baseline_generation) if package.baseline_generation is not None else ""
+                ),
             }
         )
         return env

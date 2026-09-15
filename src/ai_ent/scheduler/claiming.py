@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ai_ent.persistence.models import Execution, Task, TaskLease
 from ai_ent.persistence.repositories.executions import ExecutionRepository
 from ai_ent.persistence.repositories.leases import LeaseRepository
+from ai_ent.scheduler.hardening_baseline import HardeningBaselineService
 
 ClaimStatus = Literal["CLAIMED", "NOT_FOUND", "NOT_CLAIMABLE", "ALREADY_LEASED"]
 LeaseActionStatus = Literal["UPDATED", "NOT_FOUND", "WRONG_OWNER", "EXPIRED", "NOT_ACTIVE"]
@@ -24,6 +25,7 @@ class ClaimResult:
     owner_id: str
     lease: TaskLease | None = None
     execution: Execution | None = None
+    reason: str | None = None
 
     @property
     def claimed(self) -> bool:
@@ -45,9 +47,11 @@ class TaskClaimingService:
         self,
         executions: ExecutionRepository | None = None,
         leases: LeaseRepository | None = None,
+        baseline_service: HardeningBaselineService | None = None,
     ) -> None:
         self.executions = executions or ExecutionRepository()
         self.leases = leases or LeaseRepository()
+        self.baseline_service = baseline_service
 
     def claim_task(
         self,
@@ -80,6 +84,15 @@ class TaskClaimingService:
         if task.status != "pending" or not task.schedulable or task.execution_class != "implementation":
             return ClaimResult("NOT_CLAIMABLE", task_id=task_id, owner_id=owner_id)
 
+        baseline_blockers = self._baseline_blockers(session, task)
+        if baseline_blockers:
+            return ClaimResult(
+                "NOT_CLAIMABLE",
+                task_id=task_id,
+                owner_id=owner_id,
+                reason=";".join(f"baseline_integration_required:{dependency}" for dependency in baseline_blockers),
+            )
+
         execution = self.executions.create(
             session,
             execution_id=execution_id or f"execution-{uuid.uuid4().hex}",
@@ -100,6 +113,12 @@ class TaskClaimingService:
         task.status = "running"
         session.flush()
         return ClaimResult("CLAIMED", task_id=task_id, owner_id=owner_id, lease=lease, execution=execution)
+
+    def _baseline_blockers(self, session: Session, task: Task) -> tuple[str, ...]:
+        service = self.baseline_service
+        if service is None:
+            service = HardeningBaselineService()
+        return service.blocking_dependencies_for_claim(session, task)
 
     def renew(
         self,

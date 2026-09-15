@@ -23,6 +23,7 @@ ReadinessStatus = Literal[
     "BLOCKED_DEPENDENCY",
     "NOT_SCHEDULABLE",
     "DECISION_BLOCKED",
+    "BASELINE_INTEGRATION_REQUIRED",
     "TERMINAL",
     "RUNNING",
     "ALREADY_LEASED",
@@ -57,6 +58,7 @@ class _ProjectGraph:
     cycle_tasks: frozenset[str] = frozenset()
     pending_gate_task_ids: frozenset[str] = frozenset()
     unresolved_decisions_by_task: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    baseline_blockers_by_task: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 class TaskReadinessService:
@@ -178,6 +180,16 @@ class TaskReadinessService:
                 dependencies=tuple(sorted(dependencies)),
             )
 
+        baseline_blockers = graph.baseline_blockers_by_task.get(task_id, ())
+        if baseline_blockers:
+            return ReadinessDecision(
+                task_id=task_id,
+                status="BASELINE_INTEGRATION_REQUIRED",
+                reasons=tuple(f"baseline_integration_required:{dependency}" for dependency in baseline_blockers),
+                dependencies=tuple(sorted(dependencies)),
+                blocking_dependencies=baseline_blockers,
+            )
+
         return ReadinessDecision(
             task_id=task_id,
             status="READY",
@@ -218,6 +230,13 @@ class TaskReadinessService:
             ).all()
         )
         unresolved_decisions_by_task = _unresolved_decisions_by_task(session, project_id)
+        from ai_ent.scheduler.hardening_baseline import HardeningBaselineService
+
+        baseline_blockers_by_task = HardeningBaselineService().blockers_by_task(
+            session,
+            tasks=tasks,
+            dependencies=dependencies,
+        )
         return _ProjectGraph(
             tasks=tasks,
             dependencies=dependencies,
@@ -225,6 +244,7 @@ class TaskReadinessService:
             cycle_tasks=frozenset(_cycle_nodes(dependencies)),
             pending_gate_task_ids=frozenset(pending_gate_task_ids),
             unresolved_decisions_by_task=unresolved_decisions_by_task,
+            baseline_blockers_by_task=baseline_blockers_by_task,
         )
 
 
