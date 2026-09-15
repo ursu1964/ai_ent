@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 aient-bootstrap = "ai_ent.bootstrap_cli:main"
+aient-product-local = "ai_ent_product_deployment.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

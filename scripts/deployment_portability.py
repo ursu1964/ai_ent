@@ -24,6 +24,7 @@ REQUIRED_PACKAGE_FILE_PATHS = (
     "deployment/local-docker/Dockerfile",
     "deployment/local-docker/compose.yaml",
     "deployment/local-docker/portability.yaml",
+    "deployment/local-docker/operator-env.template",
 )
 
 
@@ -63,6 +64,8 @@ def validate_deployment_portability(
 
     _validate_package(package, errors)
     _validate_package_inventory(package, errors)
+    _validate_deployment_modes(package, errors)
+    _validate_launcher(package, errors)
     _validate_compose(compose, errors)
     _validate_manifest_boundaries(project, deployment, architecture, operations, errors)
     _validate_no_embedded_secret_values(
@@ -134,6 +137,12 @@ def _validate_package(package_document: Mapping[str, Any], errors: list[str]) ->
     secret_policy = _mapping(package_document.get("secret_policy"))
     if secret_policy.get("embedded_secret_values_allowed") is not False:
         errors.append("secret_policy.embedded_secret_values_allowed must be false")
+    operator_environment = {
+        str(name) for name in _sequence(secret_policy.get("operator_provided_environment"))
+    }
+    for required_name in ("AIENT_DB_PASSWORD", "AIENT_OPERATOR_PASSWORD_HASH"):
+        if required_name not in operator_environment:
+            errors.append(f"secret_policy.operator_provided_environment must include {required_name}")
 
 
 def _validate_package_inventory(package_document: Mapping[str, Any], errors: list[str]) -> None:
@@ -169,6 +178,40 @@ def _validate_package_inventory(package_document: Mapping[str, Any], errors: lis
             errors.append(f"package file {raw_path or '<unknown>'} must declare a role")
         if not raw_path or not path.exists():
             errors.append(f"package file does not exist: {raw_path or '<unknown>'}")
+
+
+def _validate_deployment_modes(package_document: Mapping[str, Any], errors: list[str]) -> None:
+    modes = [_mapping(item) for item in _sequence(package_document.get("deployment_modes"))]
+    existing = next((mode for mode in modes if mode.get("id") == "USE_EXISTING_POSTGRES"), None)
+    if existing is None:
+        errors.append("deployment_modes must include USE_EXISTING_POSTGRES")
+        return
+    if existing.get("default") is not True:
+        errors.append("USE_EXISTING_POSTGRES deployment mode must be the default")
+    if existing.get("required") is not True:
+        errors.append("USE_EXISTING_POSTGRES deployment mode must be required for local validation")
+
+
+def _validate_launcher(package_document: Mapping[str, Any], errors: list[str]) -> None:
+    launcher = _mapping(package_document.get("launcher"))
+    if launcher.get("bind_default") != "127.0.0.1":
+        errors.append("launcher.bind_default must be 127.0.0.1")
+    if launcher.get("port_default") != 8000:
+        errors.append("launcher.port_default must be 8000")
+    if launcher.get("wildcard_bind_allowed") is not False:
+        errors.append("launcher.wildcard_bind_allowed must be false")
+    if launcher.get("requires_existing_postgres") is not True:
+        errors.append("launcher.requires_existing_postgres must be true")
+    if launcher.get("requires_operator_bootstrap") is not True:
+        errors.append("launcher.requires_operator_bootstrap must be true")
+    command = tuple(str(part) for part in _sequence(launcher.get("command")))
+    validation = tuple(str(part) for part in _sequence(launcher.get("validation_command")))
+    if command != ("aient-product-local", "serve", "--env-file", ".env"):
+        errors.append("launcher.command must use aient-product-local serve --env-file .env")
+    if validation != ("aient-product-local", "validate-config", "--env-file", ".env"):
+        errors.append(
+            "launcher.validation_command must use aient-product-local validate-config --env-file .env"
+        )
 
 
 def _validate_compose(compose: Mapping[str, Any], errors: list[str]) -> None:

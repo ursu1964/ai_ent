@@ -1,0 +1,22 @@
+# Copy these variable names into a private local environment.
+# Do not commit the resulting file and do not place secret values in evidence.
+
+AIENT_USE_EXISTING_POSTGRES=true
+
+# Product listener. Local validation must remain loopback-only.
+AIENT_PRODUCT_BIND_HOST=127.0.0.1
+AIENT_PRODUCT_PORT=8000
+
+# Existing authoritative PostgreSQL connection.
+AIENT_DB_HOST=127.0.0.1
+AIENT_DB_PORT=5432
+AIENT_DB_NAME=ai_ent
+AIENT_DB_USER=ai_ent
+AIENT_DB_PASSWORD=CHANGE_ME
+
+# Local operator bootstrap.
+# Generate with: aient-product-local hash-password '<operator-provided password>'
+AIENT_OPERATOR_USERNAME=operator
+AIENT_OPERATOR_DISPLAY_NAME=Local Operator
+AIENT_OPERATOR_PASSWORD_HASH=CHANGE_ME
+AIENT_OPERATOR_ROLES=authenticated_user,project_operator

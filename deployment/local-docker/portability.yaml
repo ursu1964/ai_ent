@@ -23,6 +23,32 @@ package_files:
   - path: deployment/local-docker/portability.yaml
     role: portability_contract
     classification: NORMATIVE
+  - path: deployment/local-docker/operator-env.template
+    role: private_environment_template
+    classification: NORMATIVE
+
+deployment_modes:
+  - id: USE_EXISTING_POSTGRES
+    default: true
+    description: Preserve the existing authoritative PostgreSQL service and run the product launcher on loopback.
+    required: true
+
+launcher:
+  command:
+    - aient-product-local
+    - serve
+    - --env-file
+    - .env
+  validation_command:
+    - aient-product-local
+    - validate-config
+    - --env-file
+    - .env
+  bind_default: 127.0.0.1
+  port_default: 8000
+  wildcard_bind_allowed: false
+  requires_existing_postgres: true
+  requires_operator_bootstrap: true
 
 decision_dependencies:
   - PRD-DEC-002
@@ -64,3 +90,4 @@ secret_policy:
   embedded_secret_values_allowed: false
   operator_provided_environment:
     - AIENT_DB_PASSWORD
+    - AIENT_OPERATOR_PASSWORD_HASH
