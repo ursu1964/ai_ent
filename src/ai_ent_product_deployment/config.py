@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 from dataclasses import dataclass
+from ipaddress import IPv4Address, ip_address
 from pathlib import Path
+from urllib.parse import urlparse
 
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
@@ -15,6 +18,8 @@ from ai_ent.persistence.config import DatabaseConfigError, DatabaseSettings, par
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 DEFAULT_BIND_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
+ACCESS_MODE_LOCAL = "local"
+ACCESS_MODE_LAN = "lan"
 
 
 class LocalDeploymentConfigError(ValueError):
@@ -39,8 +44,10 @@ class LocalOperatorConfig:
 
 @dataclass(frozen=True)
 class LocalDeploymentConfig:
+    access_mode: str
     bind_host: str
     port: int
+    allowed_origins: tuple[str, ...]
     use_existing_postgres: bool
     database: DatabaseSettings
     operator: LocalOperatorConfig
@@ -48,9 +55,11 @@ class LocalDeploymentConfig:
 
     def safe_summary(self) -> dict[str, object]:
         return {
+            "access_mode": self.access_mode,
             "bind_host": self.bind_host,
             "port": self.port,
-            "network_scope": "loopback",
+            "network_scope": "private_lan" if self.access_mode == ACCESS_MODE_LAN else "loopback",
+            "allowed_origins": list(self.allowed_origins),
             "use_existing_postgres": self.use_existing_postgres,
             "database": {
                 "host": self.database.host,
@@ -98,9 +107,11 @@ def load_local_deployment_config(
     if env_file is not None:
         values.update(parse_env_file(env_file))
 
-    bind_host = values.get("AIENT_PRODUCT_BIND_HOST") or values.get("AIENT_HOST") or DEFAULT_BIND_HOST
-    _require_loopback(bind_host)
+    access_mode = _parse_access_mode(values.get("AIENT_PRODUCT_ACCESS_MODE"))
+    raw_bind_host = values.get("AIENT_PRODUCT_BIND_HOST") or values.get("AIENT_HOST")
+    bind_host = _validate_bind_host(access_mode, raw_bind_host)
     port = _parse_port(values.get("AIENT_PRODUCT_PORT") or values.get("AIENT_PORT") or str(DEFAULT_PORT))
+    allowed_origins = _parse_allowed_origins(values.get("AIENT_PRODUCT_ALLOWED_ORIGINS"), access_mode)
     use_existing_postgres = _parse_existing_postgres(values.get("AIENT_USE_EXISTING_POSTGRES", "true"))
     if not use_existing_postgres:
         raise LocalDeploymentConfigError(
@@ -114,8 +125,10 @@ def load_local_deployment_config(
 
     operator = _operator_config(values)
     return LocalDeploymentConfig(
+        access_mode=access_mode,
         bind_host=bind_host,
         port=port,
+        allowed_origins=allowed_origins,
         use_existing_postgres=use_existing_postgres,
         database=database,
         operator=operator,
@@ -194,6 +207,30 @@ def validate_postgresql_authority(
     )
 
 
+def _parse_access_mode(value: str | None) -> str:
+    normalized = (value or ACCESS_MODE_LOCAL).strip().lower()
+    if normalized in {ACCESS_MODE_LOCAL, "loopback", "local_loopback"}:
+        return ACCESS_MODE_LOCAL
+    if normalized in {ACCESS_MODE_LAN, "private_lan", "lan_gated"}:
+        return ACCESS_MODE_LAN
+    raise LocalDeploymentConfigError(
+        "AIENT_PRODUCT_ACCESS_MODE must be local or lan"
+    )
+
+
+def _validate_bind_host(access_mode: str, bind_host: str | None) -> str:
+    if access_mode == ACCESS_MODE_LOCAL:
+        resolved = bind_host or DEFAULT_BIND_HOST
+        _require_loopback(resolved)
+        return resolved
+    if not bind_host:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_BIND_HOST is required when AIENT_PRODUCT_ACCESS_MODE=lan"
+        )
+    _require_private_lan_host(bind_host)
+    return bind_host
+
+
 def _require_loopback(bind_host: str) -> None:
     if bind_host in LOOPBACK_HOSTS:
         return
@@ -202,6 +239,38 @@ def _require_loopback(bind_host: str) -> None:
     raise LocalDeploymentConfigError(
         "AIENT_PRODUCT_BIND_HOST must be loopback for local deployment validation"
     )
+
+
+def _require_private_lan_host(bind_host: str) -> None:
+    if bind_host in {"0.0.0.0", "::"}:
+        raise LocalDeploymentConfigError("LAN mode requires an exact private interface address")
+    try:
+        parsed = ip_address(bind_host)
+    except ValueError as exc:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_BIND_HOST must be a valid private IPv4 address for LAN mode"
+        ) from exc
+    if not isinstance(parsed, IPv4Address):
+        raise LocalDeploymentConfigError(
+            "LAN mode currently supports explicit private IPv4 addresses only"
+        )
+    if (
+        parsed.is_loopback
+        or parsed.is_multicast
+        or parsed.is_unspecified
+        or parsed.is_link_local
+        or not parsed.is_private
+        or str(parsed) == "255.255.255.255"
+        or str(parsed).endswith(".255")
+    ):
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_BIND_HOST must be an assigned private LAN address"
+        )
+    active_addresses = _active_ipv4_interface_addresses()
+    if bind_host not in active_addresses:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_BIND_HOST must belong to an active local network interface"
+        )
 
 
 def _parse_port(value: str) -> int:
@@ -223,6 +292,33 @@ def _parse_existing_postgres(value: str) -> bool:
     raise LocalDeploymentConfigError(
         "AIENT_USE_EXISTING_POSTGRES must be true or false"
     )
+
+
+def _parse_allowed_origins(value: str | None, access_mode: str) -> tuple[str, ...]:
+    raw_origins = tuple(item.strip() for item in (value or "").split(",") if item.strip())
+    if access_mode == ACCESS_MODE_LOCAL:
+        return raw_origins
+    if not raw_origins:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_ALLOWED_ORIGINS is required when AIENT_PRODUCT_ACCESS_MODE=lan"
+        )
+    for origin in raw_origins:
+        _validate_allowed_origin(origin)
+    return tuple(dict.fromkeys(raw_origins))
+
+
+def _validate_allowed_origin(origin: str) -> None:
+    if "*" in origin:
+        raise LocalDeploymentConfigError("AIENT_PRODUCT_ALLOWED_ORIGINS must not contain wildcards")
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.path not in {"", "/"}:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_ALLOWED_ORIGINS must contain absolute http(s) origins"
+        )
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise LocalDeploymentConfigError(
+            "AIENT_PRODUCT_ALLOWED_ORIGINS must not include credentials, query, or fragment"
+        )
 
 
 def _operator_config(values: dict[str, str]) -> LocalOperatorConfig:
@@ -262,6 +358,39 @@ def _operator_config(values: dict[str, str]) -> LocalOperatorConfig:
         password_hash=password_hash,
         roles=roles,
     )
+
+
+def _active_ipv4_interface_addresses() -> frozenset[str]:
+    addresses: set[str] = set()
+    try:
+        for _index, name in socket.if_nameindex():
+            address = _interface_ipv4_address(name)
+            if address:
+                addresses.add(address)
+    except OSError:
+        pass
+    try:
+        _hostname, _aliases, host_addresses = socket.gethostbyname_ex(socket.gethostname())
+        addresses.update(host_addresses)
+    except OSError:
+        pass
+    return frozenset(addresses)
+
+
+def _interface_ipv4_address(interface_name: str) -> str | None:
+    try:
+        import fcntl
+        import struct
+    except ImportError:
+        return None
+    request = 0x8915
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            packed = struct.pack("256s", interface_name.encode("utf-8")[:15])
+            response = fcntl.ioctl(sock.fileno(), request, packed)
+    except OSError:
+        return None
+    return socket.inet_ntoa(response[20:24])
 
 
 def _expected_alembic_head(project_root: Path) -> str:

@@ -183,6 +183,8 @@ def _validate_package_inventory(package_document: Mapping[str, Any], errors: lis
 def _validate_deployment_modes(package_document: Mapping[str, Any], errors: list[str]) -> None:
     modes = [_mapping(item) for item in _sequence(package_document.get("deployment_modes"))]
     existing = next((mode for mode in modes if mode.get("id") == "USE_EXISTING_POSTGRES"), None)
+    local = next((mode for mode in modes if mode.get("id") == "ACCESS_MODE_LOCAL"), None)
+    lan = next((mode for mode in modes if mode.get("id") == "ACCESS_MODE_LAN"), None)
     if existing is None:
         errors.append("deployment_modes must include USE_EXISTING_POSTGRES")
         return
@@ -190,6 +192,34 @@ def _validate_deployment_modes(package_document: Mapping[str, Any], errors: list
         errors.append("USE_EXISTING_POSTGRES deployment mode must be the default")
     if existing.get("required") is not True:
         errors.append("USE_EXISTING_POSTGRES deployment mode must be required for local validation")
+    if local is None:
+        errors.append("deployment_modes must include ACCESS_MODE_LOCAL")
+    else:
+        if local.get("default") is not True:
+            errors.append("ACCESS_MODE_LOCAL must be the default access mode")
+        if local.get("selector") != "AIENT_PRODUCT_ACCESS_MODE=local":
+            errors.append("ACCESS_MODE_LOCAL selector must be AIENT_PRODUCT_ACCESS_MODE=local")
+        if local.get("wildcard_bind_allowed") is not False:
+            errors.append("ACCESS_MODE_LOCAL must reject wildcard binds")
+        if local.get("lan_bind_allowed") is not False:
+            errors.append("ACCESS_MODE_LOCAL must reject LAN binds")
+    if lan is None:
+        errors.append("deployment_modes must include ACCESS_MODE_LAN")
+    else:
+        if lan.get("default") is not False:
+            errors.append("ACCESS_MODE_LAN must not be the default")
+        if lan.get("selector") != "AIENT_PRODUCT_ACCESS_MODE=lan":
+            errors.append("ACCESS_MODE_LAN selector must be AIENT_PRODUCT_ACCESS_MODE=lan")
+        if lan.get("requires_exact_private_interface") is not True:
+            errors.append("ACCESS_MODE_LAN must require an exact private interface address")
+        if lan.get("requires_allowed_origins") is not True:
+            errors.append("ACCESS_MODE_LAN must require explicit allowed origins")
+        if lan.get("wildcard_bind_allowed") is not False:
+            errors.append("ACCESS_MODE_LAN must reject wildcard binds")
+        if lan.get("public_exposure_allowed") is not False:
+            errors.append("ACCESS_MODE_LAN must not authorize public exposure")
+        if lan.get("postgresql_lan_exposure_allowed") is not False:
+            errors.append("ACCESS_MODE_LAN must not expose PostgreSQL to LAN")
 
 
 def _validate_launcher(package_document: Mapping[str, Any], errors: list[str]) -> None:
@@ -200,6 +230,12 @@ def _validate_launcher(package_document: Mapping[str, Any], errors: list[str]) -
         errors.append("launcher.port_default must be 8000")
     if launcher.get("wildcard_bind_allowed") is not False:
         errors.append("launcher.wildcard_bind_allowed must be false")
+    if launcher.get("access_mode_default") != "local":
+        errors.append("launcher.access_mode_default must be local")
+    if launcher.get("lan_requires_explicit_private_bind") is not True:
+        errors.append("launcher.lan_requires_explicit_private_bind must be true")
+    if launcher.get("lan_inferred_from_bind_host") is not False:
+        errors.append("launcher.lan_inferred_from_bind_host must be false")
     if launcher.get("requires_existing_postgres") is not True:
         errors.append("launcher.requires_existing_postgres must be true")
     if launcher.get("requires_operator_bootstrap") is not True:

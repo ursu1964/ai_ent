@@ -155,7 +155,7 @@ class ProductBoundaryService:
 class ProductAccessProfileService:
     bind_address: str = "127.0.0.1"
     port: int = 8000
-    lan_bind_address: str = "0.0.0.0"
+    lan_bind_address: str = "explicit_private_interface_required"
 
     def profile(self) -> ProductAccessProfileSnapshot:
         return ProductAccessProfileSnapshot(

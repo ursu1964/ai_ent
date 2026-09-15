@@ -92,7 +92,7 @@ def test_access_profile_is_explicit_local_first_and_decision_gated() -> None:
     assert snapshot.configured_profiles == ("local_loopback", "lan_gated")
     assert snapshot.binding.bind_address == "127.0.0.1"
     assert snapshot.binding.port == 8000
-    assert snapshot.binding.lan_bind_address == "0.0.0.0"
+    assert snapshot.binding.lan_bind_address == "explicit_private_interface_required"
     assert snapshot.binding.effective_bind_address == "127.0.0.1"
     assert snapshot.binding.network_scope == "local_loopback"
     assert snapshot.binding.lan_access_enabled is False
@@ -211,7 +211,7 @@ def test_access_profile_route_uses_versioned_schema_envelope() -> None:
         "bind_address": "127.0.0.1",
         "blocked_by_decisions": ["DECISION_REQUIRED:PRD-DEC-002"],
         "effective_bind_address": "127.0.0.1",
-        "lan_bind_address": "0.0.0.0",
+        "lan_bind_address": "explicit_private_interface_required",
         "lan_access_enabled": False,
         "network_scope": "local_loopback",
         "port": 8000,

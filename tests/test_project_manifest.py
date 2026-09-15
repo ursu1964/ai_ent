@@ -203,7 +203,7 @@ def test_access_profile_is_compiled_without_sensitive_marker_terms() -> None:
         "bind_address": "127.0.0.1",
         "blocked_by_decisions": ["DECISION_REQUIRED:PRD-DEC-002"],
         "lan_access_enabled": False,
-        "lan_bind_address": "0.0.0.0",
+        "lan_bind_address": "explicit_private_interface_required",
         "port": 8000,
     }
     assert profile["reverse_proxy"]["enabled"] is False

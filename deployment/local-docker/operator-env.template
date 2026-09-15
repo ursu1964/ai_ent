@@ -3,9 +3,15 @@
 
 AIENT_USE_EXISTING_POSTGRES=true
 
-# Product listener. Local validation must remain loopback-only.
+# Product listener. Default local validation must remain loopback-only.
+# For controlled LAN validation, set AIENT_PRODUCT_ACCESS_MODE=lan and set
+# AIENT_PRODUCT_BIND_HOST to the exact private IPv4 address assigned to this host.
+# Do not use 0.0.0.0, ::, or a public address.
+AIENT_PRODUCT_ACCESS_MODE=local
 AIENT_PRODUCT_BIND_HOST=127.0.0.1
 AIENT_PRODUCT_PORT=8000
+# Required only for explicit LAN mode. Use exact http(s) origins, never *.
+# AIENT_PRODUCT_ALLOWED_ORIGINS=http://<private-lan-ip>:8000
 
 # Existing authoritative PostgreSQL connection.
 AIENT_DB_HOST=127.0.0.1

@@ -32,6 +32,21 @@ deployment_modes:
     default: true
     description: Preserve the existing authoritative PostgreSQL service and run the product launcher on loopback.
     required: true
+  - id: ACCESS_MODE_LOCAL
+    default: true
+    description: Safe default product access mode; permits only loopback product listeners.
+    selector: AIENT_PRODUCT_ACCESS_MODE=local
+    wildcard_bind_allowed: false
+    lan_bind_allowed: false
+  - id: ACCESS_MODE_LAN
+    default: false
+    description: Explicit controlled private-LAN product access mode for validation after GATE-PRD-LAN-ACCESS approval.
+    selector: AIENT_PRODUCT_ACCESS_MODE=lan
+    requires_exact_private_interface: true
+    requires_allowed_origins: true
+    wildcard_bind_allowed: false
+    public_exposure_allowed: false
+    postgresql_lan_exposure_allowed: false
 
 launcher:
   command:
@@ -47,6 +62,9 @@ launcher:
   bind_default: 127.0.0.1
   port_default: 8000
   wildcard_bind_allowed: false
+  access_mode_default: local
+  lan_requires_explicit_private_bind: true
+  lan_inferred_from_bind_host: false
   requires_existing_postgres: true
   requires_operator_bootstrap: true
 

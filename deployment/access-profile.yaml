@@ -8,7 +8,7 @@ access_profile:
   binding:
     bind_address: 127.0.0.1
     port: 8000
-    lan_bind_address: 0.0.0.0
+    lan_bind_address: explicit_private_interface_required
     lan_access_enabled: false
     blocked_by_decisions:
       - DECISION_REQUIRED:PRD-DEC-002

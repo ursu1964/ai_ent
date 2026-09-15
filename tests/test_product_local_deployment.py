@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from http.client import HTTPConnection
 from pathlib import Path
+from threading import Thread
 from typing import Any, Self
 
 import pytest
@@ -11,6 +14,7 @@ from ai_ent_product_deployment.config import (
     load_local_deployment_config,
     validate_postgresql_authority,
 )
+from ai_ent_product_deployment.server import LocalProductServer
 from ai_ent_product_ui.services import hash_password
 
 
@@ -34,6 +38,7 @@ def deployment_env() -> dict[str, str]:
 def test_local_deployment_config_uses_existing_postgres_and_loopback() -> None:
     config = load_local_deployment_config(None, environ=deployment_env())
 
+    assert config.access_mode == "local"
     assert config.use_existing_postgres is True
     assert config.bind_host == "127.0.0.1"
     assert config.port == 8000
@@ -45,12 +50,215 @@ def test_local_deployment_config_uses_existing_postgres_and_loopback() -> None:
     assert "operator-password" not in str(summary)
 
 
+def test_missing_access_mode_defaults_to_safe_local_loopback() -> None:
+    values = deployment_env()
+    values.pop("AIENT_PRODUCT_BIND_HOST")
+
+    config = load_local_deployment_config(None, environ=values)
+
+    assert config.access_mode == "local"
+    assert config.bind_host == "127.0.0.1"
+
+
+def test_default_local_mode_rejects_private_lan_bind() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+
+    with pytest.raises(LocalDeploymentConfigError, match="loopback"):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_explicit_local_mode_rejects_private_lan_bind() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "local"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+
+    with pytest.raises(LocalDeploymentConfigError, match="loopback"):
+        load_local_deployment_config(None, environ=values)
+
+
 def test_local_deployment_config_rejects_wildcard_bind() -> None:
     values = deployment_env()
     values["AIENT_PRODUCT_BIND_HOST"] = "0.0.0.0"
 
     with pytest.raises(LocalDeploymentConfigError, match="loopback"):
         load_local_deployment_config(None, environ=values)
+
+
+def test_lan_mode_requires_explicit_bind_host() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values.pop("AIENT_PRODUCT_BIND_HOST")
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://192.168.1.105:8000"
+
+    with pytest.raises(LocalDeploymentConfigError, match="AIENT_PRODUCT_BIND_HOST is required"):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_lan_mode_rejects_loopback_bind() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "127.0.0.1"
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://127.0.0.1:8000"
+
+    with pytest.raises(LocalDeploymentConfigError, match="assigned private LAN address"):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_lan_mode_accepts_assigned_private_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://192.168.1.105:8000"
+
+    config = load_local_deployment_config(None, environ=values)
+
+    assert config.access_mode == "lan"
+    assert config.bind_host == "192.168.1.105"
+    assert config.allowed_origins == ("http://192.168.1.105:8000",)
+    assert config.safe_summary()["network_scope"] == "private_lan"
+
+
+def test_lan_mode_rejects_unassigned_private_bind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.200"
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://192.168.1.200:8000"
+
+    with pytest.raises(LocalDeploymentConfigError, match="active local network interface"):
+        load_local_deployment_config(None, environ=values)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ("8.8.8.8", "0.0.0.0", "::", "not-an-ip"),
+)
+def test_lan_mode_rejects_invalid_bind_targets(
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = host
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://192.168.1.105:8000"
+
+    with pytest.raises(LocalDeploymentConfigError):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_lan_mode_requires_allowed_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+
+    with pytest.raises(LocalDeploymentConfigError, match="AIENT_PRODUCT_ALLOWED_ORIGINS"):
+        load_local_deployment_config(None, environ=values)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ("*", "http://*:8000", "not-an-origin", "http://user:pass@192.168.1.105:8000"),
+)
+def test_lan_mode_rejects_invalid_allowed_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    origin: str,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = origin
+
+    with pytest.raises(LocalDeploymentConfigError):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_lan_mode_requires_operator_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "ai_ent_product_deployment.config._active_ipv4_interface_addresses",
+        lambda: frozenset({"192.168.1.105"}),
+    )
+    values = deployment_env()
+    values["AIENT_PRODUCT_ACCESS_MODE"] = "lan"
+    values["AIENT_PRODUCT_BIND_HOST"] = "192.168.1.105"
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://192.168.1.105:8000"
+    values.pop("AIENT_OPERATOR_PASSWORD_HASH")
+
+    with pytest.raises(LocalDeploymentConfigError, match="AIENT_OPERATOR_PASSWORD_HASH"):
+        load_local_deployment_config(None, environ=values)
+
+
+def test_product_server_rejects_unapproved_origin() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://127.0.0.1:8000"
+    config = replace(load_local_deployment_config(None, environ=values), port=0)
+    server = LocalProductServer(config)
+    host, port = server.server_address
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/v1/health", headers={"Origin": "http://evil.test"})
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 403
+    assert "origin not allowed" in body
+
+
+def test_product_server_accepts_approved_origin() -> None:
+    values = deployment_env()
+    values["AIENT_PRODUCT_ALLOWED_ORIGINS"] = "http://127.0.0.1:8000"
+    config = replace(load_local_deployment_config(None, environ=values), port=0)
+    server = LocalProductServer(config)
+    host, port = server.server_address
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = HTTPConnection(host, port, timeout=5)
+        connection.request(
+            "GET",
+            "/api/v1/health",
+            headers={"Origin": "http://127.0.0.1:8000"},
+        )
+        response = connection.getresponse()
+        response.read()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    assert response.status == 200
+    assert response.getheader("access-control-allow-origin") == "http://127.0.0.1:8000"
 
 
 def test_local_deployment_config_requires_existing_postgres_mode() -> None:

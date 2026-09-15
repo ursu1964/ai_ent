@@ -16,7 +16,7 @@ deployment:
       reverse_proxy_enabled: false
       tls_enabled: false
     lan:
-      bind_address: 0.0.0.0
+      bind_address: explicit_private_interface_required
       enabled: false
       required_decision: DECISION_REQUIRED:PRD-DEC-002
       human_gate: GATE-PRD-LAN-ACCESS

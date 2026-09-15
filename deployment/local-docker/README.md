@@ -133,6 +133,97 @@ ss -ltnp | grep ':8000'
 The listener must show `127.0.0.1:8000` or another configured loopback address.
 It must not show `0.0.0.0`, `::`, a LAN address, or a public address.
 
+## Controlled Private-LAN Mode
+
+LAN mode is a separate, explicit deployment mode for validation after
+`GATE-PRD-LAN-ACCESS` approval. It does not change the default local mode and
+does not authorize public internet exposure.
+
+### LAN Prerequisites
+
+- Complete the local loopback procedure first.
+- Identify the active private host interface and address, for example with
+  `ip -brief address`.
+- Use only an address assigned to this host in a private IPv4 range.
+- Keep PostgreSQL bound locally; do not publish `aient-postgres` to LAN.
+- Do not change router, NAT, DNS, UPnP, or broad firewall policy.
+
+### LAN Private Environment
+
+Add these variables only to a private environment used for LAN validation:
+
+```bash
+AIENT_PRODUCT_ACCESS_MODE=lan
+AIENT_PRODUCT_BIND_HOST=<private-lan-ip-assigned-to-this-host>
+AIENT_PRODUCT_ALLOWED_ORIGINS=http://<private-lan-ip-assigned-to-this-host>:8000
+```
+
+Keep all existing `AIENT_OPERATOR_*`, `AIENT_DB_*`, and
+`AIENT_USE_EXISTING_POSTGRES=true` variables. Do not commit the private
+environment.
+
+LAN mode validation is double opt-in:
+
+- `AIENT_PRODUCT_ACCESS_MODE=lan` is required.
+- `AIENT_PRODUCT_BIND_HOST` must be the exact private interface address.
+
+The launcher rejects missing hosts, loopback hosts in LAN mode, public
+addresses, malformed addresses, unassigned private addresses, `0.0.0.0`, and
+`::`. LAN mode also requires explicit non-wildcard
+`AIENT_PRODUCT_ALLOWED_ORIGINS`.
+
+### LAN Validate And Start
+
+Validate without starting a listener:
+
+```bash
+aient-product-local validate-config --env-file .env.lan
+```
+
+Start only after validation passes:
+
+```bash
+aient-product-local serve --env-file .env.lan
+```
+
+Inspect the listener:
+
+```bash
+ss -ltnp | grep ':8000'
+```
+
+The listener must show the exact private LAN address and port. It must not show
+`0.0.0.0`, `::`, unrelated interfaces, public interfaces, or unexpected ports.
+
+Use the LAN origin for health and authenticated UI/API checks:
+
+```bash
+curl -sS http://<private-lan-ip>:8000/api/v1/health
+curl -sS http://<private-lan-ip>:8000/ui/v1/login
+```
+
+Health reachability is not application authority. Protected API/UI routes must
+still require authentication and role authorization.
+
+### LAN Shutdown And Mandatory Reversion
+
+Stop the product process, remove the LAN-specific private configuration, and
+restart once with the ordinary local environment:
+
+```bash
+aient-product-local validate-config --env-file .env
+aient-product-local serve --env-file .env
+```
+
+Verify the listener has returned to loopback only:
+
+```bash
+ss -ltnp | grep ':8000'
+```
+
+Then stop the product process again unless a separate runbook says to keep it
+running. PostgreSQL must remain running and locally protected throughout.
+
 ### Health And Readiness
 
 Use these local URLs to confirm the process and dependencies:
@@ -216,7 +307,12 @@ state must remain authoritative; no fallback database should appear.
 - Occupied port: stop the stale product process or choose another loopback port
   in the private environment.
 - Invalid bind: use `127.0.0.1`, `localhost`, `::1`, or another `127.*`
-  loopback address. LAN validation is a separate operation.
+  loopback address for local mode. For LAN mode, set
+  `AIENT_PRODUCT_ACCESS_MODE=lan` and use the exact private IPv4 address
+  assigned to this host.
+- LAN validation failure: confirm the address is assigned to an active local
+  interface, `AIENT_PRODUCT_ALLOWED_ORIGINS` contains only exact http(s)
+  origins, PostgreSQL is still local-only, and no wildcard/public bind is used.
 - Unhealthy readiness: inspect the redacted health endpoints above and correct
   the failing dependency before proceeding.
 - Stale product process: identify it with `ss -ltnp | grep ':8000'` and stop

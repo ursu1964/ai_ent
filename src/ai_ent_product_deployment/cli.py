@@ -53,9 +53,10 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "ok": True,
                     "event": "local_product_server_started",
+                    "access_mode": config.access_mode,
                     "bind_host": host,
                     "port": port,
-                    "network_scope": "loopback",
+                    "network_scope": config.safe_summary()["network_scope"],
                     "use_existing_postgres": config.use_existing_postgres,
                 },
                 sort_keys=True,
