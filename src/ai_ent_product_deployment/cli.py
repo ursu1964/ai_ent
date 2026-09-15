@@ -8,6 +8,7 @@ from ai_ent_product_deployment.config import (
     LocalDeploymentConfigError,
     apply_private_environment,
     load_local_deployment_config,
+    validate_postgresql_authority,
 )
 from ai_ent_product_deployment.server import LocalProductServer
 from ai_ent_product_ui.services import hash_password
@@ -26,7 +27,22 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         return 1
     if args.command == "validate-config":
-        print(json.dumps({"ok": True, "config": config.safe_summary()}, sort_keys=True, indent=2))
+        try:
+            postgresql = validate_postgresql_authority(config.database)
+        except LocalDeploymentConfigError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+            return 1
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "config": config.safe_summary(),
+                    "postgresql": postgresql.safe_summary(),
+                },
+                sort_keys=True,
+                indent=2,
+            )
+        )
         return 0
     if args.command == "serve":
         apply_private_environment(env_file)

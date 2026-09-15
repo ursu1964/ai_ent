@@ -5,6 +5,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import SQLAlchemyError
+
 from ai_ent.persistence.config import DatabaseConfigError, DatabaseSettings, parse_env_file
 
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
@@ -60,6 +65,30 @@ class LocalDeploymentConfig:
         }
 
 
+@dataclass(frozen=True)
+class PostgreSQLAuthorityValidation:
+    host: str
+    port: int
+    database: str
+    user: str
+    selected_database: str
+    current_revision: str
+    expected_head: str
+
+    def safe_summary(self) -> dict[str, object]:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "database": self.database,
+            "selected_database": self.selected_database,
+            "user": self.user,
+            "select_1": "pass",
+            "current_revision": self.current_revision,
+            "expected_head": self.expected_head,
+            "at_expected_head": self.current_revision == self.expected_head,
+        }
+
+
 def load_local_deployment_config(
     env_file: Path | None = Path(".env"),
     *,
@@ -98,6 +127,71 @@ def apply_private_environment(env_file: Path | None = Path(".env")) -> None:
     if env_file is None:
         return
     os.environ.update(parse_env_file(env_file))
+
+
+def validate_postgresql_authority(
+    database: DatabaseSettings,
+    *,
+    expected_head: str | None = None,
+    project_root: Path | None = None,
+) -> PostgreSQLAuthorityValidation:
+    resolved_expected_head = expected_head or _expected_alembic_head(project_root or Path.cwd())
+    engine = create_engine(database.url, pool_pre_ping=True, future=True)
+    try:
+        with engine.connect() as connection:
+            try:
+                connection.execute(text("SELECT 1")).scalar_one()
+            except Exception as exc:
+                raise _postgresql_validation_error(
+                    database,
+                    "SELECT 1 probe failed",
+                    exc,
+                ) from exc
+            try:
+                selected_database = str(connection.execute(text("SELECT current_database()")).scalar_one())
+            except Exception as exc:
+                raise _postgresql_validation_error(
+                    database,
+                    "database identity probe failed",
+                    exc,
+                ) from exc
+            if selected_database != database.name:
+                raise LocalDeploymentConfigError(
+                    "PostgreSQL validation failed: connected database "
+                    f"{selected_database!r} does not match configured database {database.name!r}"
+                )
+            try:
+                current_revision = connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                ).scalar_one()
+            except Exception as exc:
+                raise _postgresql_validation_error(
+                    database,
+                    "migration revision probe failed",
+                    exc,
+                ) from exc
+    except LocalDeploymentConfigError:
+        raise
+    except Exception as exc:
+        raise _postgresql_validation_error(database, "connection failed", exc) from exc
+    finally:
+        engine.dispose()
+    current_revision = str(current_revision)
+    if current_revision != resolved_expected_head:
+        raise LocalDeploymentConfigError(
+            "PostgreSQL validation failed: migration revision mismatch "
+            f"for database {database.name!r}: current={current_revision!r}, "
+            f"expected={resolved_expected_head!r}"
+        )
+    return PostgreSQLAuthorityValidation(
+        host=database.host,
+        port=database.port,
+        database=database.name,
+        user=database.user,
+        selected_database=selected_database,
+        current_revision=current_revision,
+        expected_head=resolved_expected_head,
+    )
 
 
 def _require_loopback(bind_host: str) -> None:
@@ -167,4 +261,39 @@ def _operator_config(values: dict[str, str]) -> LocalOperatorConfig:
         display_name=display_name,
         password_hash=password_hash,
         roles=roles,
+    )
+
+
+def _expected_alembic_head(project_root: Path) -> str:
+    config_path = project_root / "alembic.ini"
+    if not config_path.exists():
+        raise LocalDeploymentConfigError("could not determine expected Alembic head: alembic.ini missing")
+    try:
+        alembic_config = AlembicConfig(str(config_path))
+        head = ScriptDirectory.from_config(alembic_config).get_current_head()
+    except Exception as exc:
+        raise LocalDeploymentConfigError("could not determine expected Alembic head") from exc
+    if not head:
+        raise LocalDeploymentConfigError("could not determine expected Alembic head")
+    return str(head)
+
+
+def _postgresql_validation_error(
+    database: DatabaseSettings,
+    category: str,
+    exc: Exception,
+) -> LocalDeploymentConfigError:
+    detail = str(exc).lower()
+    if "password" in detail or "authentication" in detail:
+        safe_reason = "authentication failed"
+    elif "does not exist" in detail:
+        safe_reason = "database is unavailable"
+    elif isinstance(exc, SQLAlchemyError):
+        safe_reason = "database operation failed"
+    else:
+        safe_reason = "probe failed"
+    return LocalDeploymentConfigError(
+        "PostgreSQL validation failed: "
+        f"{category} for host={database.host!r}, port={database.port}, "
+        f"database={database.name!r}, user={database.user!r}: {safe_reason}"
     )

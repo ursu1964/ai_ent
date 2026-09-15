@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Self
 
 import pytest
 
+from ai_ent.persistence.config import DatabaseSettings, load_database_settings
 from ai_ent_product_deployment.config import (
     LocalDeploymentConfigError,
     load_local_deployment_config,
+    validate_postgresql_authority,
 )
 from ai_ent_product_ui.services import hash_password
 
@@ -73,3 +76,171 @@ def test_operator_environment_template_is_private_boundary_documentation() -> No
     assert "AIENT_PRODUCT_BIND_HOST=127.0.0.1" in template
     assert "AIENT_OPERATOR_PASSWORD_HASH=CHANGE_ME" in template
     assert "operator-password" not in template
+
+
+def test_postgresql_authority_validation_passes_for_expected_database_and_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine(
+        {
+            "SELECT 1": 1,
+            "SELECT current_database()": "ai_ent",
+            "SELECT version_num FROM alembic_version": "0020",
+        }
+    )
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    result = validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+    assert result.current_revision == "0020"
+    assert result.expected_head == "0020"
+    assert result.safe_summary()["select_1"] == "pass"
+    assert engine.disposed is True
+
+
+def test_postgresql_authority_validation_rejects_wrong_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine(
+        {
+            "SELECT 1": 1,
+            "SELECT current_database()": "wrong_database",
+            "SELECT version_num FROM alembic_version": "0020",
+        }
+    )
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError, match="does not match configured database"):
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+
+def test_postgresql_authority_validation_rejects_stale_alembic_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine(
+        {
+            "SELECT 1": 1,
+            "SELECT current_database()": "ai_ent",
+            "SELECT version_num FROM alembic_version": "0019",
+        }
+    )
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError, match="migration revision mismatch"):
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+
+def test_postgresql_authority_validation_rejects_missing_alembic_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine(
+        {
+            "SELECT 1": 1,
+            "SELECT current_database()": "ai_ent",
+            "SELECT version_num FROM alembic_version": RuntimeError("missing table"),
+        }
+    )
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError, match="migration revision probe failed"):
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+
+def test_postgresql_authority_validation_rejects_select_probe_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine({"SELECT 1": RuntimeError("probe unavailable")})
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError, match="SELECT 1 probe failed"):
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+
+def test_postgresql_authority_validation_rejects_unreachable_postgres(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine({}, connect_error=RuntimeError("connection refused"))
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError, match="connection failed"):
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+    assert "private-db-password" not in str(engine.connect_error)
+
+
+def test_postgresql_authority_validation_rejects_invalid_authentication_redacted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine({}, connect_error=RuntimeError("password authentication failed"))
+    monkeypatch.setattr("ai_ent_product_deployment.config.create_engine", lambda *args, **kwargs: engine)
+
+    with pytest.raises(LocalDeploymentConfigError) as exc_info:
+        validate_postgresql_authority(_database_settings(), expected_head="0020")
+
+    message = str(exc_info.value)
+    assert "authentication failed" in message
+    assert "private-db-password" not in message
+
+
+def test_postgresql_authority_validation_against_existing_authority() -> None:
+    settings = load_database_settings(Path(".env"))
+
+    result = validate_postgresql_authority(settings)
+
+    assert result.selected_database == settings.name
+    assert result.current_revision == result.expected_head
+
+
+def _database_settings() -> DatabaseSettings:
+    return DatabaseSettings(
+        host="127.0.0.1",
+        port=5432,
+        name="ai_ent",
+        user="ai_ent",
+        password="private-db-password",
+    )
+
+
+class FakeEngine:
+    def __init__(
+        self,
+        responses: dict[str, object],
+        *,
+        connect_error: Exception | None = None,
+    ) -> None:
+        self.responses = responses
+        self.connect_error = connect_error
+        self.disposed = False
+
+    def connect(self) -> FakeConnection:
+        if self.connect_error is not None:
+            raise self.connect_error
+        return FakeConnection(self.responses)
+
+    def dispose(self) -> None:
+        self.disposed = True
+
+
+class FakeConnection:
+    def __init__(self, responses: dict[str, object]) -> None:
+        self.responses = responses
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def execute(self, statement: Any) -> FakeResult:
+        key = str(statement)
+        response = self.responses.get(key, RuntimeError(f"unexpected query: {key}"))
+        if isinstance(response, Exception):
+            raise response
+        return FakeResult(response)
+
+
+class FakeResult:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def scalar_one(self) -> object:
+        return self.value
