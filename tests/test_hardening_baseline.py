@@ -151,13 +151,14 @@ def test_passed_dependency_without_baseline_representation_blocks_readiness_and_
             lease_duration=timedelta(minutes=5),
         )
 
-        assert task_002.status == "BASELINE_INTEGRATION_REQUIRED"
+        assert task_002.status == "NOT_SCHEDULABLE"
         assert task_002.blocking_dependencies == ("PCH-TASK-001",)
-        assert task_002.reasons == ("baseline_integration_required:PCH-TASK-001",)
-        assert task_013.status == "BASELINE_INTEGRATION_REQUIRED"
+        assert task_002.reasons == ("dependency_not_integrated_into_baseline:PCH-TASK-001",)
+        assert task_013.status == "NOT_SCHEDULABLE"
+        assert task_013.reasons == ("dependency_not_integrated_into_baseline:PCH-TASK-001",)
         assert ready == []
         assert claim.status == "NOT_CLAIMABLE"
-        assert claim.reason == "baseline_integration_required:PCH-TASK-001"
+        assert claim.reason == "dependency_not_integrated_into_baseline:PCH-TASK-001"
         assert session.scalars(select(Execution)).all() == []
         assert session.scalars(select(TaskLease)).all() == []
 

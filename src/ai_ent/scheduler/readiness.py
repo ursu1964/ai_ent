@@ -23,7 +23,6 @@ ReadinessStatus = Literal[
     "BLOCKED_DEPENDENCY",
     "NOT_SCHEDULABLE",
     "DECISION_BLOCKED",
-    "BASELINE_INTEGRATION_REQUIRED",
     "TERMINAL",
     "RUNNING",
     "ALREADY_LEASED",
@@ -184,8 +183,10 @@ class TaskReadinessService:
         if baseline_blockers:
             return ReadinessDecision(
                 task_id=task_id,
-                status="BASELINE_INTEGRATION_REQUIRED",
-                reasons=tuple(f"baseline_integration_required:{dependency}" for dependency in baseline_blockers),
+                status="NOT_SCHEDULABLE",
+                reasons=tuple(
+                    f"dependency_not_integrated_into_baseline:{dependency}" for dependency in baseline_blockers
+                ),
                 dependencies=tuple(sorted(dependencies)),
                 blocking_dependencies=baseline_blockers,
             )

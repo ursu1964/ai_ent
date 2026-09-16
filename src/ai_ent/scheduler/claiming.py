@@ -90,7 +90,9 @@ class TaskClaimingService:
                 "NOT_CLAIMABLE",
                 task_id=task_id,
                 owner_id=owner_id,
-                reason=";".join(f"baseline_integration_required:{dependency}" for dependency in baseline_blockers),
+                reason=";".join(
+                    f"dependency_not_integrated_into_baseline:{dependency}" for dependency in baseline_blockers
+                ),
             )
 
         execution = self.executions.create(
