@@ -27,6 +27,14 @@ BootstrapCheckpointKind = Literal["task_completed", "run_blocked", "run_failed",
 BootstrapStateBackend = Literal["local_json", "postgresql"]
 RuntimePlanImportStatus = Literal["imported", "conflict", "failed"]
 RuntimeHumanGateStatus = Literal["pending", "approved", "rejected"]
+RuntimeBaselineIntegrationStatus = Literal[
+    "pending",
+    "integrated_unverified",
+    "verified",
+    "verification_failed",
+    "conflict",
+    "rejected",
+]
 
 
 def utc_now() -> datetime:
@@ -147,6 +155,9 @@ class Execution(TimestampMixin, Base):
     error_classification: Mapped[str | None] = mapped_column(String(120))
     candidate_tree_hash: Mapped[str | None] = mapped_column(String(64))
     commit_hash: Mapped[str | None] = mapped_column(String(64))
+    baseline_commit: Mapped[str | None] = mapped_column(String(128))
+    baseline_tree: Mapped[str | None] = mapped_column(String(128))
+    baseline_generation: Mapped[int | None] = mapped_column(Integer)
 
     task: Mapped[Task] = relationship(back_populates="executions")
     checkpoints: Mapped[list[Checkpoint]] = relationship(back_populates="execution")
@@ -402,4 +413,46 @@ class RuntimeHumanGate(TimestampMixin, Base):
         UniqueConstraint("import_id", "id", name="uq_runtime_human_gates_import_gate"),
         Index("ix_runtime_human_gates_import", "import_id"),
         Index("ix_runtime_human_gates_task_status", "task_id", "status"),
+    )
+
+
+class RuntimeBaselineIntegration(TimestampMixin, Base):
+    __tablename__ = "runtime_baseline_integrations"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    import_id: Mapped[str] = mapped_column(ForeignKey("runtime_plan_imports.id", ondelete="RESTRICT"), nullable=False)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False)
+    plan_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    plan_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"), nullable=False)
+    source_execution_id: Mapped[str] = mapped_column(ForeignKey("executions.id", ondelete="RESTRICT"), nullable=False)
+    source_commit: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_tree: Mapped[str] = mapped_column(String(128), nullable=False)
+    prior_baseline_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    prior_baseline_commit: Mapped[str] = mapped_column(String(128), nullable=False)
+    prior_baseline_tree: Mapped[str] = mapped_column(String(128), nullable=False)
+    integrated_commit: Mapped[str] = mapped_column(String(128), nullable=False)
+    integrated_tree: Mapped[str] = mapped_column(String(128), nullable=False)
+    integration_strategy: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[RuntimeBaselineIntegrationStatus] = mapped_column(String(40), nullable=False)
+    verification_evidence_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status in ('pending', 'integrated_unverified', 'verified', 'verification_failed', 'conflict', 'rejected')",
+            name="ck_runtime_baseline_integrations_status",
+        ),
+        CheckConstraint("prior_baseline_generation >= 0", name="ck_runtime_baseline_integrations_generation"),
+        UniqueConstraint("import_id", "id", name="uq_runtime_baseline_integrations_import_id"),
+        UniqueConstraint(
+            "plan_id",
+            "plan_version",
+            "task_id",
+            "source_execution_id",
+            "prior_baseline_generation",
+            name="uq_runtime_baseline_integrations_task_execution_generation",
+        ),
+        Index("ix_runtime_baseline_integrations_import", "import_id"),
+        Index("ix_runtime_baseline_integrations_plan", "plan_id", "plan_version"),
+        Index("ix_runtime_baseline_integrations_task_status", "task_id", "status"),
     )

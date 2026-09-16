@@ -137,6 +137,11 @@ class ExecutionPackageFactory:
                     baseline_commit = baseline.baseline_commit
                     baseline_tree = baseline.baseline_tree
                     baseline_generation = baseline.generation
+                    execution = session.get(Execution, execution_id)
+                    if execution is not None:
+                        execution.baseline_commit = baseline_commit
+                        execution.baseline_tree = baseline_tree
+                        execution.baseline_generation = baseline_generation
 
         return build_execution_package(
             manifest_task,

@@ -30,6 +30,9 @@ class ExecutionRepository:
         error_classification: str | None = None,
         candidate_tree_hash: str | None = None,
         commit_hash: str | None = None,
+        baseline_commit: str | None = None,
+        baseline_tree: str | None = None,
+        baseline_generation: int | None = None,
     ) -> Execution:
         selected_attempt = attempt if attempt is not None else self.next_attempt(session, task_id)
         execution = Execution(
@@ -44,6 +47,9 @@ class ExecutionRepository:
             error_classification=error_classification,
             candidate_tree_hash=candidate_tree_hash,
             commit_hash=commit_hash,
+            baseline_commit=baseline_commit,
+            baseline_tree=baseline_tree,
+            baseline_generation=baseline_generation,
         )
         session.add(execution)
         try:
@@ -111,6 +117,9 @@ class ExecutionRepository:
         error_classification: str | None = None,
         candidate_tree_hash: str | None = None,
         commit_hash: str | None = None,
+        baseline_commit: str | None = None,
+        baseline_tree: str | None = None,
+        baseline_generation: int | None = None,
     ) -> Execution:
         execution = self.require(session, execution_id)
         execution.status = status
@@ -126,6 +135,12 @@ class ExecutionRepository:
             execution.candidate_tree_hash = candidate_tree_hash
         if commit_hash is not None:
             execution.commit_hash = commit_hash
+        if baseline_commit is not None:
+            execution.baseline_commit = baseline_commit
+        if baseline_tree is not None:
+            execution.baseline_tree = baseline_tree
+        if baseline_generation is not None:
+            execution.baseline_generation = baseline_generation
         try:
             session.flush()
         except IntegrityError as exc:
